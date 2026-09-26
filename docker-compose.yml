@@ -1,0 +1,13 @@
+services:
+  vue3d:
+    build: .
+    image: vue-3d-ign
+    ports:
+      - "${VUE3D_PORT:-8080}:8080"
+    volumes:
+      # Les scènes construites survivent aux redémarrages : 100 à 500 Ko par lieu.
+      - scenes:/cache
+    restart: unless-stopped
+
+volumes:
+  scenes:

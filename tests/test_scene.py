@@ -1,0 +1,94 @@
+"""Cache des scènes (vue3d/scene.py) : clé, complétude, verrou."""
+import os
+import threading
+
+import pytest
+
+from vue3d import scene
+from vue3d.scene import Cache, HorsEmprise, SceneIncomplete, emprise, point_normalise
+
+
+def test_le_point_est_arrondi_a_une_dizaine_de_metres():
+    assert point_normalise(48.80491234, 2.12041234) == (48.8049, 2.1204)
+    # Deux demandes voisines partagent donc la même scène.
+    assert point_normalise(48.80494, 2.12036) == point_normalise(48.80486, 2.12044)
+
+
+@pytest.mark.parametrize("lat,lon", [(40.0, 2.0), (48.8, 12.0), (0, 0), (-21.1, 55.5)])
+def test_hors_de_france_metropolitaine_est_refuse(lat, lon):
+    with pytest.raises(HorsEmprise):
+        point_normalise(lat, lon)
+
+
+def test_l_emprise_est_centree_sur_le_point():
+    ouest, sud, est, nord = emprise(48.8, 2.1)
+    assert (ouest + est) / 2 == pytest.approx(2.1) and (sud + nord) / 2 == pytest.approx(48.8)
+    assert est - ouest == pytest.approx(2 * scene.SCENE_DELTA)
+
+
+def test_une_scene_n_est_construite_qu_une_fois(tmp_path):
+    appels = []
+
+    def construire(lat, lon):
+        appels.append((lat, lon))
+        return b"scene", b"jpeg"
+
+    cache = Cache(str(tmp_path))
+    d1 = cache.obtenir(48.80491, 2.12041, construire=construire)
+    d2 = cache.obtenir(48.80489, 2.12039, construire=construire)
+    assert d1 == d2 and len(appels) == 1
+    assert open(os.path.join(d1, scene.NOM_SCENE), "rb").read() == b"scene"
+    assert open(os.path.join(d1, scene.NOM_ORTHO), "rb").read() == b"jpeg"
+
+
+def test_une_scene_incomplete_n_est_pas_mise_en_cache(tmp_path):
+    """Le cache ne périme pas : une scène figée pendant une panne resterait
+    fausse pour toujours. Rien n'est écrit, la demande suivante réessaie."""
+    cache = Cache(str(tmp_path))
+
+    def en_panne(lat, lon):
+        raise SceneIncomplete("orthophoto illisible : Read timed out")
+
+    with pytest.raises(SceneIncomplete):
+        cache.obtenir(48.8049, 2.1204, construire=en_panne)
+    assert not cache.present(48.8049, 2.1204)
+    # La demande suivante, service revenu, réussit.
+    cache.obtenir(48.8049, 2.1204, construire=lambda lat, lon: (b"s", b"j"))
+    assert cache.present(48.8049, 2.1204)
+
+
+def test_deux_demandes_simultanees_ne_construisent_pas_deux_fois(tmp_path):
+    appels = []
+    depart = threading.Event()
+
+    def lente(lat, lon):
+        appels.append(1)
+        depart.wait(2)
+        return b"s", b"j"
+
+    cache = Cache(str(tmp_path))
+    fils = [threading.Thread(target=cache.obtenir, args=(48.8049, 2.1204),
+                             kwargs={"construire": lente}) for _ in range(4)]
+    for f in fils:
+        f.start()
+    depart.set()
+    for f in fils:
+        f.join(5)
+    assert len(appels) == 1
+
+
+def test_assembler_n_embarque_pas_les_grilles():
+    """La scène porte les résultats, pas les 2,4 Mo d'entrées de calcul."""
+    import json
+    import numpy as np
+    from tests.test_houppiers import _emprise, _grille
+    H = _grille(arbres=[(10, 10, 12, 4)])
+    grille = _emprise(H)
+    grille.update({"couvert": True, "source": "lidar_hd", "resolution_m": 0.5})
+    art = scene.assembler(*grille["bbox"], {"features": []}, {"features": []}, None,
+                          {"features": []}, grille, np.full(H.shape, 20, dtype=np.int8), None)
+    assert set(art) == {"version", "bbox", "batiments", "toits", "routes",
+                        "houppiers", "masses", "vegetation", "relief"}
+    assert len(art["houppiers"]) == 1
+    charge = json.dumps(art)
+    assert '"values"' not in charge and '"exg"' not in charge

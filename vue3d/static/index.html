@@ -1,0 +1,2674 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="utf-8" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🌳%3C/text%3E%3C/svg%3E" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Vue 3D IGN</title>
+    <style>
+        :root { --accent:#e07b00; --panel:#1f2328; --panel-soft:#2b3138;
+                --text:#e8eaed; --muted:#9aa0a6; --line:#3a4149; }
+        * { box-sizing: border-box; }
+        html, body { margin:0; height:100%; overflow:hidden;
+                     font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        #app { display:flex; height:100%; }
+        #panel { width:300px; flex:0 0 300px; background:var(--panel); color:var(--text);
+                 display:flex; flex-direction:column; overflow-y:auto; }
+        #panel header { padding:14px 16px; border-bottom:1px solid var(--line); }
+        #panel header h1 { margin:0 0 4px; font-size:14px; font-weight:600; }
+        #panel header .sub { font-size:11px; color:var(--muted); word-break:break-all; }
+        #panel header a { color:var(--accent); font-size:11px; text-decoration:none; display:block; margin-top:4px; }
+        #panel header a:hover { text-decoration:underline; }
+        .section { padding:12px 16px; border-bottom:1px solid var(--line); }
+        .section h2 { margin:0 0 8px; font-size:10px; letter-spacing:.08em;
+                      text-transform:uppercase; color:var(--muted); font-weight:600; }
+        .toggles { display:flex; flex-wrap:wrap; gap:6px; }
+        .toggle { border:1px solid var(--line); background:var(--panel-soft); color:var(--text);
+                  padding:5px 10px; border-radius:5px; font-size:11px; cursor:pointer; }
+        .toggle:hover { border-color:var(--muted); }
+        .toggle.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+        .row { display:flex; align-items:center; gap:8px; margin-top:10px; }
+        .row label { font-size:10px; color:var(--muted); white-space:nowrap; }
+        .row input[type=range] { flex:1; accent-color:var(--accent); height:3px; }
+        .row b { font-size:11px; color:var(--text); min-width:26px; text-align:right; }
+        .stat { display:flex; justify-content:space-between; font-size:11px;
+                color:var(--muted); padding:2px 0; }
+        .stat b { color:var(--text); font-weight:600; }
+        .note { font-size:10px; color:var(--muted); line-height:1.45; margin-top:8px; }
+        .lien-ext { display:inline-block; margin-top:8px; font-size:11px; color:var(--accent);
+                    text-decoration:none; border:1px solid var(--line); border-radius:5px;
+                    padding:4px 8px; }
+        .lien-ext:hover { border-color:var(--accent); }
+        #scene { flex:1; position:relative; }
+        #scene canvas { display:block; }
+        #hint { position:absolute; left:12px; bottom:12px; z-index:2;
+                background:rgba(31,35,40,.88); color:#e8eaed; font-size:11px;
+                padding:6px 10px; border-radius:5px; pointer-events:none; }
+        #boussole { position:absolute; top:14px; right:14px; z-index:3; width:64px; height:64px;
+                    border-radius:50%; background:rgba(31,35,40,.85); border:1px solid var(--line);
+                    pointer-events:none; }
+        #boussole .rose { position:absolute; inset:0; }
+        #boussole span { position:absolute; font-size:10px; font-weight:700; color:var(--muted);
+                         left:50%; top:50%; transform:translate(-50%,-50%); }
+        #boussole .n { margin-top:-22px; color:var(--accent); }
+        #boussole .s { margin-top:22px; }
+        #boussole .e { margin-left:22px; }
+        #boussole .o { margin-left:-22px; }
+        /* Aiguille : pointe vers le nord, moitié pleine côté nord. */
+        #boussole .aiguille { position:absolute; left:50%; top:50%; width:0; height:0;
+                              transform:translate(-50%,-100%);
+                              border-left:5px solid transparent; border-right:5px solid transparent;
+                              border-bottom:20px solid var(--accent); }
+        .form-point { display:flex; gap:4px; margin:8px 0 6px; }
+        .form-point input { width:0; flex:1; background:#161a1e; color:#e8eaed;
+                            border:1px solid #3a4148; border-radius:4px; padding:4px 6px; font-size:12px; }
+        .form-point button { background:#2f6fb0; color:#fff; border:0; border-radius:4px;
+                             padding:4px 10px; font-size:12px; cursor:pointer; }
+        #attente { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+                   z-index:4; pointer-events:none; color:#e8eaed; font-size:13px; text-align:center;
+                   line-height:1.6; text-shadow:0 1px 3px #000; }
+        #attente[hidden] { display:none; }
+        .saison-cran, #saison-aujourdhui { color:var(--accent); text-decoration:none; }
+        #tip { position:absolute; z-index:3; background:rgba(31,35,40,.95); color:#e8eaed;
+               font-size:11px; padding:6px 9px; border-radius:5px; pointer-events:none;
+               display:none; max-width:230px; line-height:1.4; }
+        @media (max-width:780px) { #app { flex-direction:column; }
+            #panel { width:100%; flex:0 0 auto; max-height:45%; } }
+    </style>
+</head>
+<body>
+<div id="app">
+    <div id="panel">
+        <header>
+            <h1>Vue 3D IGN</h1>
+            <div class="sub" id="coord-point">—</div>
+            <form id="form-point" class="form-point">
+                <input id="in-lat" type="text" inputmode="decimal" placeholder="latitude" aria-label="latitude" />
+                <input id="in-lon" type="text" inputmode="decimal" placeholder="longitude" aria-label="longitude" />
+                <button type="submit">Voir</button>
+            </form>
+            <a href="https://github.com/ysimonx/vue-3d-ign#readme" target="_blank" rel="noopener">📐 Méthode et sources ↗</a>
+        </header>
+
+        <div class="section">
+            <h2>Affichage</h2>
+            <div class="toggles">
+                <button class="toggle on" id="t-roof">Toits en pente</button>
+                <button class="toggle on" id="t-orbit">Orbite</button>
+                <button class="toggle on" id="t-fond">Photo aérienne</button>
+                <button class="toggle" id="t-osm">Plan OSM</button>
+                <button class="toggle on" id="t-relief">Relief</button>
+                <button class="toggle" id="t-veg">Végétation</button>
+                <button class="toggle" id="t-moi">Ma position</button>
+            </div>
+            <div class="row">
+                <label for="speed">vitesse</label>
+                <input type="range" id="speed" min="1" max="20" step="1" value="6" />
+            </div>
+            <div class="row">
+                <label for="exag">exagération Z</label>
+                <input type="range" id="exag" min="1" max="5" step="0.5" value="1" />
+                <b id="s-exag">1</b>
+            </div>
+            <div class="row">
+                <label for="heure">heure</label>
+                <input type="range" id="heure" min="0" max="24" step="0.25" value="12" />
+                <b id="s-heure">12:00</b>
+            </div>
+            <div class="row">
+                <label for="saison">saison</label>
+                <input type="range" id="saison" min="1" max="365" step="1" value="172" />
+                <b id="s-saison">—</b>
+            </div>
+            <div class="note" style="margin-top:2px">
+                <a href="#" class="saison-cran" data-mois="12" data-jour="21">21 déc.</a> ·
+                <a href="#" class="saison-cran" data-mois="3" data-jour="21">équinoxe</a> ·
+                <a href="#" class="saison-cran" data-mois="6" data-jour="21">21 juin</a> ·
+                <a href="#" id="saison-aujourdhui">aujourd’hui</a>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Soleil</h2>
+            <div class="stat"><span>date</span><b id="s-date">—</b></div>
+            <div class="stat"><span>azimut</span><b id="s-azimut">—</b></div>
+            <div class="stat"><span>hauteur</span><b id="s-hauteur">—</b></div>
+            <div class="note" id="note-soleil"></div>
+        </div>
+
+        <div class="section" id="sec-moi" hidden>
+            <h2>Ma position</h2>
+            <div class="stat"><span>précision</span><b id="m-prec">—</b></div>
+            <div class="stat"><span>distance au point</span><b id="m-dist">—</b></div>
+            <div class="note" id="m-note"></div>
+        </div>
+
+        <div class="section">
+            <h2>Bâtiments</h2>
+            <div class="stat"><span>chargés</span><b id="s-total">—</b></div>
+            <div class="stat"><span>avec toit mesuré</span><b id="s-roof">—</b></div>
+            <div class="stat"><span>toit mesuré au LiDAR</span><b id="s-lidar">—</b></div>
+            <div class="stat"><span>dénivelé médian</span><b id="s-slope">—</b></div>
+            <div class="note" id="note">Chargement des bâtiments…</div>
+        </div>
+
+        <div class="section">
+            <h2>Bâtiment</h2>
+            <div id="fiche-batiment"></div>
+            <div class="note" id="note-batiment">Cliquer un bâtiment pour afficher sa fiche BD TOPO. Le bâtiment visé par le point est en orange.</div>
+        </div>
+
+        <div class="section">
+            <h2>Terrain</h2>
+            <div class="stat"><span>source</span><b id="s-src">—</b></div>
+            <div class="stat"><span>altitude au centre</span><b id="s-alt">—</b></div>
+            <div class="stat"><span>amplitude sur l'emprise</span><b id="s-amp">—</b></div>
+            <div class="note" id="note-terrain">Chargement du relief…</div>
+        </div>
+
+        <div class="section">
+            <h2>Ce que ça montre</h2>
+            <div class="note">
+                Les murs montent à la gouttière et le toit rejoint le faîtage,
+                mesurés au LiDAR HD de l'IGN quand il est fiable, sinon déclarés
+                par la BD TOPO. La végétation est segmentée arbre par arbre sur le
+                modèle de hauteur à 0,5 m, et le soleil suit sa vraie course pour
+                le lieu et la date choisis.
+            </div>
+        </div>
+
+        <div class="section" id="sec-veg" hidden>
+            <h2>Végétation &amp; sursol</h2>
+            <div class="stat"><span>hauteur max</span><b id="v-max">—</b></div>
+            <div class="stat"><span>masque au sud</span><b id="v-masque">—</b></div>
+            <div class="stat"><span>obstacle dominant</span><b id="v-obstacle">—</b></div>
+            <div class="note" id="v-note">Chargement…</div>
+        </div>
+    </div>
+
+    <div id="scene">
+        <div id="hint">Glisser pour pivoter · molette pour zoomer · survol pour mesurer · clic sur un bâtiment pour sa fiche</div>
+        <div id="attente" hidden></div>
+        <div id="boussole" title="Orientation">
+            <div class="rose" id="rose">
+                <div class="aiguille"></div>
+                <span class="n">N</span><span class="e">E</span>
+                <span class="s">S</span><span class="o">O</span>
+            </div>
+        </div>
+        <div id="tip"></div>
+    </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// --- Point visé ----------------------------------------------------------
+// Donné dans l'URL (?lat=…&lon=…). Sans point, on en propose un par défaut : la
+// cour du château de Versailles, lieu public couvert par le LiDAR HD.
+const PARAMS = new URLSearchParams(location.search);
+const POINT_DEFAUT = { lat: 48.8049, lon: 2.1204 };
+const lireCoord = n => { const v = Number(String(PARAMS.get(n) || '').replace(',', '.')); return Number.isFinite(v) && PARAMS.get(n) !== null ? v : null; };
+const LAT0 = lireCoord('lat') ?? POINT_DEFAUT.lat;
+const LON0 = lireCoord('lon') ?? POINT_DEFAUT.lon;
+const CENTER = [LON0, LAT0];
+const REQUETE = `lat=${LAT0}&lon=${LON0}`;
+const URL_VUE3D = `api/scene?${REQUETE}`;
+const URL_VUE3D_ORTHO = `api/ortho?${REQUETE}`;
+document.getElementById('coord-point').textContent = `${LAT0.toFixed(5)}, ${LON0.toFixed(5)}`;
+document.getElementById('in-lat').value = LAT0;
+document.getElementById('in-lon').value = LON0;
+document.getElementById('form-point').addEventListener('submit', e => {
+    e.preventDefault();
+    const lat = Number(document.getElementById('in-lat').value.replace(',', '.'));
+    const lon = Number(document.getElementById('in-lon').value.replace(',', '.'));
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+    location.search = `?lat=${lat}&lon=${lon}`;
+});
+
+// La scène — bâtiments, toitures, houppiers, routes, relief — arrive en un seul
+// fichier. Sa première construction prend une vingtaine à une trentaine de
+// secondes côté serveur ; les suivantes sont lues sur disque.
+let ARTEFACT = null;
+let ERREUR_SCENE = null;
+const attente = document.getElementById('attente');
+attente.hidden = false;
+attente.innerHTML = 'Construction de la scène…<br><small>20 à 40 s la première fois, '
+    + 'instantané ensuite</small>';
+const chargementArtefact = fetch(URL_VUE3D)
+    .then(async r => {
+        if (r.ok) return r.json();
+        const corps = await r.json().catch(() => ({}));
+        throw new Error(corps.erreur || `HTTP ${r.status}`);
+    })
+    .then(a => { ARTEFACT = a; attente.hidden = true; return a; })
+    .catch(err => {
+        ERREUR_SCENE = err.message;
+        attente.innerHTML = 'Scène indisponible<br><small>' + err.message + '</small>';
+        return null;
+    });
+// Toitures LiDAR par cleabs : {gouttiere, faitage, denivele, axe_deg, ...}.
+// Rempli avant construire() — le rendu s'en sert en priorité sur la BD TOPO.
+let TOITS = {};
+let TOITS_SOURCE = null;
+// La scène est toujours cadrée sur le point : il n'y a pas d'autre repère.
+const CENTRE_FORCE = true;
+
+// --- Projection locale ---------------------------------------------------
+// Équirectangulaire centrée sur le point : à cette échelle (quelques
+// centaines de mètres) la distorsion est négligeable, et ça évite d'embarquer
+// une bibliothèque de projection.
+const M_PAR_DEGRE_LAT = 111320;
+const M_PAR_DEGRE_LON = 111320 * Math.cos(CENTER[1] * Math.PI / 180);
+const toLocal = (lon, lat) => [
+    (lon - CENTER[0]) * M_PAR_DEGRE_LON,
+    (lat - CENTER[1]) * M_PAR_DEGRE_LAT,
+];
+// Réciproque, nécessaire pour échantillonner le relief sous un vertex du sol.
+const toLonLat = (x, y) => [
+    CENTER[0] + x / M_PAR_DEGRE_LON,
+    CENTER[1] + y / M_PAR_DEGRE_LAT,
+];
+
+// --- État du relief ------------------------------------------------------
+// Le terrain arrive de façon asynchrone, après les bâtiments le plus souvent :
+// bâtiments et marqueurs sont donc reconstruits à son arrivée, et à chaque
+// changement d'exagération.
+let terrain = null;      // { alt, min, max, mesh, hauteurs }
+let altitudeRef = 0;     // altitude du centre du site — l'origine des Y de la scène
+let relief = true;
+let exagVert = 1;
+
+/**
+ * Y de la scène pour un point posé sur le terrain.
+ *
+ * L'exagération ne s'applique qu'aux ALTITUDES. Un objet posé dessus reçoit
+ * l'élévation ainsi calculée, mais garde ses dimensions réelles : un facteur 3
+ * doit creuser la vallée, pas étirer les maisons.
+ */
+function ySol(lon, lat) {
+    if (!relief || !terrain) return 0;
+    const a = terrain.alt(lon, lat);
+    return a == null ? 0 : (a - altitudeRef) * exagVert;
+}
+
+// Enfoncement des objets sous le terrain. Le maillage est trianglé alors que
+// l'échantillonnage est bilinéaire : sans cette marge, un mur se décolle du sol
+// sur les arêtes.
+//
+// Constante, et non proportionnelle à l'exagération : les volumes ne sont pas
+// dilatés, et 0,5 × 5 enfoncerait une maison de 4,8 m de plus de la moitié de
+// sa hauteur. Le minimum pris sur l'emprise couvre déjà l'essentiel de l'écart ;
+// il ne reste que la courbure du terrain à l'intérieur d'une maille.
+const ENFONCEMENT = 0.5;
+
+/**
+ * Y de la base d'un bâtiment : le point le PLUS BAS du terrain sous son
+ * emprise, enfoncé de la marge ci-dessus.
+ *
+ * Le minimum, et non le centre : un bâtiment à cheval sur une rupture de pente
+ * flotterait de son côté aval.
+ *
+ * On ne soustrait JAMAIS deux altitudes de sources différentes. Le terrain sert
+ * à PLACER les bâtiments ; leur hauteur vient de la BD TOPO seule, où gouttière
+ * et sol partagent le même géoïde. Mélanger les deux verserait l'écart entre
+ * référentiels dans la hauteur des murs.
+ */
+function baseBatiment(anneau) {
+    if (!relief || !terrain) return 0;
+    let min = Infinity;
+    for (const [lon, lat] of anneau) {
+        const a = terrain.alt(lon, lat);
+        if (a != null) min = Math.min(min, a);
+    }
+    if (min === Infinity) return 0;
+    return (min - altitudeRef) * exagVert - ENFONCEMENT;
+}
+
+// --- Scène ---------------------------------------------------------------
+const host = document.getElementById('scene');
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0e1116);
+scene.fog = new THREE.Fog(0x0e1116, 300, 900);
+
+const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 5000);
+camera.position.set(90, 70, 90);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+host.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;          // l'inertie fait tout le confort
+controls.dampingFactor = 0.06;
+controls.maxPolarAngle = Math.PI / 2.05; // interdit de passer sous le sol
+controls.minDistance = 15;
+controls.maxDistance = 900;
+
+const ambiance = new THREE.HemisphereLight(0xbcd4ff, 0x2b2b2b, 1.1);
+scene.add(ambiance);
+
+// Le soleil est placé par majSoleil() d'après l'heure : sa position initiale
+// n'a donc pas d'importance. Le frustum d'ombre, lui, est fixe et doit couvrir
+// l'emprise même quand le relief exagéré la fait monter de plus de 100 m.
+const DISTANCE_SOLEIL = 900;
+const soleil = new THREE.DirectionalLight(0xfff2dd, 2.0);
+soleil.castShadow = true;
+soleil.shadow.mapSize.set(2048, 2048);
+// normalBias décolle l'ombre de la surface qui la reçoit : sans lui, le
+// maillage du terrain se moire d'acné d'ombre dès que le soleil rase.
+soleil.shadow.normalBias = 0.4;
+const c = soleil.shadow.camera;
+c.left = c.bottom = -400; c.right = c.top = 400; c.near = 1; c.far = 2000;
+scene.add(soleil);
+scene.add(soleil.target);
+
+const sol = new THREE.Mesh(
+    new THREE.PlaneGeometry(2000, 2000),
+    new THREE.MeshStandardMaterial({ color: 0x2a2f36, roughness: 1 })
+);
+sol.rotation.x = -Math.PI / 2;
+sol.receiveShadow = true;
+scene.add(sol);
+// Repère visuel utile seulement quand aucun fond cartographique n'est posé.
+const grille = new THREE.GridHelper(1000, 100, 0x39414a, 0x2b3138);
+grille.visible = false;
+scene.add(grille);
+
+// --- Géométrie des bâtiments --------------------------------------------
+const MAT_CIBLE = new THREE.MeshStandardMaterial({ color: 0xe07b00, roughness: 0.75, flatShading: true });
+const MAT_VOISIN   = new THREE.MeshStandardMaterial({ color: 0x9aa3ad, roughness: 0.85, flatShading: true });
+const MAT_TOIT     = new THREE.MeshStandardMaterial({ color: 0x8d5a3b, roughness: 0.8, flatShading: true });
+const MAT_TOIT_VOISIN = new THREE.MeshStandardMaterial({ color: 0x6f7883, roughness: 0.9, flatShading: true });
+// Hauteur inconnue (bâtiment sous les arbres) : volume pâle et translucide,
+// pour dire « on sait qu'il y a un bâtiment, pas sa hauteur ».
+const MAT_INCONNU = new THREE.MeshStandardMaterial({ color: 0xb8c0c8, roughness: 0.9, flatShading: true,
+                                                     transparent: true, opacity: 0.55 });
+// Repli quand ni le LiDAR ni la BD TOPO ne sont crédibles : 3 m par étage
+// BD TOPO connu, un étage sinon. Un ordre de grandeur, affiché comme tel.
+const HAUTEUR_PAR_ETAGE = 3;
+
+const groupeBatiments = new THREE.Group();
+scene.add(groupeBatiments);
+
+/** Enveloppe convexe (marche de Andrew), pour poser le faîtage. */
+function enveloppeConvexe(pts) {
+    const p = pts.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    if (p.length < 3) return p;
+    const croix = (o, a, b) => (a[0]-o[0])*(b[1]-o[1]) - (a[1]-o[1])*(b[0]-o[0]);
+    const bas = [], haut = [];
+    for (const q of p) { while (bas.length >= 2 && croix(bas[bas.length-2], bas[bas.length-1], q) <= 0) bas.pop(); bas.push(q); }
+    for (let i = p.length - 1; i >= 0; i--) { const q = p[i];
+        while (haut.length >= 2 && croix(haut[haut.length-2], haut[haut.length-1], q) <= 0) haut.pop(); haut.push(q); }
+    bas.pop(); haut.pop();
+    return bas.concat(haut);
+}
+
+/**
+ * Boîte englobante de l'emprise dans le repère tourné de `ang` (radians depuis
+ * l'est). Même structure que rectangleMin(), mais l'orientation est imposée :
+ * c'est ce qui permet de poser le faîtage sur l'axe mesuré au LiDAR plutôt que
+ * sur le grand côté de l'emprise — les deux ne coïncident pas toujours (une
+ * maison en L, un toit à croupe sur emprise carrée).
+ */
+function rectangleSelonAxe(pts, ang) {
+    const cos = Math.cos(-ang), sin = Math.sin(-ang);
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (const q of pts) {
+        const x = q[0] * cos - q[1] * sin, y = q[0] * sin + q[1] * cos;
+        x0 = Math.min(x0, x); x1 = Math.max(x1, x);
+        y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+    }
+    return { aire: (x1 - x0) * (y1 - y0), ang, x0, x1, y0, y1 };
+}
+
+/** Rectangle d'aire minimale (calipers tournants) : donne l'orientation du faîtage. */
+function rectangleMin(pts) {
+    const h = enveloppeConvexe(pts);
+    if (h.length < 3) return null;
+    let best = null;
+    for (let i = 0; i < h.length; i++) {
+        const a = h[i], b = h[(i + 1) % h.length];
+        const ang = Math.atan2(b[1] - a[1], b[0] - a[0]);
+        const cos = Math.cos(-ang), sin = Math.sin(-ang);
+        let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+        for (const q of h) {
+            const x = q[0] * cos - q[1] * sin, y = q[0] * sin + q[1] * cos;
+            x0 = Math.min(x0, x); x1 = Math.max(x1, x);
+            y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+        }
+        const aire = (x1 - x0) * (y1 - y0);
+        if (!best || aire < best.aire) best = { aire, ang, x0, x1, y0, y1 };
+    }
+    return best;
+}
+
+/**
+ * Toit à deux pans posé sur le rectangle d'aire minimale de l'emprise.
+ * La BD TOPO donne les altitudes de gouttière et de faîtage, jamais la forme :
+ * on suppose donc un toit à deux pans, faîtage sur le grand axe. C'est faux
+ * pour une toiture-terrasse ou une croupe, mais bien plus juste qu'un toit plat
+ * sur les 85 % de bâtiments qui ont un dénivelé.
+ */
+function geometrieToit(rect, hGouttiere, hFaitage, forcerX = null) {
+    const { ang, x0, x1, y0, y1 } = rect;
+    const cos = Math.cos(ang), sin = Math.sin(ang);
+    const versMonde = (x, y) => [x * cos - y * sin, x * sin + y * cos];
+
+    const largeurX = x1 - x0, largeurY = y1 - y0;
+    // Le faîtage suit le grand côté — sauf axe imposé (LiDAR), qui est X.
+    const suivantX = forcerX !== null ? forcerX : largeurX >= largeurY;
+    const my = (y0 + y1) / 2, mx = (x0 + x1) / 2;
+
+    const A = versMonde(x0, y0), B = versMonde(x1, y0),
+          C = versMonde(x1, y1), D = versMonde(x0, y1);
+    const F1 = suivantX ? versMonde(x0, my) : versMonde(mx, y0);
+    const F2 = suivantX ? versMonde(x1, my) : versMonde(mx, y1);
+
+    const g = hGouttiere, f = hFaitage;
+    const v = [];
+    const pousser = (p, h) => v.push(p[0], h, -p[1]);
+
+    if (suivantX) {
+        pousser(A, g); pousser(B, g); pousser(F2, f);      // pan avant
+        pousser(A, g); pousser(F2, f); pousser(F1, f);
+        pousser(D, g); pousser(F1, f); pousser(F2, f);      // pan arrière
+        pousser(D, g); pousser(F2, f); pousser(C, g);
+        pousser(A, g); pousser(F1, f); pousser(D, g);       // pignons
+        pousser(B, g); pousser(C, g); pousser(F2, f);
+    } else {
+        pousser(A, g); pousser(B, g); pousser(F1, f);
+        pousser(B, g); pousser(C, g); pousser(F2, f);
+        pousser(B, g); pousser(F2, f); pousser(F1, f);
+        pousser(D, g); pousser(F1, f); pousser(F2, f);
+        pousser(D, g); pousser(F2, f); pousser(C, g);
+        pousser(A, g); pousser(F1, f); pousser(D, g);
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
+    geo.computeVertexNormals();
+    return geo;
+}
+
+/**
+ * Toit en pyramide sur une boîte : quatre pans vers un sommet central. C'est le
+ * rendu d'un corps dont les cellules hautes du LiDAR ne dessinent pas de ligne
+ * (netteté < 3) — une croupe ou un pavillon, pas un faîtage.
+ */
+function geometriePyramide(rect, hGouttiere, hFaitage) {
+    const { ang, x0, x1, y0, y1 } = rect;
+    const cos = Math.cos(ang), sin = Math.sin(ang);
+    const versMonde = (x, y) => [x * cos - y * sin, x * sin + y * cos];
+    const A = versMonde(x0, y0), B = versMonde(x1, y0), C = versMonde(x1, y1), D = versMonde(x0, y1);
+    const S = versMonde((x0 + x1) / 2, (y0 + y1) / 2);
+    const v = [];
+    const pousser = (p, h) => v.push(p[0], h, -p[1]);
+    for (const [P, Q] of [[A, B], [B, C], [C, D], [D, A]]) {
+        pousser(P, hGouttiere); pousser(Q, hGouttiere); pousser(S, hFaitage);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
+    geo.computeVertexNormals();
+    return geo;
+}
+
+/** Boîte d'un corps de toit LiDAR, centrée, dans le repère de son axe. */
+function rectangleDeCorps(corps) {
+    const ang = (corps.axe_deg != null ? corps.axe_deg : 0) * Math.PI / 180;
+    // Le centre (cx, cy) est en mètres locaux ; on le ramène dans le repère
+    // tourné, où la boîte est axée.
+    const cos = Math.cos(-ang), sin = Math.sin(-ang);
+    const cx = corps.cx * cos - corps.cy * sin, cy = corps.cx * sin + corps.cy * cos;
+    return { ang, x0: cx - corps.longueur / 2, x1: cx + corps.longueur / 2,
+                  y0: cy - corps.largeur / 2, y1: cy + corps.largeur / 2 };
+}
+
+function anneauVersShape(anneau) {
+    const forme = new THREE.Shape();
+    anneau.forEach(([lon, lat], i) => {
+        const [x, y] = toLocal(lon, lat);
+        // Le plan de la Shape est extrudé vers +Z puis couché : on inverse y.
+        if (i === 0) forme.moveTo(x, y); else forme.lineTo(x, y);
+    });
+    return forme;
+}
+
+function anneauxDe(geometry) {
+    if (!geometry) return [];
+    if (geometry.type === 'Polygon') return [geometry.coordinates[0]];
+    if (geometry.type === 'MultiPolygon') return geometry.coordinates.map(p => p[0]);
+    return [];
+}
+
+let stats = { total: 0, avecToit: 0, pentes: [], lidar: 0, axes: 0, corps: 0 };
+const meshes = [];
+// Suivis à part : ce sont les seules faces sur lesquelles on plaque la photo
+// aérienne, une projection nadir n'ayant pas de sens sur une façade verticale.
+const meshesToits = [];
+
+// Cibles du raycaster de survol, recalculées à chaque reconstruction plutôt
+// qu'à chaque mouvement de souris : sur une scène dense, concaténer deux
+// tableaux de plusieurs centaines d'entrées à chaque pointermove crée un
+// déchet permanent que le ramasse-miettes finit par faire payer en saccades.
+const ciblesSurvol = [];
+// Déclaré ici, et non dans le bloc végétation plus bas : majCiblesSurvol()
+// le consulte dès le démarrage, avant que ce bloc ne soit évalué.
+const groupeVegetation = new THREE.Group();
+groupeVegetation.visible = false;
+scene.add(groupeVegetation);
+/**
+ * Reconstruit les cibles du raycaster : volumes bâtis et végétation.
+ *
+ * Appelée après chaque reconstruction.
+ */
+function majCiblesSurvol() {
+    ciblesSurvol.length = 0;
+    // Les volumes restent toujours là : ils ne répondent pas au survol, mais ils
+    // font écran aux repères qui passent derrière eux.
+    ciblesSurvol.push(...meshes);
+    // Un calque masqué ne doit pas répondre au survol : three.js ne teste pas la
+    // visibilité au lancer de rayon, une pastille cachée resterait sensible.
+    // Même règle pour la végétation : masquée, elle ne doit pas rester sensible.
+    // Les troncs sont exclus : ils ne portent pas d'infobulle.
+    if (groupeVegetation.visible) ciblesSurvol.push(
+        ...groupeVegetation.children.filter(o => o.userData.vegetation));
+}
+
+/** Point dans polygone par lancer de rayon. Coordonnées en degrés (lon, lat). */
+function pointDansAnneau(lon, lat, anneau) {
+    let dedans = false;
+    for (let i = 0, j = anneau.length - 1; i < anneau.length; j = i++) {
+        const [xi, yi] = anneau[i], [xj, yj] = anneau[j];
+        if ((yi > lat) !== (yj > lat) &&
+            lon < (xj - xi) * (lat - yi) / (yj - yi) + xi) dedans = !dedans;
+    }
+    return dedans;
+}
+
+/**
+ * Lien Street View vers le bâtiment sélectionné.
+ *
+ * Le point de vue est le centre de l'emprise : Google retient le panorama le
+ * plus proche, c'est-à-dire celui de la rue qui dessert le bâtiment. On utilise
+ * le format documenté (Maps URLs API) et non l'ancien `cbll=`, jamais spécifié.
+ *
+ * Le dernier sommet d'un anneau GeoJSON répète le premier : l'inclure
+ * décalerait le centre vers ce point.
+ */
+function lienStreetView(anneau) {
+    if (!anneau || anneau.length < 3) return '';
+    const [lon, lat] = centreAnneau(anneau);
+    const url = 'https://www.google.com/maps/@?api=1&amp;map_action=pano&amp;viewpoint='
+        + lat.toFixed(6) + ',' + lon.toFixed(6);
+    return '<a class="lien-ext" href="' + url + '" target="_blank" rel="noopener noreferrer">'
+        + 'Voir en Street View ↗</a>';
+}
+
+// --- Orientation Street View --------------------------------------------
+// Google pose la vue sur le panorama le plus proche du point demandé, avec un
+// cap par défaut quelconque. Pour regarder le bâtiment, on se place sur la
+// route la plus proche (BD TOPO troncon_de_route) et on vise son centre depuis
+// là : le panorama retenu est alors celui de cette rue, et le cap est juste.
+// Les routes ne sont chargées qu'au premier clic sur un bâtiment.
+let segmentsRoute = null;      // [[x0,y0,x1,y1], ...] en mètres locaux
+let chargementRoutes = null;
+let jetonFiche = 0;            // invalide une orientation arrivée après un autre clic
+
+function chargerRoutes() {
+    if (chargementRoutes) return chargementRoutes;
+    chargementRoutes = chargementArtefact
+        .then(a => (a && a.routes) || { features: [] })
+        .then(json => {
+            const segs = [];
+            for (const f of json.features || []) {
+                const g = f.geometry || {};
+                const lignes = g.type === 'LineString' ? [g.coordinates]
+                             : g.type === 'MultiLineString' ? g.coordinates : [];
+                for (const ligne of lignes) {
+                    for (let i = 1; i < ligne.length; i++) {
+                        const [ax, ay] = toLocal(ligne[i - 1][0], ligne[i - 1][1]);
+                        const [bx, by] = toLocal(ligne[i][0], ligne[i][1]);
+                        segs.push([ax, ay, bx, by]);
+                    }
+                }
+            }
+            segmentsRoute = segs;
+            return segs;
+        })
+        .catch(() => { segmentsRoute = []; return []; });
+    return chargementRoutes;
+}
+
+/** Point de route le plus proche d'un point local, ou null sans route. */
+function pointRouteLePlusProche(px, py) {
+    let meilleur = null, dMin = Infinity;
+    for (const [ax, ay, bx, by] of segmentsRoute || []) {
+        const dx = bx - ax, dy = by - ay;
+        const l2 = dx * dx + dy * dy;
+        const t = l2 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / l2)) : 0;
+        const qx = ax + t * dx, qy = ay + t * dy;
+        const d = Math.hypot(px - qx, py - qy);
+        if (d < dMin) { dMin = d; meilleur = { x: qx, y: qy, dist: d }; }
+    }
+    return meilleur;
+}
+
+/**
+ * Centroïde de surface d'un anneau lon/lat (formule des lacets).
+ *
+ * Pas la moyenne des sommets : la BD TOPO densifie les façades détaillées, et
+ * la moyenne dérive vers elles de plusieurs mètres. Depuis une rue à 12 m,
+ * quelques mètres d'écart font des dizaines de degrés de cap (mesuré : 29°).
+ * Repli sur la moyenne si l'aire est nulle (anneau dégénéré).
+ */
+function centreAnneau(anneau) {
+    const pts = anneau.length > 1
+        && anneau[0][0] === anneau[anneau.length - 1][0]
+        && anneau[0][1] === anneau[anneau.length - 1][1] ? anneau.slice(0, -1) : anneau;
+    // En mètres locaux, sinon la formule mélange des degrés de longitude et
+    // de latitude qui n'ont pas la même longueur.
+    const loc = pts.map(([lo, la]) => toLocal(lo, la));
+    let aire = 0, cx = 0, cy = 0;
+    for (let i = 0, j = loc.length - 1; i < loc.length; j = i++) {
+        const f = loc[j][0] * loc[i][1] - loc[i][0] * loc[j][1];
+        aire += f; cx += (loc[j][0] + loc[i][0]) * f; cy += (loc[j][1] + loc[i][1]) * f;
+    }
+    if (Math.abs(aire) < 1e-6) {
+        let lon = 0, lat = 0;
+        for (const [lo, la] of pts) { lon += lo; lat += la; }
+        return [lon / pts.length, lat / pts.length];
+    }
+    cx /= 3 * aire; cy /= 3 * aire;
+    return [CENTER[0] + cx / M_PAR_DEGRE_LON, CENTER[1] + cy / M_PAR_DEGRE_LAT];
+}
+
+/** Remplace le lien centroïde de la fiche par un lien posé sur la rue, orienté. */
+async function orienterStreetView(anneau, jeton) {
+    if (!anneau || anneau.length < 3) return;
+    await chargerRoutes();
+    if (jeton !== jetonFiche) return;          // l'utilisateur a cliqué ailleurs
+    const lien = document.querySelector('#fiche-batiment .lien-ext');
+    if (!lien) return;
+    const [lon, lat] = centreAnneau(anneau);
+    const [cx, cy] = toLocal(lon, lat);
+    const q = pointRouteLePlusProche(cx, cy);
+    // Au-delà, la « rue la plus proche » n'est plus celle du bâtiment : on garde
+    // le centroïde, Google se débrouille.
+    if (!q || q.dist > 120) return;
+    const cap = (Math.atan2(cx - q.x, cy - q.y) * 180 / Math.PI + 360) % 360;
+    const lonR = CENTER[0] + q.x / M_PAR_DEGRE_LON;
+    const latR = CENTER[1] + q.y / M_PAR_DEGRE_LAT;
+    lien.href = 'https://www.google.com/maps/@?api=1&map_action=pano&viewpoint='
+        + latR.toFixed(6) + ',' + lonR.toFixed(6) + '&heading=' + cap.toFixed(0);
+    lien.textContent = 'Voir en Street View (depuis la rue, orienté) ↗';
+}
+
+// Champs BD TOPO affichés dans la fiche, dans cet ordre. Les absents sont dits
+// « non renseigné » plutôt que masqués : une fiche qui rétrécit silencieusement
+// laisse croire à une donnée perdue en route.
+const LIBELLES_BDTOPO = [
+    ['usage_1', 'Usage', ''],
+    ['usage_2', 'Usage secondaire', ''],
+    ['nature', 'Nature', ''],
+    ['hauteur', 'Hauteur déclarée', ' m'],
+    ['nombre_d_etages', 'Étages', ''],
+    ['nombre_de_logements', 'Logements', ''],
+    ['date_d_apparition', 'Apparu le', ''],
+    ['materiaux_des_murs', 'Matériaux des murs (code)', ''],
+    ['materiaux_de_la_toiture', 'Matériaux de toiture (code)', ''],
+];
+
+/** Remplit la fiche latérale d'un bâtiment, avec ses mesures LiDAR. */
+function afficherFicheBatiment(ud) {
+    const jeton = ++jetonFiche;
+    orienterStreetView(ud.anneau, jeton);
+    const p = ud.p || {};
+    const lignes = LIBELLES_BDTOPO.map(([cle, libelle, unite]) => {
+        const v = p[cle];
+        const texte = (v === null || v === undefined || v === '')
+            ? '<i style="opacity:.55">non renseigné</i>'
+            : (typeof v === 'number' ? (Math.round(v * 100) / 100) : v) + unite;
+        return '<div class="stat"><span>' + libelle + '</span><b>' + texte + '</b></div>';
+    }).join('');
+    const mesure = ud.lidar
+        ? '<div class="stat"><span>gouttière LiDAR</span><b>' + ud.lidar.gouttiere.toFixed(1) + ' m</b></div>'
+          + '<div class="stat"><span>faîtage LiDAR</span><b>' + ud.lidar.faitage.toFixed(1) + ' m</b></div>'
+        : (ud.inconnue
+            ? '<div class="note">Hauteur inconnue : bâtiment sous les arbres, le LiDAR y lit la canopée.</div>'
+            : '<div class="note">Pas de mesure LiDAR fiable : hauteurs de la BD TOPO.</div>');
+    document.getElementById('fiche-batiment').innerHTML = lignes + mesure
+        + '<div class="note">BD TOPO <code>' + (p.cleabs || '—') + '</code></div>'
+        + lienStreetView(ud.anneau);
+}
+
+function construire(features, toitsEnPente) {
+    groupeBatiments.clear();
+    meshes.length = 0;
+    meshesToits.length = 0;
+    stats = { total: 0, avecToit: 0, pentes: [], lidar: 0, axes: 0, corps: 0, inconnus: 0 };
+
+    for (const f of features) {
+        const p = f.properties || {};
+        const sol0 = p.altitude_minimale_sol;
+        const hauteur = p.hauteur;
+        // Le LiDAR est la référence quand sa mesure est fiable ; la BD TOPO
+        // prend le relais sinon. Pour la FORME du toit il n'y a pas de choix :
+        // la BD TOPO ne fournit que deux altitudes par emprise, jamais un
+        // faîtage ni un pan — le toit à deux pans sur le rectangle englobant
+        // était notre invention, fausse sur 63 % des emprises de plus de
+        // 120 m². Pour les hauteurs, ses valeurs sont bruitées dans les deux
+        // sens (0,9 m annoncés pour 3,7 mesurés ; 3,5 pour 0,7).
+        // `fiable` est posé côté serveur : faux quand le haut du profil n'est
+        // pas un toit (arbre qui surplombe, écart p85–p95 > 2 m). Les altitudes
+        // BD TOPO sont absolues, les hauteurs LiDAR relatives au sol : les deux
+        // chemins restent séparés.
+        const bdGout = p.altitude_minimale_toit, bdFait = p.altitude_maximale_toit;
+        const mesure = TOITS[p.cleabs] || null;
+        const lidar = mesure && mesure.fiable !== false ? mesure : null;
+        const gout = lidar ? lidar.gouttiere : bdGout;
+        const fait = lidar ? lidar.faitage : bdFait;
+        // Sous les arbres, ni le LiDAR (il lit la canopée) ni la BD TOPO (ses
+        // altitudes viennent d'un MNS contaminé par les mêmes arbres) ne sont
+        // crédibles : le serveur le dit (`hauteur_inconnue`), on ne dessine
+        // qu'un volume de repli, sans toit, et l'infobulle l'explique.
+        const inconnue = !!(mesure && mesure.hauteur_inconnue);
+
+        for (const anneau of anneauxDe(f.geometry)) {
+            if (!anneau || anneau.length < 4) continue;
+            stats.total++;
+
+            if (inconnue) {
+                stats.inconnus++;
+                const etages = p.nombre_d_etages > 0 ? p.nombre_d_etages : 1;
+                const hRepli = HAUTEUR_PAR_ETAGE * etages;
+                const geo = new THREE.ExtrudeGeometry(anneauVersShape(anneau), { depth: hRepli, bevelEnabled: false });
+                geo.rotateX(-Math.PI / 2);
+                const mur = new THREE.Mesh(geo, MAT_INCONNU);
+                mur.castShadow = false; mur.receiveShadow = true;
+                mur.userData = { p, denivele: 0, hMur: hRepli, anneau, lidar: null, inconnue: mesure };
+                groupeBatiments.add(mur);
+                meshes.push(mur);
+                continue;
+            }
+
+            const aDesAltitudes = lidar ? true : (sol0 != null && gout != null && fait != null);
+            const denivele = aDesAltitudes ? Math.max(fait - gout, 0) : 0;
+            const pente = toitsEnPente && aDesAltitudes && denivele > 0.5;
+            if (aDesAltitudes && denivele > 0.5) { stats.avecToit++; stats.pentes.push(denivele); }
+            if (lidar) stats.lidar++;
+
+            // Hauteur des murs : gouttière LiDAR directement, sinon gouttière
+            // moins sol BD TOPO ; sans rien, la hauteur unique — le cas MapLibre.
+            const hMur = pente ? Math.max(lidar ? gout : gout - sol0, 0.5)
+                               : (lidar ? Math.max(gout, 0.5)
+                                        : (hauteur != null && hauteur > 0 ? hauteur : 6));
+
+            // L'emprise est conservée : c'est elle, et non un point, qui sert à
+            // reposer le bâtiment. Le placement vertical lui-même est délégué à
+            // rebaserBatiments(), appelé en fin de construction — une seule
+            // écriture de cette règle, partagée avec le curseur d'exagération.
+            const forme = anneauVersShape(anneau);
+            const geo = new THREE.ExtrudeGeometry(forme, { depth: hMur, bevelEnabled: false });
+            geo.rotateX(-Math.PI / 2);   // le plan XY de la Shape devient le sol
+            const mur = new THREE.Mesh(geo, materiauMurs(anneau));
+            mur.castShadow = true; mur.receiveShadow = true;
+            mur.userData = { p, denivele, hMur, anneau, lidar };
+            groupeBatiments.add(mur);
+            meshes.push(mur);
+
+            // Plusieurs faîtages mesurés (maison en ailes) : un toit par corps,
+            // chacun sur son axe, en pyramide s'il n'a pas de faîtage net. Les
+            // murs restent l'extrusion de l'emprise entière, à la gouttière la
+            // plus basse. Les boîtes de corps voisins se recouvrent légèrement
+            // en leur jonction : deux pans inclinés qui se coupent, sans
+            // scintillement, et une noue plutôt qu'un trou.
+            if (toitsEnPente && lidar && lidar.corps && lidar.corps.length >= 2) {
+                // Les murs posés ci-dessus sont remplacés par ceux des corps, à
+                // la gouttière la plus basse : sans ce retrait, deux extrusions
+                // se superposaient, et le bâtiment comptait deux fois.
+                const provisoire = meshes.pop();
+                groupeBatiments.remove(provisoire);
+                provisoire.geometry.dispose();
+                if (aDesAltitudes && denivele > 0.5) stats.pentes.pop(); else stats.avecToit++;
+                stats.corps += lidar.corps.length;
+                stats.pentes.push(Math.max(...lidar.corps.map(c => c.denivele)));
+                const hMurs = Math.max(Math.min(...lidar.corps.map(c => c.gouttiere)), 0.5);
+                const forme = anneauVersShape(anneau);
+                const geo = new THREE.ExtrudeGeometry(forme, { depth: hMurs, bevelEnabled: false });
+                geo.rotateX(-Math.PI / 2);
+                const mur = new THREE.Mesh(geo, materiauMurs(anneau));
+                mur.castShadow = true; mur.receiveShadow = true;
+                mur.userData = { p, denivele: stats.pentes[stats.pentes.length - 1], hMur: hMurs, anneau, lidar };
+                groupeBatiments.add(mur);
+                meshes.push(mur);
+                for (const c of lidar.corps) {
+                    const rect = rectangleDeCorps(c);
+                    const g = Math.max(c.gouttiere, 0.5), f = Math.max(c.faitage, g + 0.3);
+                    const geoToit = c.axe_deg != null
+                        ? geometrieToit(rect, g, f, true) : geometriePyramide(rect, g, f);
+                    const toit = new THREE.Mesh(geoToit, MAT_TOIT_VOISIN);
+                    toit.castShadow = true; toit.receiveShadow = true;
+                    toit.userData = mur.userData;
+                    groupeBatiments.add(toit);
+                    meshes.push(toit);
+                    meshesToits.push(toit);
+                }
+                continue;
+            }
+
+            if (pente) {
+                const pts = anneau.map(([lo, la]) => toLocal(lo, la));
+                // Axe du faîtage : celui mesuré au LiDAR s'il est net, sinon le
+                // grand côté de l'emprise. axe_deg est compté depuis l'est vers
+                // le nord, comme l'angle de rectangleMin() sur ces mêmes points.
+                const axeLidar = lidar && lidar.axe_deg != null ? lidar.axe_deg * Math.PI / 180 : null;
+                const rect = axeLidar !== null ? rectangleSelonAxe(pts, axeLidar) : rectangleMin(pts);
+                if (rect) {
+                    if (axeLidar !== null) stats.axes++;
+                    const toit = new THREE.Mesh(
+                        geometrieToit(rect, hMur, hMur + denivele, axeLidar !== null ? true : null),
+                        MAT_TOIT_VOISIN);
+                    toit.castShadow = true; toit.receiveShadow = true;
+                    toit.userData = mur.userData;
+                    groupeBatiments.add(toit);
+                    meshes.push(toit);
+                    meshesToits.push(toit);
+                }
+            }
+        }
+    }
+
+    document.getElementById('s-total').textContent = stats.total;
+    document.getElementById('s-roof').textContent =
+        stats.total ? `${stats.avecToit} (${Math.round(100*stats.avecToit/stats.total)} %)` : '—';
+    document.getElementById('s-lidar').textContent =
+        stats.total ? `${stats.lidar} (${Math.round(100*stats.lidar/stats.total)} %)`
+                      + (stats.axes ? `, faîtage orienté sur ${stats.axes}` : '')
+                      + (stats.corps ? `, ${stats.corps} corps de toit` : '')
+                      + (stats.inconnus ? `, ${stats.inconnus} sous les arbres (hauteur inconnue)` : '')
+                      + (TOITS_SOURCE === 'mns_mnt' ? ' · photogrammétrie' : '') : '—';
+    const s = stats.pentes.slice().sort((a, b) => a - b);
+    document.getElementById('s-slope').textContent =
+        s.length ? `${s[Math.floor(s.length/2)].toFixed(1)} m` : '—';
+
+    rebaserBatiments();
+    // Le fond peut être arrivé avant les bâtiments, ou l'inverse : on replaque
+    // à chaque reconstruction.
+    appliquerTextureToits();
+    majCiblesSurvol();
+}
+
+/**
+ * Murs du bâtiment qui contient le point visé : en orange, pour qu'on sache
+ * d'un coup d'œil de quel bâtiment parlent l'ombrage et le masque solaire.
+ */
+function materiauMurs(anneau) {
+    return pointDansAnneau(CENTER[0], CENTER[1], anneau) ? MAT_CIBLE : MAT_VOISIN;
+}
+
+// --- Chargement des bâtiments -------------------------------------------
+let features = [];
+const note = document.getElementById('note');
+
+// Les toits LiDAR partent en même temps que les bâtiments et sont attendus au
+// plus 8 s : la première lecture d'une emprise à 0,5 m prend ~2 s côté serveur
+// (puis cache), et une panne de l'IGN sur l'altimétrie ne doit pas priver la
+// scène des bâtiments.
+/**
+ * Bâtiments et toitures, depuis l'artefact s'il existe, des appels IGN sinon.
+ *
+ * Le repli garde la course à 8 s sur les toitures : une première lecture d'une
+ * emprise à 0,5 m prend une dizaine de secondes côté IGN, et une panne de
+ * l'altimétrie ne doit pas priver la scène de ses bâtiments.
+ */
+async function chargerScene() {
+    await chargementArtefact;
+    if (!ARTEFACT) throw new Error(ERREUR_SCENE || 'scène indisponible');
+    return [ARTEFACT.batiments, ARTEFACT.toits];
+}
+
+chargerScene()
+    .then(([json, toits]) => {
+        if (toits && toits.toits) { TOITS = toits.toits; TOITS_SOURCE = toits.source; }
+        features = json.features || [];
+        construire(features, true);
+        note.textContent = stats.total
+            ? `${stats.avecToit} bâtiment(s) sur ${stats.total} ont des altitudes de toiture exploitables.`
+            : "Aucun bâtiment BD TOPO sur cette emprise.";
+        cadrer();
+        // La végétation ne peut être classée qu'une fois les emprises bâties
+        // connues : c'est par elles qu'on écarte les toitures du sursol. D'où
+        // ce chaînage plutôt qu'un chargement en parallèle.
+        activerVegetation();
+    })
+    .catch(err => {
+        note.textContent = 'Chargement impossible : ' + err.message;
+        // Sans bâtiments, tout le sursol basculerait en « masse indéterminée »,
+        // toitures comprises : mieux vaut ne rien afficher.
+        document.getElementById('v-note').textContent =
+            "Végétation non chargée : les emprises bâties manquent pour "
+            + "distinguer les toitures du sursol.";
+        document.getElementById('sec-veg').hidden = false;
+    });
+
+// Au-delà de cette distance du point, « Ma position » propose de recentrer :
+// la scène ne couvre que quelques centaines de mètres autour de lui.
+const RAYON_CADRAGE = 500;
+
+function cadrer() {
+    const centre = new THREE.Vector3(0, ySol(CENTER[0], CENTER[1]), 0);
+    controls.target.copy(centre);
+    camera.position.set(centre.x + 110, centre.y + 90, centre.z + 110);
+    controls.update();
+}
+
+// --- Fond cartographique -------------------------------------------------
+// Les tuiles sont assemblées dans un canvas unique, qui sert à la fois de sol
+// et de texture pour les toits. Aucun proxy n'est nécessaire : data.geopf.fr
+// et tile.openstreetmap.org renvoient tous deux `access-control-allow-origin: *`,
+// ce qu'exige WebGL pour une texture cross-origin (vérifié). Il faut en
+// revanche crossOrigin='anonymous' sur les images, sinon le canvas serait
+// marqué « souillé » et la texture refusée malgré ces en-têtes.
+const TUILE_ZOOM = 18;
+const TUILE_DELTA = 0.0016;      // même emprise que les bâtiments
+
+const FONDS = {
+    ortho: (z, x, y) =>
+        'https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0' +
+        '&LAYER=ORTHOIMAGERY.ORTHOPHOTOS&STYLE=normal&FORMAT=image/jpeg' +
+        `&TILEMATRIXSET=PM&TILEMATRIX=${z}&TILEROW=${y}&TILECOL=${x}`,
+    osm: (z, x, y) => `https://tile.openstreetmap.org/${z}/${x}/${y}.png`,
+};
+
+const groupeFond = new THREE.Group();
+scene.add(groupeFond);
+
+// TILEMATRIXSET=PM de l'IGN suit le même découpage que les tuiles XYZ d'OSM,
+// les deux fonds partagent donc ces conversions.
+const versTuile = (lon, lat, z) => {
+    const n = 2 ** z;
+    const rad = lat * Math.PI / 180;
+    return [
+        Math.floor((lon + 180) / 360 * n),
+        Math.floor((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2 * n),
+    ];
+};
+const versLonLat = (x, y, z) => {
+    const n = 2 ** z;
+    return [
+        x / n * 360 - 180,
+        Math.atan(Math.sinh(Math.PI * (1 - 2 * y / n))) * 180 / Math.PI,
+    ];
+};
+
+// Texture composite et emprise correspondante, en coordonnées locales.
+let fondTexture = null;
+let fondBornes = null;
+
+/**
+ * Drape la mosaïque publiée sur la scène. Renvoie false si elle manque, pour
+ * que l'appelant reprenne le chemin des tuiles.
+ *
+ * Son emprise est exactement celle de l'artefact, donc celle du maillage du
+ * terrain : les UV s'y appliquent sans marge. Le composite de tuiles, lui,
+ * débordait jusqu'à une tuile entière puisqu'il s'alignait sur leur découpage.
+ */
+async function poserMosaique() {
+    const img = await chargerImage(URL_VUE3D_ORTHO, false).catch(() => null);
+    if (!img) return false;
+    const b = ARTEFACT.bbox;
+    const [ax, ay] = toLocal(b[0], b[3]);   // ouest, nord
+    const [bx, by] = toLocal(b[2], b[1]);   // est, sud
+    fondBornes = { minX: Math.min(ax, bx), maxX: Math.max(ax, bx),
+                   minZ: Math.min(-ay, -by), maxZ: Math.max(-ay, -by) };
+    fondTexture = new THREE.Texture(img);
+    fondTexture.colorSpace = THREE.SRGBColorSpace;
+    fondTexture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    fondTexture.needsUpdate = true;
+    poserPlanDeFond();
+    appliquerTextureToits();
+    appliquerTextureTerrain();
+    return true;
+}
+
+/**
+ * Pose le plan du fond sous la scène, sauf si le relief le porte déjà.
+ *
+ * Avec le relief, l'ortho est drapée sur le maillage du terrain : un plan plat
+ * par-dessus z-fighterait avec lui.
+ */
+function poserPlanDeFond() {
+    if (relief && terrain) return;
+    const plan = new THREE.Mesh(
+        new THREE.PlaneGeometry(fondBornes.maxX - fondBornes.minX,
+                                fondBornes.maxZ - fondBornes.minZ),
+        new THREE.MeshStandardMaterial({ map: fondTexture, roughness: 1, metalness: 0 }));
+    plan.rotation.x = -Math.PI / 2;   // le +Y du plan devient le nord
+    plan.position.set((fondBornes.minX + fondBornes.maxX) / 2, 0.05,
+                      (fondBornes.minZ + fondBornes.maxZ) / 2);
+    plan.receiveShadow = true;
+    groupeFond.add(plan);
+}
+
+/**
+ * `anonyme` gouverne crossOrigin : nécessaire pour les tuiles d'un autre
+ * domaine, dont on lit le canvas, mais à éviter pour nos propres URL, qui
+ * portent le cookie de session.
+ */
+function chargerImage(url, anonyme = true) {
+    return new Promise((ok, ko) => {
+        const img = new Image();
+        if (anonyme) img.crossOrigin = 'anonymous';
+        img.onload = () => ok(img);
+        img.onerror = ko;
+        img.src = url;
+    });
+}
+
+async function poserFond(nom) {
+    groupeFond.clear();
+    fondTexture = null;
+    fondBornes = null;
+    if (!nom) { appliquerTextureToits(); appliquerTextureTerrain(); return; }
+
+    // Orthophoto : une seule image publiée avec l'artefact, quand il existe.
+    // Les seize tuiles WMTS restent le chemin de secours — et le seul pour le
+    // fond OSM, qui n'est pas publié.
+    if (nom === 'ortho' && URL_VUE3D_ORTHO) {
+        await chargementArtefact;
+        if (ARTEFACT && await poserMosaique()) return;
+    }
+
+    const url = FONDS[nom];
+    const [x0, y0] = versTuile(CENTER[0] - TUILE_DELTA, CENTER[1] + TUILE_DELTA, TUILE_ZOOM);
+    const [x1, y1] = versTuile(CENTER[0] + TUILE_DELTA, CENTER[1] - TUILE_DELTA, TUILE_ZOOM);
+    const nx = x1 - x0 + 1, ny = y1 - y0 + 1;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = nx * 256;
+    canvas.height = ny * 256;
+    const ctx = canvas.getContext('2d');
+
+    const chargements = [];
+    for (let x = x0; x <= x1; x++) {
+        for (let y = y0; y <= y1; y++) {
+            chargements.push(
+                chargerImage(url(TUILE_ZOOM, x, y))
+                    .then(img => ctx.drawImage(img, (x - x0) * 256, (y - y0) * 256, 256, 256))
+                    .catch(() => { /* tuile absente : reste transparente */ }));
+        }
+    }
+    await Promise.all(chargements);
+
+    // Emprise du composite, coin nord-ouest de la première tuile au coin
+    // sud-est de la dernière.
+    const [lonO, latN] = versLonLat(x0, y0, TUILE_ZOOM);
+    const [lonE, latS] = versLonLat(x1 + 1, y1 + 1, TUILE_ZOOM);
+    const [ax, ay] = toLocal(lonO, latN);
+    const [bx, by] = toLocal(lonE, latS);
+    fondBornes = { minX: Math.min(ax, bx), maxX: Math.max(ax, bx),
+                   minZ: Math.min(-ay, -by), maxZ: Math.max(-ay, -by) };
+
+    // Seule l'orthophoto a un sens pour lire la couleur du sol : un plan OSM
+    // est vert là où le cartographe l'a décidé, pas là où il y a des feuilles.
+
+    fondTexture = new THREE.CanvasTexture(canvas);
+    fondTexture.colorSpace = THREE.SRGBColorSpace;
+    fondTexture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+
+    poserPlanDeFond();
+
+    appliquerTextureToits();
+    appliquerTextureTerrain();
+}
+
+/**
+ * Plaque la photo aérienne sur les toits.
+ *
+ * L'orthophoto est une vue nadir : elle montre déjà le toit vu du dessus, et
+ * une projection planaire depuis le zénith en est donc l'inverse exact. Les UV
+ * se déduisent directement de la position monde (x, z) ramenée dans l'emprise
+ * du composite — aucun dépliage à calculer.
+ *
+ * Volontairement limité aux toits : sur une façade verticale, la même
+ * projection étirerait le pixel nadir en traînée.
+ */
+function appliquerTextureToits() {
+    for (const toit of meshesToits) {
+        if (!fondTexture || !fondBornes) {
+            toit.material = MAT_TOIT_VOISIN;
+            continue;
+        }
+        const geo = toit.geometry;
+        const pos = geo.attributes.position;
+        const uv = new Float32Array(pos.count * 2);
+        for (let i = 0; i < pos.count; i++) {
+            uv[i * 2] = (pos.getX(i) - fondBornes.minX) / (fondBornes.maxX - fondBornes.minX);
+            // flipY par défaut : v = 1 correspond au haut de l'image, donc au nord.
+            uv[i * 2 + 1] = 1 - (pos.getZ(i) - fondBornes.minZ) / (fondBornes.maxZ - fondBornes.minZ);
+        }
+        geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+        toit.material = new THREE.MeshStandardMaterial({
+            map: fondTexture, roughness: 0.9, metalness: 0 });
+    }
+}
+
+let fondActif = 'ortho';
+poserFond(fondActif);
+
+function basculerFond(nom) {
+    fondActif = (fondActif === nom) ? null : nom;
+    poserFond(fondActif);
+    document.getElementById('t-fond').classList.toggle('on', fondActif === 'ortho');
+    document.getElementById('t-osm').classList.toggle('on', fondActif === 'osm');
+    grille.visible = !fondActif;   // le quadrillage n'a de sens que sans fond
+}
+document.getElementById('t-fond').addEventListener('click', () => basculerFond('ortho'));
+document.getElementById('t-osm').addEventListener('click', () => basculerFond('osm'));
+
+// --- Relief --------------------------------------------------------------
+// Deux sources, dans cet ordre.
+//
+// 1. RGE ALTI (IGN, Géoplateforme). Une requête WMS rend directement une
+//    grille de flottants : ni tuiles à assembler, ni image à décoder, ni clé
+//    d'API. C'est un modèle de TERRAIN, et il tient l'erreur sous le mètre
+//    quel que soit le relief.
+// 2. AWS Terrain Tiles, en repli mondial. En Europe la source est EU-DEM,
+//    maillée à 25 m, et c'est un modèle de SURFACE : il lit la végétation et
+//    les toitures, d'où un biais positif qui croît avec la pente.
+//
+// Mesuré contre les altitude_minimale_sol de la BD TOPO (photogrammétrie IGN),
+// erreur absolue médiane sur 246 à 999 emprises par site :
+//
+//                              RGE ALTI     Terrarium
+//   Gonfreville (plat)           0,61 m   1,21 m (biais +0,37)
+//   Roches-Roussillon (pente)    0,54 m   1,47 m (biais +0,75)
+//   Lacq                         0,72 m   2,18 m (biais +2,18)
+const RGE_URL = 'https://data.geopf.fr/wms-r/wms';
+const RGE_NODATA = -99999;
+const TERRAIN_ZOOM = 15;          // maximum publié ; au-delà, 404
+const TERRAIN_URL = (z, x, y) =>
+    `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`;
+
+const MAT_TERRAIN = new THREE.MeshStandardMaterial({ color: 0x39424c, roughness: 1 });
+
+// Emprise du relief : la même que celle de l'ortho, pour que la texture
+// recouvre entièrement le maillage et que les UV restent dans [0,1].
+const BORNES = {
+    o: CENTER[0] - TUILE_DELTA, e: CENTER[0] + TUILE_DELTA,
+    s: CENTER[1] - TUILE_DELTA, n: CENTER[1] + TUILE_DELTA,
+};
+
+// Pixel global à 256 px par tuile ; versTuile() en est le quotient entier.
+const versPixel = (lon, lat, z) => {
+    const n = 2 ** z * 256;
+    const rad = lat * Math.PI / 180;
+    return [
+        (lon + 180) / 360 * n,
+        (1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2 * n,
+    ];
+};
+
+/** Interpolation bilinéaire sur une grille régulière, ligne 0 au nord. */
+function echantillonneur(valeurs, largeur, hauteur, bornes) {
+    return function (lon, lat) {
+        const fx = (lon - bornes.o) / (bornes.e - bornes.o) * (largeur - 1);
+        const fy = (bornes.n - lat) / (bornes.n - bornes.s) * (hauteur - 1);
+        if (!(fx >= 0 && fy >= 0 && fx <= largeur - 1 && fy <= hauteur - 1)) return null;
+        const x0 = Math.floor(fx), y0 = Math.floor(fy);
+        const x1 = Math.min(x0 + 1, largeur - 1), y1 = Math.min(y0 + 1, hauteur - 1);
+        const ax = fx - x0, ay = fy - y0;
+        const v = (x, y) => valeurs[y * largeur + x];
+        return (v(x0, y0) * (1 - ax) + v(x1, y0) * ax) * (1 - ay)
+             + (v(x0, y1) * (1 - ax) + v(x1, y1) * ax) * ay;
+    };
+}
+
+/** Remplace les trous (NaN) par la moyenne des valeurs connues. */
+function boucherTrous(valeurs) {
+    let somme = 0, connus = 0;
+    for (const v of valeurs) if (!Number.isNaN(v)) { somme += v; connus++; }
+    if (!connus) return 0;
+    const moyenne = somme / connus;
+    for (let i = 0; i < valeurs.length; i++) if (Number.isNaN(valeurs[i])) valeurs[i] = moyenne;
+    return valeurs.length - connus;
+}
+
+/**
+ * RGE ALTI par WMS, en BIL float32.
+ *
+ * Trois pièges, tous vérifiés contre le service :
+ *  - en WMS 1.3.0 avec EPSG:4326 la BBOX s'écrit lat,lon. Inversée, le service
+ *    répond 200 avec une grille entièrement nodata (ou pire, plausible) ;
+ *  - le corps est du float32 little-endian brut, première ligne au NORD ;
+ *  - hors couverture (étranger, Nouvelle-Calédonie) tout vaut -99999. Décodé
+ *    sans filtre, ça creuse un gouffre de cent kilomètres sous la scène.
+ */
+async function chargerRgeAlti() {
+    const [ax, ay] = toLocal(BORNES.o, BORNES.n);
+    const [bx, by] = toLocal(BORNES.e, BORNES.s);
+    // ~1 m par maille, ce que rend la source ; 1024 = 4 Mio, le plafond utile.
+    const taille = Math.min(1024, Math.max(256, Math.round(Math.abs(bx - ax))));
+
+    const url = `${RGE_URL}?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap`
+        + '&LAYERS=ELEVATION.ELEVATIONGRIDCOVERAGE.HIGHRES&STYLES=&CRS=EPSG:4326'
+        + '&FORMAT=image/x-bil;bits=32'
+        + `&WIDTH=${taille}&HEIGHT=${taille}`
+        + `&BBOX=${BORNES.s},${BORNES.o},${BORNES.n},${BORNES.e}`;
+
+    const reponse = await fetch(url);
+    const type = reponse.headers.get('content-type') || '';
+    // Une erreur WMS arrive en XML avec un code 200 : c'est le type qui tranche.
+    if (!reponse.ok || !type.startsWith('image/x-bil')) return null;
+
+    const grille = new Float32Array(await reponse.arrayBuffer());
+    if (grille.length !== taille * taille) return null;
+
+    let nodata = 0;
+    const valeurs = new Float64Array(grille.length);
+    for (let i = 0; i < grille.length; i++) {
+        if (grille[i] <= RGE_NODATA + 1) { valeurs[i] = NaN; nodata++; }
+        else valeurs[i] = grille[i];
+    }
+    // Au-delà de quelques pour cent de trous on est en bord de couverture :
+    // mieux vaut le repli mondial qu'un rapiéçage.
+    if (nodata / grille.length > 0.02) return null;
+    boucherTrous(valeurs);
+
+    return { nom: 'RGE ALTI (IGN)', precision: '1 m, modèle de terrain',
+             alt: echantillonneur(valeurs, taille, taille, BORNES) };
+}
+
+/**
+ * AWS Terrain Tiles, encodage terrarium.
+ *
+ * Une tuile absente laisse ses pixels à alpha 0 ; les décoder rendrait
+ * −32768 m. D'où le test d'alpha avant décodage, et le bouchage des trous.
+ */
+async function chargerTerrarium() {
+    const [tx0, ty0] = versTuile(BORNES.o, BORNES.n, TERRAIN_ZOOM);
+    const [tx1, ty1] = versTuile(BORNES.e, BORNES.s, TERRAIN_ZOOM);
+    const nx = tx1 - tx0 + 1, ny = ty1 - ty0 + 1;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = nx * 256;
+    canvas.height = ny * 256;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    // L'altitude est encodée dans les octets R/G/B : tout lissage interpolerait
+    // des octets encodés, ce qui n'a aucun sens. Dessin à l'échelle 1:1.
+    ctx.imageSmoothingEnabled = false;
+
+    let recues = 0;
+    await Promise.all(Array.from({ length: nx * ny }, (_, k) => {
+        const x = tx0 + (k % nx), y = ty0 + Math.floor(k / nx);
+        return chargerImage(TERRAIN_URL(TERRAIN_ZOOM, x, y))
+            .then(img => { ctx.drawImage(img, (x - tx0) * 256, (y - ty0) * 256); recues++; })
+            .catch(() => { /* tuile absente : alpha 0, donc trou */ });
+    }));
+    if (!recues) return null;
+
+    const W = canvas.width, H = canvas.height;
+    const px = ctx.getImageData(0, 0, W, H).data;
+    const valeurs = new Float64Array(W * H);
+    for (let i = 0; i < W * H; i++) {
+        const j = i * 4;
+        valeurs[i] = px[j + 3] === 0 ? NaN
+                   : (px[j] * 256 + px[j + 1] + px[j + 2] / 256) - 32768;
+    }
+    if (boucherTrous(valeurs) === valeurs.length) return null;
+
+    // Emprise réelle du composite, alignée sur les tuiles.
+    const [lonO, latN] = versLonLat(tx0, ty0, TERRAIN_ZOOM);
+    const [lonE, latS] = versLonLat(tx1 + 1, ty1 + 1, TERRAIN_ZOOM);
+    return { nom: 'AWS Terrain Tiles', precision: '25 m, modèle de surface',
+             alt: echantillonneur(valeurs, W, H, { o: lonO, e: lonE, s: latS, n: latN }) };
+}
+
+/** Drape l'ortho sur le terrain, par projection zénithale comme pour les toits. */
+function appliquerTextureTerrain() {
+    if (!terrain) return;
+    const geo = terrain.mesh.geometry;
+    if (!fondTexture || !fondBornes) { terrain.mesh.material = MAT_TERRAIN; return; }
+    const pos = geo.attributes.position;
+    const uv = new Float32Array(pos.count * 2);
+    for (let i = 0; i < pos.count; i++) {
+        uv[i * 2] = (pos.getX(i) - fondBornes.minX) / (fondBornes.maxX - fondBornes.minX);
+        uv[i * 2 + 1] = 1 - (pos.getZ(i) - fondBornes.minZ) / (fondBornes.maxZ - fondBornes.minZ);
+    }
+    geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    terrain.mesh.material = new THREE.MeshStandardMaterial({
+        map: fondTexture, roughness: 1, metalness: 0 });
+}
+
+/** Redéplace les vertex du terrain selon l'exagération courante. */
+function deplacerTerrain() {
+    const pos = terrain.mesh.geometry.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+        pos.setY(i, (terrain.hauteurs[i] - altitudeRef) * exagVert);
+    }
+    pos.needsUpdate = true;
+    terrain.mesh.geometry.computeVertexNormals();
+    terrain.mesh.geometry.computeBoundingSphere();
+}
+
+/**
+ * Repose chaque bâtiment sur son emprise. Aucune géométrie n'est retouchée.
+ *
+ * Seule la BASE suit l'exagération : le bâtiment reçoit l'élévation du sol
+ * telle qu'elle est rendue dans la scène, exagération comprise, mais garde sa
+ * hauteur réelle. Dilater les volumes eux-mêmes transformait les maisons en
+ * tours dès ×3.
+ */
+function rebaserBatiments() {
+    for (const o of groupeBatiments.children) {
+        if (o.userData.anneau) o.position.y = baseBatiment(o.userData.anneau);
+    }
+}
+
+/**
+ * Nouvelle exagération : tout se translate, rien ne se reconstruit.
+ *
+ * C'est ce qui rend le curseur utilisable — il émet un événement par cran de
+ * glissement, et reconstruire les volumes (ou recharger l'ortho) à chaque fois
+ * rendait la scène inutilisable.
+ */
+function appliquerExageration() {
+    if (terrain) deplacerTerrain();
+    // Le grand plan gris sert de fond au-delà de l'emprise : on le glisse sous
+    // le point le plus bas du terrain pour qu'il ne le traverse pas.
+    sol.position.y = (relief && terrain)
+        ? Math.min(0, (terrain.min - altitudeRef) * exagVert) - 0.5
+        : 0;
+    rebaserBatiments();
+    placerVegetation();
+    placerPosition();
+}
+
+/** Bascule du relief : le fond passe du plan plat au maillage, ou l'inverse. */
+function appliquerRelief() {
+    if (terrain) terrain.mesh.visible = relief;
+    appliquerExageration();
+    poserFond(fondActif);
+}
+
+/**
+ * Charge le relief après la scène, sans la bloquer : une panne des deux
+ * sources doit coûter le relief, pas la vue.
+ */
+/**
+ * Relief embarqué dans l'artefact : la même grille RGE ALTI que la vue
+ * téléchargeait, quantifiée au décimètre sur des entiers 16 bits.
+ *
+ * 263 Ko de flottants bruts à chaque ouverture contre 11 à 46 Ko une fois
+ * l'artefact compressé, et une requête de moins sur l'hôte de l'IGN, déjà
+ * chargé des tuiles.
+ */
+function reliefDeLArtefact() {
+    const r = ARTEFACT && ARTEFACT.relief;
+    if (!r || !r.altitudes) return null;
+    const brut = atob(r.altitudes);
+    const n = brut.length >> 1;
+    if (n !== r.width * r.height) return null;
+    const octets = new Uint8Array(brut.length);
+    for (let i = 0; i < brut.length; i++) octets[i] = brut.charCodeAt(i);
+    const entiers = new Int16Array(octets.buffer);
+    const valeurs = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+        // -32768 marque un trou, comme côté serveur.
+        valeurs[i] = entiers[i] === -32768 ? NaN : r.zero_m + entiers[i] * r.pas_m;
+    }
+    boucherTrous(valeurs);
+    const b = r.bbox;
+    return { nom: r.source || 'RGE ALTI (IGN)',
+             precision: r.precision || '1 m, modèle de terrain',
+             alt: echantillonneur(valeurs, r.width, r.height,
+                                  { o: b[0], s: b[1], e: b[2], n: b[3] }) };
+}
+
+async function chargerRelief() {
+    const noteT = document.getElementById('note-terrain');
+
+    await chargementArtefact;
+    let source = reliefDeLArtefact();
+    if (!source) {
+        try { source = await chargerRgeAlti(); }
+        catch (e) { console.warn('RGE ALTI indisponible :', e); }
+    }
+    if (!source) {
+        try { source = await chargerTerrarium(); }
+        catch (e) { console.warn('Terrain Tiles indisponible :', e); }
+    }
+    if (!source) {
+        noteT.textContent = "Relief indisponible : aucune source d'altitude n'a répondu.";
+        document.getElementById('s-src').textContent = 'aucune';
+        return;
+    }
+
+    // Zéro de la scène = altitude au centre de l'emprise, pour que le cadrage
+    // et les distances restent valables d'un site à 0 m comme à 900 m.
+    altitudeRef = source.alt(CENTER[0], CENTER[1]) ?? 0;
+
+    const [ax, ay] = toLocal(BORNES.o, BORNES.n);
+    const [bx, by] = toLocal(BORNES.e, BORNES.s);
+    const largeur = Math.abs(bx - ax), profondeur = Math.abs(by - ay);
+    // Un vertex tous les ~2 m, plafonné à 256 subdivisions.
+    const segX = Math.min(256, Math.max(16, Math.round(largeur / 2)));
+    const segZ = Math.min(256, Math.max(16, Math.round(profondeur / 2)));
+
+    const geo = new THREE.PlaneGeometry(largeur, profondeur, segX, segZ);
+    geo.rotateX(-Math.PI / 2);          // le +Y du plan devient le nord (-Z)
+    geo.translate((ax + bx) / 2, 0, (-ay + -by) / 2);
+
+    const pos = geo.attributes.position;
+    const hauteurs = new Float64Array(pos.count);
+    let min = Infinity, max = -Infinity;
+    for (let i = 0; i < pos.count; i++) {
+        const [lon, lat] = toLonLat(pos.getX(i), -pos.getZ(i));
+        const a = source.alt(lon, lat) ?? altitudeRef;
+        hauteurs[i] = a;
+        min = Math.min(min, a); max = Math.max(max, a);
+    }
+
+    const mesh = new THREE.Mesh(geo, MAT_TERRAIN);
+    mesh.receiveShadow = true;
+    // Le terrain projette aussi : c'est ce qui fait apparaître l'ombre d'un
+    // coteau sur le bâtiment visé quand le soleil rase, et sans quoi le curseur
+    // horaire ne montrerait que les ombres des bâtiments.
+    mesh.castShadow = true;
+    scene.add(mesh);
+    terrain = { alt: source.alt, min, max, mesh, hauteurs };
+
+    document.getElementById('s-src').textContent = source.nom;
+    document.getElementById('s-alt').textContent = `${altitudeRef.toFixed(0)} m`;
+    document.getElementById('s-amp').textContent = `${(max - min).toFixed(1)} m`;
+    noteT.textContent = `${source.precision}. Les bâtiments sont posés sur le point `
+        + `le plus bas du terrain sous leur emprise ; leurs hauteurs viennent de `
+        + `la BD TOPO, jamais d'une différence entre sources.`;
+
+    // Le relief arrive après les bâtiments : tout est replacé, et l'ortho
+    // redrapée sur le maillage au lieu du plan plat.
+    appliquerRelief();
+    cadrer();
+}
+chargerRelief();
+// --- Végétation et sursol (MNH LiDAR HD) ---------------------------------
+// La BD TOPO dit OÙ est la végétation mais jamais sa hauteur : `zone_de_vegetation`
+// n'expose que la nature et la géométrie. La hauteur vient du MNH LiDAR HD, une
+// grille de hauteurs au-dessus du sol. Le MNH ne distingue pas un arbre d'un mur :
+// on retire donc les emprises bâties, déjà chargées ici, et on garde le reste.
+//
+
+// --- Ma position (géolocalisation du navigateur) --------------------------
+// Utile sur place : on se voit dans la scène. Tant que le bouton est allumé, la
+// position suit (watchPosition) ; on ne se contente pas d'une lecture unique,
+// un relevé se fait en marchant.
+//
+// La scène reste centrée sur le point : bâtiments, orthophoto et végétation
+// ne sont chargés qu'à quelques centaines de mètres autour. Loin de là, le
+// repère est posé mais flotte sur un sol vide — le panneau le dit.
+
+const groupePosition = new THREE.Group();
+groupePosition.visible = false;
+scene.add(groupePosition);
+
+const BLEU_POSITION = 0x3b8beb;
+const moi = {
+    point: new THREE.Mesh(
+        new THREE.SphereGeometry(1.6, 24, 18),
+        new THREE.MeshStandardMaterial({ color: BLEU_POSITION, emissive: 0x0d3a73, roughness: 0.4 })),
+    tige: new THREE.Mesh(
+        new THREE.CylinderGeometry(0.14, 0.14, 12, 8),
+        new THREE.MeshStandardMaterial({ color: BLEU_POSITION, transparent: true, opacity: 0.55 })),
+    cercle: null,
+    lon: null, lat: null, precision: null, x: 0, y: 0,
+};
+moi.point.castShadow = true;
+groupePosition.add(moi.point, moi.tige);
+
+// `var` et non `const`, comme vegPrete : appliquerExageration() appelle
+// placerPosition(), et un appel survenant avant l'évaluation de ce bloc
+// lèverait une ReferenceError sur `moi` encore en zone morte.
+var positionPrete = false;
+
+/** Repose le repère sur le terrain ; appelée aussi quand l'exagération change. */
+function placerPosition() {
+    if (!positionPrete || moi.lon == null) return;
+    const sol = ySol(moi.lon, moi.lat);
+    moi.point.position.set(moi.x, sol + 12, -moi.y);   // le nord de la scène est -Z
+    moi.tige.position.set(moi.x, sol + 6, -moi.y);
+    if (moi.cercle) moi.cercle.position.set(moi.x, sol + 0.2, -moi.y);
+}
+
+function majPosition(coords) {
+    moi.lon = coords.longitude;
+    moi.lat = coords.latitude;
+    moi.precision = coords.accuracy;
+    [moi.x, moi.y] = toLocal(moi.lon, moi.lat);
+    positionPrete = true;
+
+    // Le cercle de précision change de rayon à chaque relevé : on le refait
+    // plutôt que de le mettre à l'échelle, une RingGeometry ne s'étire pas
+    // proprement (l'épaisseur de l'anneau suivrait le rayon).
+    if (moi.cercle) {
+        groupePosition.remove(moi.cercle);
+        moi.cercle.geometry.dispose();
+        moi.cercle = null;
+    }
+    if (moi.precision > 0) {
+        moi.cercle = new THREE.Mesh(
+            new THREE.RingGeometry(Math.max(moi.precision - 0.5, 0.1), moi.precision, 64),
+            new THREE.MeshBasicMaterial({ color: BLEU_POSITION, transparent: true,
+                                          opacity: 0.35, side: THREE.DoubleSide }));
+        moi.cercle.rotation.x = -Math.PI / 2;
+        groupePosition.add(moi.cercle);
+    }
+    placerPosition();
+
+    const dist = Math.hypot(moi.x, moi.y);
+    document.getElementById('m-prec').textContent = moi.precision
+        ? '± ' + Math.round(moi.precision) + ' m' : '—';
+    document.getElementById('m-dist').textContent = dist >= 1000
+        ? (dist / 1000).toFixed(1) + ' km' : Math.round(dist) + ' m';
+    const note = document.getElementById('m-note');
+    if (dist > RAYON_CADRAGE) {
+        // Toutes les couches dérivent du centre calculé côté serveur : le seul
+        // moyen de voir les environs est de recharger la page recentrée ici.
+        const u = new URL(location.href);
+        u.searchParams.set('lat', moi.lat.toFixed(6));
+        u.searchParams.set('lon', moi.lon.toFixed(6));
+        note.innerHTML = "Vous êtes loin du point : bâtiments, orthophoto et "
+            + "végétation ne sont chargés qu'autour de celui-ci, le repère est posé "
+            + "sur un sol vide.<br>"
+            + '<a class="lien-ext" href="' + u.pathname + u.search + '">'
+            + 'Recentrer la scène ici ↗</a>';
+    } else if (moi.precision > 30) {
+        note.textContent = "Position peu précise (" + Math.round(moi.precision)
+            + " m) : à l'intérieur ou sans GPS, le navigateur se rabat sur le Wi-Fi "
+            + "ou le réseau. Le cercle bleu montre l'incertitude.";
+    } else {
+        note.textContent = "Position suivie en continu. Éteindre le bouton pour arrêter.";
+    }
+}
+
+/** Cadre la caméra sur le repère, avec le même recul que le cadrage initial. */
+function cadrerSurMoi() {
+    const centre = new THREE.Vector3(moi.x, ySol(moi.lon, moi.lat), -moi.y);
+    const recul = 70;
+    controls.target.copy(centre);
+    camera.position.set(centre.x + recul, centre.y + recul * 0.8, centre.z + recul);
+    controls.update();
+}
+
+const MESSAGES_GEOLOC = {
+    1: "Géolocalisation refusée par le navigateur. À autoriser dans les réglages du site.",
+    2: "Position indisponible : ni GPS, ni Wi-Fi, ni réseau exploitable.",
+    3: "Le navigateur n'a pas répondu à temps. Réessayer, de préférence à l'extérieur.",
+};
+
+const btnMoi = document.getElementById('t-moi');
+let suiviPosition = null;   // identifiant du watchPosition en cours
+
+btnMoi.addEventListener('click', () => {
+    const note = document.getElementById('m-note');
+    document.getElementById('sec-moi').hidden = false;
+
+    if (suiviPosition !== null) {
+        navigator.geolocation.clearWatch(suiviPosition);
+        suiviPosition = null;
+        groupePosition.visible = false;
+        btnMoi.classList.remove('on');
+        note.textContent = "Suivi arrêté.";
+        return;
+    }
+    if (!navigator.geolocation) {
+        note.textContent = "Ce navigateur ne propose pas de géolocalisation.";
+        return;
+    }
+    // La géolocalisation exige un contexte sécurisé : sur http, l'API existe
+    // mais échoue avec PERMISSION_DENIED sans que l'utilisateur ait rien refusé.
+    if (!window.isSecureContext) {
+        note.textContent = "La géolocalisation exige une page en https.";
+        return;
+    }
+
+    btnMoi.disabled = true;
+    note.textContent = "Localisation…";
+    let premiere = true;
+    suiviPosition = navigator.geolocation.watchPosition(
+        pos => {
+            majPosition(pos.coords);
+            groupePosition.visible = true;
+            if (premiere) {
+                premiere = false;
+                cadrerSurMoi();
+                btnMoi.disabled = false;
+                btnMoi.classList.add('on');
+            }
+        },
+        err => {
+            note.textContent = MESSAGES_GEOLOC[err.code] || ("Géolocalisation impossible : " + err.message);
+            btnMoi.disabled = false;
+            if (suiviPosition !== null) navigator.geolocation.clearWatch(suiviPosition);
+            suiviPosition = null;
+            btnMoi.classList.remove('on');
+        },
+        // Haute précision = GPS quand il y en a un ; sinon le navigateur se
+        // rabat de lui-même sur le Wi-Fi. maximumAge évite de payer un premier
+        // fix complet si une position toute fraîche est déjà connue.
+        { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 });
+});
+
+// --- Textures procédurales ------------------------------------------------
+// Générées en DataTexture et non sur un canvas : le tableau de pixels se
+// vérifie hors navigateur, là où document.createElement('canvas') n'existe pas.
+// Aucun fichier à servir, aucune requête de plus.
+
+/** Hachage entier -> [0,1[, périodique par construction. */
+function hacher(i, j, periode, graine) {
+    const x = ((i % periode) + periode) % periode;
+    const y = ((j % periode) + periode) % periode;
+    const v = Math.sin(x * 127.1 + y * 311.7 + graine * 74.7) * 43758.5453;
+    return v - Math.floor(v);
+}
+
+/** Bruit de valeur périodique : la texture se raccorde d'un bord à l'autre. */
+function bruit(x, y, periode, graine) {
+    const i = Math.floor(x), j = Math.floor(y);
+    const fx = x - i, fy = y - j;
+    // Lissage en smoothstep, sinon le bruit laisse voir la grille du réseau.
+    const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+    const a = hacher(i, j, periode, graine), b = hacher(i + 1, j, periode, graine);
+    const c = hacher(i, j + 1, periode, graine), d = hacher(i + 1, j + 1, periode, graine);
+    return (a * (1 - sx) + b * sx) * (1 - sy) + (c * (1 - sx) + d * sx) * sy;
+}
+
+/**
+ * Texture de modulation : une luminance mouchetée, jamais une couleur.
+ *
+ * La teinte vient des couleurs de sommet, la texture ne fait que la moduler —
+ * `map` est multiplié par `vertexColor`. Une texture colorée écraserait le
+ * dégradé sombre-en-bas / clair-en-haut cuit dans la géométrie.
+ *
+ * @param etirementX  > 1 étire le motif en colonnes : des veines verticales
+ *                    pour l'écorce, un moucheté isotrope pour le feuillage.
+ */
+function textureMouchetee(taille, octaves, basse, etirementX, graine) {
+    const px = new Uint8Array(taille * taille * 4);
+    for (let j = 0; j < taille; j++) {
+        for (let i = 0; i < taille; i++) {
+            let v = 0, amplitude = 0.5, frequence = 4;
+            for (let o = 0; o < octaves; o++) {
+                v += amplitude * bruit(i / taille * frequence * etirementX,
+                                       j / taille * frequence,
+                                       frequence * etirementX, graine + o);
+                amplitude *= 0.5;
+                frequence *= 2;
+            }
+            const l = Math.round(255 * Math.min(basse + v * (1 - basse), 1));
+            const n = (j * taille + i) * 4;
+            px[n] = px[n + 1] = px[n + 2] = l;
+            px[n + 3] = 255;
+        }
+    }
+    const tex = new THREE.DataTexture(px, taille, taille, THREE.RGBAFormat);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.needsUpdate = true;
+    return tex;
+}
+
+// Écorce : octaves étirées 6 fois en X, d'où des veines verticales.
+const TEX_ECORCE = textureMouchetee(64, 3, 0.55, 6, 11);
+
+// --- Végétation : rendu des houppiers mesurés ------------------------------
+// Le serveur (app/api_dir/houppiers.py) segmente le MNH LiDAR HD à 0,5 m en
+// houppiers et renvoie, pour chacun, son sommet, sa surface, son allongement
+// et son PROFIL RADIAL : hauteur moyenne par couronne de distance au sommet,
+// rapportée à la hauteur du sommet. La forme de chaque arbre est donc lue,
+// pas supposée. La version précédente tirait toutes les silhouettes d'une
+// même allométrie (rayon = 26 % de la hauteur, houppier sur 80 % de la
+// hauteur), d'où l'effet de baudruche : un pin d'Alep est un parasol aplati
+// sur un fût nu, un chêne vert une boule presque aussi large que haute, un
+// cyprès une colonne dix fois plus haute que large.
+//
+// L'essence BD Forêt v2, puis la nature BD TOPO, ne servent qu'à la palette
+// et à la part de fût nu — jamais à la forme.
+
+// `tronc` est la part de la hauteur laissée au fût nu, donc le bas du
+// houppier. Les valeurs suivent les ports réels — un pin adulte porte son
+// feuillage sur la moitié haute, un chêne un peu plus bas — et dégagent la vue
+// sous la canopée, ce qui compte ici : le sujet est le bâti, pas les arbres.
+const PORTS = {
+    feuillu:    { nom: 'feuillu',    base: new THREE.Color(0x5e8a3e), cime: new THREE.Color(0x9cc06a), tronc: 0.42 },
+    chene_vert: { nom: 'chêne vert', base: new THREE.Color(0x3f6b33), cime: new THREE.Color(0x6f9a55), tronc: 0.38 },
+    pin:        { nom: 'pin',        base: new THREE.Color(0x4f7a4a), cime: new THREE.Color(0x8fb27a), tronc: 0.52 },
+    conifere:   { nom: 'conifère',   base: new THREE.Color(0x3e6a3c), cime: new THREE.Color(0x6d9a63), tronc: 0.12 },
+    peuplier:   { nom: 'peuplier',   base: new THREE.Color(0x76a24e), cime: new THREE.Color(0xb2d37f), tronc: 0.38 },
+    arbuste:    { nom: 'arbuste',    base: new THREE.Color(0x6a8e44), cime: new THREE.Color(0xa2c46e), tronc: 0 },
+    masse:      { nom: 'masse',      base: new THREE.Color(0x5f6256), cime: new THREE.Color(0x8a8c7c), tronc: 0 },
+};
+
+/** Aléa déterministe à partir d'une position : le décor ne doit pas frétiller. */
+function alea(x, y) {
+    const v = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+    return v - Math.floor(v);
+}
+
+/** Port (palette, part de fût nu) d'après l'essence BD Forêt v2, puis la nature BD TOPO. */
+function portDe(el) {
+    if (el.classe !== 'vegetation') return PORTS.masse;
+    const e = (el.essence || '').toLowerCase();
+    const n = (el.nature || '').toLowerCase();
+    if (/pin/.test(e)) return PORTS.pin;
+    if (/sapin|épicéa|epicea|douglas|mélèze|meleze/.test(e)) return PORTS.conifere;
+    if (/vert/.test(e)) return PORTS.chene_vert;
+    if (/peuplier/.test(e)) return PORTS.peuplier;
+    if (/chêne|chene|hêtre|hetre|châtaignier|chataignier|robinier|feuillu/.test(e)) return PORTS.feuillu;
+    if (/conif/.test(e) || /conif|sineux/.test(n)) return PORTS.conifere;
+    if (/verger|vigne|lande|haie/.test(n)) return PORTS.arbuste;
+    // « Mixte », ou rien du tout : les référentiels ne tranchent pas. La BD
+    // Forêt donne l'essence dominante d'un MASSIF, jamais celle d'un arbre :
+    // un pin au milieu d'une forêt mixte y est étiqueté « Mixte ». Le profil
+    // mesuré de CET arbre, lui, en dit plus qu'un tirage au sort.
+    return portMesure(el);
+}
+
+/**
+ * Port déduit du profil radial mesuré, quand le référentiel ne tranche pas.
+ *
+ * Un pin porte un houppier en parasol : la hauteur se maintient loin du
+ * sommet, donc un profil en plateau. Un sapin ou un cyprès s'effile dès la
+ * première couronne. Un feuillu fait un dôme, entre les deux. Les seuils sont
+ * ceux qu'affiche déjà l'infobulle, pour que le dessin et le texte disent la
+ * même chose.
+ *
+ * Ce que ça remplace : un tirage à 35 % de conifères d'après la position,
+ * stable d'un rechargement à l'autre mais sans rapport avec l'arbre.
+ */
+function portMesure(el) {
+    const p = el.profil || [];
+    if (p.length < 4) return PORTS.feuillu;
+    if (p[3] >= 0.85) return PORTS.pin;         // sommet plat : parasol, fût nu
+    if (p[1] <= 0.75) return PORTS.conifere;    // cime en pointe
+    return PORTS.feuillu;
+}
+
+/** Lecture du profil mesuré : plateau (pin parasol), pointe (cyprès, sapin) ou dôme. */
+function formeDe(el) {
+    const p = el.profil || [];
+    if (p.length < 4) return 'dôme';
+    if (p[3] >= 0.85) return 'sommet plat';
+    if (p[1] <= 0.75) return 'en pointe';
+    return 'en dôme';
+}
+
+const SEGMENTS_HOUPPIER = 10;
+// Part linéaire du segment mesuré effectivement occupée par le houppier.
+const EMPRISE_HOUPPIER = 0.8;
+// Très transparent : le sujet de la vue est le bâti, le feuillage n'est là que
+// pour situer l'ombrage et les masques. À 0,72 un bois dense masquait les
+// façades qu'on cherche à lire derrière, à 0,45 il les assombrissait encore.
+// depthWrite reste actif, sinon les faces d'un même houppier se dessineraient
+// dans un ordre arbitraire.
+const OPACITE_VEGETATION = 0.30;
+// Matériau blanc piloté par les couleurs de sommet : le dégradé, sombre à la
+// base et clair au sommet, est cuit dans la géométrie. Un vert uniforme lit
+// comme du caoutchouc.
+const MAT_FEUILLAGE = new THREE.MeshStandardMaterial({
+    color: 0xffffff, vertexColors: true, transparent: true, opacity: OPACITE_VEGETATION,
+    roughness: 0.95, flatShading: true });
+// Masses indéterminées : gris-vert désaturé, pour signaler un obstacle sans
+// attirer l'œil avant les arbres.
+const MAT_MASSE = new THREE.MeshStandardMaterial({
+    color: 0xffffff, vertexColors: true, transparent: true, opacity: OPACITE_VEGETATION,
+    roughness: 1, flatShading: true });
+const MAT_TRONC = new THREE.MeshStandardMaterial({
+    color: 0x6b5240, map: TEX_ECORCE, roughness: 1 });
+const GEO_TRONC = new THREE.CylinderGeometry(0.34, 0.78, 1, 7);
+// En deçà, c'est un buisson ou une haie : un tronc n'aurait pas de sens.
+const HAUTEUR_MIN_TRONC = 3;
+
+/**
+ * Tampon de triangles non indexés, avec couleur par sommet.
+ *
+ * Chaque sommet retient l'élément dont il vient : c'est ce qui permet de
+ * reposer la végétation sur le relief (exagération) en décalant les Y, sans
+ * reconstruire un million de sommets à chaque cran du curseur.
+ */
+function nouveauTampon() {
+    const sommets = [];          // [x, y, z, r, g, b, element] par sommet
+    const positions = [], couleurs = [], elements = [];
+    let courant = 0;
+    return {
+        element(n) { courant = n; },
+        sommet(x, y, z, c) { sommets.push([x, y, z, c.r, c.g, c.b, courant]); return sommets.length - 1; },
+        face(i, j, k) {
+            for (const n of [i, j, k]) {
+                const s = sommets[n];
+                positions.push(s[0], s[1], s[2]);
+                couleurs.push(s[3], s[4], s[5]);
+                elements.push(s[6]);
+            }
+        },
+        geometrie() {
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            geo.setAttribute('color', new THREE.Float32BufferAttribute(couleurs, 3));
+            geo.computeVertexNormals();
+            geo.userData.baseY = Float32Array.from(positions.filter((_, i) => i % 3 === 1));
+            geo.userData.elements = Int32Array.from(elements);
+            return geo;
+        },
+    };
+}
+
+/**
+ * Ajoute un houppier au tampon.
+ *
+ * Surface de révolution sur le profil mesuré : un anneau par couronne du
+ * profil, du sommet vers le bord, puis retour à la base du houppier. L'aire
+ * mesurée est conservée et l'allongement étire l'ellipse sur l'axe mesuré :
+ * une haie reste une haie. Un relief angulaire, lobes basse fréquence et
+ * grain par sommet, évite le vase tourné. Retourne le nombre de faces.
+ */
+function ajouterHouppier(tampon, el, sol) {
+    const port = portDe(el);
+    const h = el.h;
+    const p = el.profil && el.profil.length ? el.profil : [1, 0.9, 0.8, 0.7, 0.6, 0.5];
+    const nb = p.length;
+    // Demi-axes de l'ellipse au sol. L'aire est celle qui a été MESURÉE
+    // (pi*a*b = pi*r^2, r étant le rayon équivalent de la surface du segment)
+    // et l'excentricité vient de l'allongement mesuré, le rapport des axes
+    // principaux du segment : a/b = allongement.
+    //
+    // La version précédente prenait a = r_max, la distance à la cellule la
+    // plus lointaine, et en déduisait b = r^2/a. Une seule cellule excentrée
+    // gouvernait donc toute la forme, et comme r_max vaut 1,88 fois r à la
+    // médiane, le rapport des axes valait son carré, 3,5, contre 1,51
+    // d'allongement réellement mesuré. Résultat : des losanges très étalés,
+    // dessinés deux fois trop larges. Mesuré sur 1 776 houppiers d'une forêt
+    // mixte, la largeur dessinée rapportée à la hauteur tombe de 0,98 à 0,71
+    // en médiane, et la part de houppiers plus larges que hauts de 47 % à
+    // 19 %. Aucune borne en plus : une haie, un chêne vert ou un verger sont
+    // réellement plus larges que hauts, et c'est la mesure qui le dit.
+    const etirement = Math.sqrt(Math.max(el.allongement || 1, 1));
+    // Le segment mesuré est la part de canopée RATTACHÉE à ce sommet, pas la
+    // projection du houppier : il englobe les trouées entre les arbres, puisque
+    // toute cellule du sursol est attribuée à un sommet. Dessiner les houppiers
+    // à 100 % du segment pave donc le sol sans un interstice, et la forêt
+    // redevient la masse informe qu'on cherchait à éviter. Le houppier est
+    // inscrit dans son segment, à EMPRISE_HOUPPIER près en linéaire, soit 64 %
+    // de sa surface.
+    const rBase = Math.max(el.r * EMPRISE_HOUPPIER, 0.5);
+    const a = rBase * etirement;
+    const b = Math.max(rBase / etirement, 0.4);
+    const axe = (el.axe_deg || 0) * Math.PI / 180;
+    const hBase = h >= HAUTEUR_MIN_TRONC ? h * port.tronc : 0;
+    const hMin = hBase + Math.max(0.4, h * 0.08);
+    const g = alea(el.lon, el.lat);          // tirage stable par houppier
+    const teinte = 0.9 + g * 0.2;
+    // Dessus : le profil mesuré, du sommet vers le bord.
+    const anneaux = [{ u: 0, y: h }];
+    for (let k = 0; k < nb; k++) anneaux.push({ u: (k + 0.5) / nb, y: Math.max(p[k] * h, hMin) });
+    // Le bord descend franchement sous la dernière couronne du profil. Sans
+    // cette pente, les deux derniers anneaux se retrouvaient à la MÊME hauteur
+    // (le profil y est déjà bloqué par hMin), et la bande entre eux devenait un
+    // ruban horizontal d'à peine 0,7 m de large. Le grain vertical, appliqué à
+    // l'anneau intérieur mais pas au bord, la retournait dans tous les sens :
+    // 16 de ses 20 facettes sortaient à l'envers, donc éliminées au rendu, et
+    // la lisière du houppier s'ouvrait sur l'intérieur de la coque.
+    const yBord = Math.max(p[nb - 1] * h - Math.min(0.8, (h - hBase) * 0.08),
+                           hBase + 0.3);
+    anneaux.push({ u: 1.0, y: yBord });
+    // Dessous : une lisière verticale au bord, puis une surface qui remonte
+    // DOUCEMENT vers le tronc. C'est le sens physique — les branches basses
+    // sont les plus extérieures — et l'inverse de ce que faisait la version
+    // précédente, dont le dessous plongeait en entonnoir du bord vers le
+    // tronc (1,74 m de creux sur un arbre de 17 m mesuré). À 72 % d'opacité
+    // l'entonnoir restait caché ; à 45 % il se voit par transparence et le
+    // houppier se lit la tête en bas.
+    //
+    // La remontée reste sous le sommet du tronc, sinon le fût sortirait du
+    // feuillage : au plus 0,6 m, contre 1 m de fût qui dépasse la base.
+    const montee = Math.min(0.6, (h - hBase) * 0.04);
+    anneaux.push({ u: 1.0, y: hBase });
+    anneaux.push({ u: 0.6, y: hBase + montee * 0.7 });
+    anneaux.push({ u: 0, y: hBase + montee });
+    const couleur = new THREE.Color();
+    const cx = el.x, cz = -el.y;
+    const cosA = Math.cos(axe), sinA = Math.sin(axe);
+    const pts = [];
+    for (let i = 0; i < anneaux.length; i++) {
+        const { u, y } = anneaux[i];
+        const t = (y - hBase) / Math.max(h - hBase, 0.1);
+        couleur.copy(port.base).lerp(port.cime, Math.max(0, Math.min(1, t))).multiplyScalar(teinte);
+        const ligne = [];
+        const interieur = u > 0 && u < 1;
+        for (let s = 0; s < SEGMENTS_HOUPPIER; s++) {
+            const th = s / SEGMENTS_HOUPPIER * Math.PI * 2;
+            // Lobage : un défaut de rondeur du HOUPPIER, donc le même à toutes
+            // les hauteurs. Le tirer anneau par anneau faisait bomber un anneau
+            // intérieur au-delà du bord — jusqu'à 8,83 m pour un bord à 8,45 m
+            // sur l'arbre mesuré — et la lisière se repliait sur elle-même.
+            // Partagé, il garantit que le rayon croît avec u, donc une surface
+            // qui ne se retourne jamais.
+            const bosse = 1 + 0.10 * Math.sin(3 * th + g * 6.28)
+                            + 0.08 * (alea(el.lon + s, el.lat) - 0.5);
+            const ex = a * u * bosse * Math.cos(th), ez = b * u * bosse * Math.sin(th);
+            // axe_deg est compté depuis l'est vers le nord ; le nord de la scène est -Z.
+            const x = cx + ex * cosA - ez * sinA;
+            const z = cz - (ex * sinA + ez * cosA);
+            // Grain vertical : il casse le vase tourné, il ne doit pas défaire
+            // la surface. Il valait 12 % de la hauteur de l'ARBRE, soit ±1,04 m
+            // sur un arbre de 17 m — plus que l'écart entre deux couronnes du
+            // profil, d'où des facettes géantes orientées au hasard. Il suit
+            // désormais la hauteur du HOUPPIER, et reste borné.
+            const dy = interieur
+                ? (alea(el.lat + i, el.lon + s) - 0.5) * Math.min(0.9, (h - hBase) * 0.07)
+                : 0;
+            ligne.push(tampon.sommet(x, sol + y + dy, z, couleur));
+        }
+        pts.push(ligne);
+    }
+    let faces = 0;
+    for (let i = 0; i + 1 < anneaux.length; i++) {
+        for (let s = 0; s < SEGMENTS_HOUPPIER; s++) {
+            const s1 = (s + 1) % SEGMENTS_HOUPPIER;
+            tampon.face(pts[i][s], pts[i + 1][s], pts[i + 1][s1]);
+            tampon.face(pts[i][s], pts[i + 1][s1], pts[i][s1]);
+            faces += 2;
+        }
+    }
+    return faces;
+}
+
+/** Point dans un anneau, en coordonnées locales (mètres). Lancer de rayon. */
+function dansAnneau(a, x, y) {
+    if (x < a.minX || x > a.maxX || y < a.minY || y > a.maxY) return false;
+    const p = a.pts;
+    let dedans = false;
+    for (let i = 0, j = p.length - 1; i < p.length; j = i++) {
+        const xi = p[i][0], yi = p[i][1], xj = p[j][0], yj = p[j][1];
+        if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) dedans = !dedans;
+    }
+    return dedans;
+}
+
+/** Anneaux d'un jeu de features, projetés en local et bornés pour le filtrage. */
+function anneauxLocaux(feats) {
+    const out = [];
+    for (const f of feats || []) {
+        for (const anneau of anneauxDe(f.geometry)) {
+            if (!anneau || anneau.length < 4) continue;
+            const pts = anneau.map(([lo, la]) => toLocal(lo, la));
+            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+            for (const [x, y] of pts) {
+                if (x < minX) minX = x; if (x > maxX) maxX = x;
+                if (y < minY) minY = y; if (y > maxY) maxY = y;
+            }
+            out.push({ pts, minX, maxX, minY, maxY,
+                       nature: (f.properties || {}).nature, props: f.properties || {} });
+        }
+    }
+    return out;
+}
+
+/**
+ * Hauteur de la toiture du bâtiment visé, en mètres.
+ *
+ * Sert de référence au masque solaire : c'est là que seraient posés des
+ * capteurs. On prend le bâtiment qui contient le point, sinon le plus proche. Faute de bâtiment exploitable, on retombe
+ * sur 0 — le masque redevient alors un angle mesuré depuis le sol, ce que la
+ * note du panneau signale.
+ */
+function hauteurReference() {
+    const anneaux = anneauxLocaux(features);
+    let contient = null, plusProche = null, distMin = Infinity;
+    for (let i = 0; i < anneaux.length; i++) {
+        const a = anneaux[i];
+        if (dansAnneau(a, 0, 0)) { contient = features_hauteur(a); break; }
+        const cx = (a.minX + a.maxX) / 2, cy = (a.minY + a.maxY) / 2;
+        const d = Math.hypot(cx, cy);
+        if (d < distMin) { distMin = d; plusProche = features_hauteur(a); }
+    }
+    const h = contient != null ? contient : (distMin < 25 ? plusProche : null);
+    return h != null && h > 0 ? h : 0;
+}
+
+/** Hauteur BD TOPO de l'anneau : faîtage si connu, hauteur globale sinon. */
+function features_hauteur(anneau) {
+    const p = anneau.props || {};
+    if (p.altitude_maximale_toit != null && p.altitude_minimale_sol != null) {
+        return p.altitude_maximale_toit - p.altitude_minimale_sol;
+    }
+    return p.hauteur != null ? p.hauteur : null;
+}
+
+// `var` et non `const` : appliquerExageration() peut s'exécuter avant que ce
+// bloc ne soit évalué (le relief se charge de façon asynchrone), et une const
+// encore en zone morte y lèverait une ReferenceError.
+var vegPrete = false;
+var vegElements = [];   // houppiers et masses reçus du serveur, en local
+
+/**
+ * (Re)construit les maillages de végétation : un maillage fusionné pour les
+ * houppiers, un pour les masses, un maillage instancié pour les troncs.
+ *
+ * Même règle que pour les bâtiments : seule la BASE suit l'exagération du
+ * relief, la hauteur mesurée reste la vraie. Exagérer un arbre de 14 m le
+ * transformerait en séquoia dès ×3 et fausserait le masque affiché à côté.
+ */
+function construireVegetation() {
+    groupeVegetation.clear();
+    for (const [genre, elements, mat] of [
+            ['houppier', vegElements.filter(e => e.classe === 'vegetation'), MAT_FEUILLAGE],
+            ['masse', vegElements.filter(e => e.classe !== 'vegetation'), MAT_MASSE]]) {
+        if (!elements.length) continue;
+        const tampon = nouveauTampon();
+        const facesDebut = [];
+        let faces = 0;
+        elements.forEach((el, n) => {
+            facesDebut.push(faces);
+            tampon.element(n);
+            faces += ajouterHouppier(tampon, el, 0);   // base à 0 : posée par placerVegetation()
+        });
+        const mesh = new THREE.Mesh(tampon.geometrie(), mat);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        mesh.userData = { vegetation: true, genre, elements, facesDebut };
+        groupeVegetation.add(mesh);
+    }
+    // Troncs : seuls les ports à fût nu, et au-dessus de 3 m. Le fût monte
+    // un peu dans le houppier, sinon on voit le bâton sortir de la boule.
+    const arbres = vegElements.filter(e => e.classe === 'vegetation'
+                                          && e.h >= HAUTEUR_MIN_TRONC && portDe(e).tronc >= 0.1);
+    if (arbres.length) {
+        const mesh = new THREE.InstancedMesh(GEO_TRONC, MAT_TRONC, arbres.length);
+        mesh.castShadow = true;
+        mesh.userData = { genre: 'tronc', elements: arbres };
+        groupeVegetation.add(mesh);
+    }
+    placerVegetation();
+    majCiblesSurvol();
+}
+
+/**
+ * Repose la végétation sur le terrain (exagération, relief arrivé après).
+ *
+ * Les Y sont décalés en place, d'après l'élément de chaque sommet : pas de
+ * reconstruction. ENFONCEMENT : même marge que les murs, le maillage étant
+ * trianglé là où l'échantillonnage est bilinéaire.
+ */
+function placerVegetation() {
+    if (!vegPrete) return;
+    const dummy = new THREE.Object3D();
+    for (const mesh of groupeVegetation.children) {
+        const elements = mesh.userData.elements || [];
+        const sols = Float32Array.from(elements, el => ySol(el.lon, el.lat) - ENFONCEMENT);
+        if (mesh.userData.genre === 'tronc') {
+            elements.forEach((el, n) => {
+                const hT = el.h * portDe(el).tronc + Math.min(1, el.h * 0.1);
+                // Un fût d'arbre adulte fait 30 à 60 cm ; la géométrie l'évase à la base.
+                const rT = Math.min(Math.max(el.h / 20, 0.18), 0.6);
+                dummy.rotation.set(0, 0, 0);
+                dummy.position.set(el.x, sols[n] + hT / 2, -el.y);
+                dummy.scale.set(rT, hT, rT);
+                dummy.updateMatrix();
+                mesh.setMatrixAt(n, dummy.matrix);
+            });
+            mesh.instanceMatrix.needsUpdate = true;
+            mesh.computeBoundingSphere();
+            continue;
+        }
+        const geo = mesh.geometry;
+        const pos = geo.attributes.position.array;
+        const baseY = geo.userData.baseY, quel = geo.userData.elements;
+        for (let i = 0; i < quel.length; i++) pos[i * 3 + 1] = baseY[i] + sols[quel[i]];
+        geo.attributes.position.needsUpdate = true;
+        geo.computeBoundingSphere();
+    }
+}
+
+/** Élément (houppier ou masse) sous une face d'un maillage fusionné. */
+function elementSousFace(mesh, faceIndex) {
+    const debuts = mesh.userData.facesDebut;
+    let lo = 0, hi = debuts.length - 1;
+    while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (debuts[mid] <= faceIndex) lo = mid; else hi = mid - 1;
+    }
+    return mesh.userData.elements[lo];
+}
+
+let vegChargee = false;
+
+async function chargerVegetation() {
+    const note = document.getElementById('v-note');
+    note.textContent = 'Segmentation des houppiers sur le MNH LiDAR HD à 0,5 m…';
+
+    await chargementArtefact;
+    if (!ARTEFACT) {
+        note.textContent = 'Scène indisponible : ' + (ERREUR_SCENE || 'erreur inconnue');
+        return false;
+    }
+    const res = Object.assign({}, ARTEFACT.vegetation,
+                              { houppiers: ARTEFACT.houppiers, masses: ARTEFACT.masses });
+    if (!res || res.error) {
+        note.textContent = (res && res.error) || 'Aucune donnée MNH sur cette emprise.';
+        return false;
+    }
+    if (!res.couvert) {
+        // Hors emprise LiDAR, la dalle revient entièrement à zéro : il faut le
+        // dire, sinon « rien à l'écran » se lit comme « aucune végétation ».
+        note.textContent = "Emprise hors couverture LiDAR HD de l'IGN : "
+            + "aucune hauteur de sursol disponible ici. Le programme est en cours "
+            + "de déploiement, la couverture s'étend campagne après campagne.";
+        return false;
+    }
+
+    // lon/lat conservés : c'est par eux qu'on interroge l'altitude du terrain.
+    vegElements = [...(res.houppiers || []), ...(res.masses || [])].map(el => {
+        const [x, y] = toLocal(el.lon, el.lat);
+        return { ...el, x, y };
+    });
+    vegPrete = true;
+    construireVegetation();
+
+    const arbres = vegElements.filter(e => e.classe === 'vegetation');
+    const masses = vegElements.filter(e => e.classe !== 'vegetation');
+
+    // Masque solaire : angle d'élévation maximal vu du point, secteur sud
+    // (azimut 135° à 225°). Le point est à l'origine locale de la projection.
+    //
+    // La référence est la TOITURE, pas le sol : un capteur est posé sur le toit,
+    // et mesurer depuis le sol fait dominer le classement par le premier objet
+    // venu à quelques mètres — véranda, garage absent de la BD TOPO, débord de
+    // toit. Mesuré sur un site réel, le sol donnait « 44° à 5 m », c'est-à-dire
+    // la maison elle-même. Seul ce qui dépasse la toiture ombre réellement.
+    // L'angle est pris au sommet de chaque houppier : un indicateur, pas un
+    // calcul de course solaire.
+    const hRef = hauteurReference();
+    let masque = 0, obstacle = null;
+    for (const c of vegElements) {
+        const dist = Math.hypot(c.x, c.y);
+        if (dist < 3) continue;
+        const azimut = (Math.atan2(c.x, c.y) * 180 / Math.PI + 360) % 360;
+        if (azimut < 135 || azimut > 225) continue;
+        const depasse = c.h - hRef;
+        if (depasse <= 0) continue;                  // sous la toiture : n'ombre pas
+        const angle = Math.atan2(depasse, Math.max(dist - c.r, 1)) * 180 / Math.PI;
+        if (angle > masque) { masque = angle; obstacle = { ...c, dist, angle }; }
+    }
+
+    document.getElementById('v-max').textContent = res.hauteur_max ? res.hauteur_max.toFixed(1) + ' m' : '—';
+    document.getElementById('v-masque').textContent = masque ? masque.toFixed(0) + '°' : 'dégagé';
+    document.getElementById('v-obstacle').textContent = obstacle
+        ? `${obstacle.nature || (obstacle.classe === 'vegetation' ? 'végétation' : 'sursol')} `
+          + `${obstacle.h.toFixed(1)} m à ${obstacle.dist.toFixed(0)} m`
+        : '—';
+
+    const essences = {};
+    for (const a of arbres) if (a.essence && !/^N[CR]$/.test(a.essence)) essences[a.essence] = (essences[a.essence] || 0) + 1;
+    const listeEssences = Object.entries(essences).sort((u, v) => v[1] - u[1])
+        .map(([e, n]) => `${e} (${n})`).join(', ');
+    const nbOrtho = arbres.filter(a => !a.nature).length;
+
+    note.innerHTML =
+        (res.veg_disponible === false
+            ? `<b style="color:#e0a45c">Zones de végétation indisponibles</b> : le service `
+              + `IGN n'a pas répondu, seule l'orthophoto a servi à reconnaître la végétation. `
+              + `Recharger la page pour réessayer.<br>`
+            : '')
+        + `<span style="color:#7fb069">■</span> ${arbres.length} houppier(s)`
+        + (nbOrtho ? ` — dont ${nbOrtho} reconnu(s) à la couleur de l'orthophoto, `
+                     + `hors zones BD TOPO` : '')
+        + ` · <span style="color:#8a8c7c">■</span> ${masses.length} masse(s) de nature `
+        + `inconnue (mur, véhicule, sol nu…).<br>`
+        + (listeEssences ? `Essences BD Forêt v2 : ${listeEssences}.<br>`
+                         : (res.foret_disponible === false ? `BD Forêt v2 indisponible : palette d'après la BD TOPO seule.<br>`
+                                                            : `Aucune essence BD Forêt v2 sur l'emprise (hors massif forestier).<br>`))
+        + (res.ortho === false ? `Orthophoto absente au moment du classement : seule la BD TOPO `
+                                + `a servi.<br>` : '')
+        + (res.source === 'mns_mnt'
+            ? `<b style="color:#e0a45c">Hors couverture LiDAR HD</b> : hauteurs estimées par `
+              + `photogrammétrie (MNS − MNT), qui lisse les cimes — à lire comme un `
+              + `ordre de grandeur.<br>` : '')
+        + `La forme de chaque houppier est son profil mesuré sur la grille à ${res.resolution_m} m `
+        + `(seuil ${res.seuil_m} m) ; l'essence ne choisit que la couleur et le fût. `
+        + `Le « masque au sud » est l'élévation du plus haut obstacle entre 135° et 225°, `
+        + (hRef ? `mesurée depuis la toiture du bâtiment visé (${hRef.toFixed(1)} m). `
+                : `mesurée depuis le sol — aucun bâtiment BD TOPO exploitable au point visé. `)
+        + `C'est un indicateur d'ombrage, pas un calcul de course solaire.`;
+    return true;
+}
+
+const btnVeg = document.getElementById('t-veg');
+let vegDisponible = false;
+
+/**
+ * Charge la couche et l'affiche. Appelée d'office au chargement de la page,
+ * une fois les bâtiments connus, et en secours si l'utilisateur rallume le
+ * calque après un échec.
+ *
+ * Le bouton n'apparaît allumé qu'en cas de succès : hors couverture LiDAR, il
+ * reste éteint et le panneau dit pourquoi, plutôt que d'annoncer un calque
+ * actif qui ne montre rien.
+ */
+async function activerVegetation() {
+    document.getElementById('sec-veg').hidden = false;
+    btnVeg.disabled = true;
+    vegDisponible = await chargerVegetation();
+    btnVeg.disabled = false;
+    vegChargee = true;
+    if (!vegDisponible) return;
+    groupeVegetation.visible = true;
+    btnVeg.classList.add('on');
+    majCiblesSurvol();
+}
+
+btnVeg.addEventListener('click', async () => {
+    if (!vegChargee) { await activerVegetation(); return; }
+    // Hors couverture LiDAR ou service indisponible : le panneau dit pourquoi,
+    // et le bouton reste éteint plutôt que d'allumer une couche vide.
+    if (!vegDisponible) return;
+    groupeVegetation.visible = !groupeVegetation.visible;
+    btnVeg.classList.toggle('on', groupeVegetation.visible);
+    majCiblesSurvol();
+});
+
+// --- Interactions --------------------------------------------------------
+const raycaster = new THREE.Raycaster();
+const souris = new THREE.Vector2();
+const tip = document.getElementById('tip');
+const rose = document.getElementById('rose');
+
+renderer.domElement.addEventListener('pointermove', e => {
+    const r = renderer.domElement.getBoundingClientRect();
+    souris.x = ((e.clientX - r.left) / r.width) * 2 - 1;
+    souris.y = -((e.clientY - r.top) / r.height) * 2 + 1;
+    raycaster.setFromCamera(souris, camera);
+    // Végétation : calque optionnel, et la seule infobulle qui porte une mesure
+    // (hauteur, distance, élévation). Traitée avant la logique des pastilles,
+    // qui masque l'infobulle dès que le plus proche n'est ni pastille ni photo.
+    const touche = raycaster.intersectObjects(ciblesSurvol, false)[0];
+    if (touche && touche.object.userData.vegetation && touche.faceIndex != null) {
+        const info = elementSousFace(touche.object, touche.faceIndex);
+        if (!info) { tip.style.display = 'none'; return; }
+        const dist = Math.hypot(info.x, info.y);
+        const azimut = (Math.atan2(info.x, info.y) * 180 / Math.PI + 360) % 360;
+        const essence = info.essence && !/^N[CR]$/.test(info.essence) ? info.essence : null;
+        tip.innerHTML =
+            `<b>${info.classe === 'vegetation' ? (info.nature || 'Végétation (orthophoto)') : 'Sursol non bâti'}</b>` +
+            (essence ? `<br>essence BD Forêt : ${essence} · port ${portDe(info).nom}` : `<br>port ${portDe(info).nom}`) +
+            `<br>hauteur ${info.h.toFixed(1)} m · rayon ${info.r.toFixed(1)} m · ${formeDe(info)}` +
+            (info.allongement >= 1.5 ? ` · allongé ×${info.allongement.toFixed(1)}` : '') +
+            `<br>${dist.toFixed(0)} m du point · azimut ${azimut.toFixed(0)}°` +
+            `<br>élévation ${(Math.atan2(info.h, Math.max(dist, 1)) * 180 / Math.PI).toFixed(0)}°` +
+            (info.classe === 'sursol' ? '<br><i>hors zone de végétation BD TOPO, pas vert à l\'orthophoto</i>' : '');
+        tip.style.display = 'block';
+        tip.style.left = (e.clientX - r.left + 14) + 'px';
+        tip.style.top = (e.clientY - r.top + 14) + 'px';
+        return;
+    }
+
+    const hit = raycaster.intersectObjects(ciblesSurvol, false)[0];
+    const ud = hit ? hit.object.userData : null;
+    if (!ud || !ud.anneau) { tip.style.display = 'none'; return; }
+    const { p, denivele, hMur } = ud;
+    tip.innerHTML =
+        `<b>${p.usage_1 || p.nature || 'Bâtiment'}</b>` +
+        (ud.inconnue
+            ? `<br><b>hauteur inconnue</b> : sous les arbres` +
+              (ud.inconnue.part_verte != null
+                  ? ` (${Math.round(ud.inconnue.part_verte * 100)} % de l'emprise verte à l'orthophoto)` : '') +
+              `<br>dessiné à ${hMur.toFixed(0)} m` +
+              (p.nombre_d_etages > 0 ? ` (${p.nombre_d_etages} étage(s) BD TOPO)` : ' (un étage, par défaut)')
+            : `<br>murs ${hMur.toFixed(1)} m` +
+              (denivele > 0.5 ? ` · toit ${denivele.toFixed(1)} m` : ' · toit plat') +
+              (ud.lidar ? (ud.lidar.corps ? ` <i>(LiDAR, ${ud.lidar.corps.length} corps de toit)</i>`
+                          : ud.lidar.axe_deg != null ? ' <i>(LiDAR, faîtage mesuré)</i>' : ' <i>(LiDAR)</i>')
+                        + (ud.lidar.mode_bas ? ` <i>· toit lu sous un arbre qui couvre ${Math.round(ud.lidar.part_haute * 100)} % de l'emprise</i>` : '')
+                        : ' <i>(BD TOPO)</i>')) +
+        `<br><i>clic pour la fiche</i>`;
+    tip.style.display = 'block';
+    tip.style.left = (e.clientX - r.left + 14) + 'px';
+    tip.style.top = (e.clientY - r.top + 14) + 'px';
+});
+
+// --- Boutons -------------------------------------------------------------
+let toitsEnPente = true;
+const btnRoof = document.getElementById('t-roof');
+btnRoof.addEventListener('click', () => {
+    toitsEnPente = !toitsEnPente;
+    btnRoof.classList.toggle('on', toitsEnPente);
+    btnRoof.textContent = toitsEnPente ? 'Toits en pente' : 'Toits plats';
+    construire(features, toitsEnPente);
+});
+
+let orbite = true;
+const btnOrbit = document.getElementById('t-orbit');
+const vitesse = document.getElementById('speed');
+btnOrbit.addEventListener('click', () => {
+    orbite = !orbite;
+    btnOrbit.classList.toggle('on', orbite);
+});
+// OrbitControls fait tourner la caméra autour de sa cible : l'inertie
+// (enableDamping) donne un mouvement fluide sans boucle manuelle sur le cap.
+controls.addEventListener('start', () => { if (orbite) { orbite = false; btnOrbit.classList.remove('on'); } });
+
+// --- Zoom : repris à OrbitControls -------------------------------------
+// `handleMouseWheel` de three r160 ignore l'amplitude de l'événement : chaque
+// `wheel` applique un facteur fixe, quelle que soit la valeur de deltaY. Une
+// molette crantée émet un événement par cran, c'est donc imperceptible. Un
+// pavé tactile, lui, émet des dizaines d'événements de quelques pixels pour un
+// seul geste, inertie comprise : les facteurs se composent et la caméra plonge.
+//
+// On dolly donc nous-mêmes, proportionnellement à la distance réellement
+// parcourue. L'exponentielle rend le zoom géométrique, donc d'allure constante
+// quelle que soit la distance courante.
+const SENSIBILITE_ZOOM = 0.0015;
+controls.enableZoom = false;
+renderer.domElement.addEventListener('wheel', e => {
+    e.preventDefault();
+    if (orbite) { orbite = false; btnOrbit.classList.remove('on'); }
+    // deltaMode : 0 = pixels, 1 = lignes, 2 = pages. Firefox et les molettes
+    // renvoient souvent des lignes, d'où la normalisation.
+    const unite = e.deltaMode === 1 ? 16 : (e.deltaMode === 2 ? 400 : 1);
+    const versCamera = camera.position.clone().sub(controls.target);
+    const distance = Math.min(Math.max(
+        versCamera.length() * Math.exp(e.deltaY * unite * SENSIBILITE_ZOOM),
+        controls.minDistance), controls.maxDistance);
+    camera.position.copy(controls.target).add(versCamera.setLength(distance));
+    controls.update();
+}, { passive: false });
+
+// Un clic doit être distingué de la fin d'une orbite : OrbitControls consomme le
+// glissement, mais le navigateur émet quand même un pointerup au relâchement.
+let departPointeur = null;
+renderer.domElement.addEventListener('pointerdown', e => {
+    departPointeur = { x: e.clientX, y: e.clientY };
+});
+renderer.domElement.addEventListener('pointerup', e => {
+    if (!departPointeur) return;
+    const parcouru = Math.hypot(e.clientX - departPointeur.x,
+                                e.clientY - departPointeur.y);
+    departPointeur = null;
+    if (parcouru > 5) return;   // c'était une orbite, pas une désignation
+    const r = renderer.domElement.getBoundingClientRect();
+    souris.x = ((e.clientX - r.left) / r.width) * 2 - 1;
+    souris.y = -((e.clientY - r.top) / r.height) * 2 + 1;
+    raycaster.setFromCamera(souris, camera);
+    const hit = raycaster.intersectObjects(ciblesSurvol, false)[0];
+    if (!hit) return;
+    const ud = hit.object.userData;
+    // La végétation se survole mais ne s'ouvre pas : elle n'a pas de fiche.
+    if (ud.vegetation || !ud.anneau) return;
+    afficherFicheBatiment(ud);
+});
+
+const btnRelief = document.getElementById('t-relief');
+btnRelief.addEventListener('click', () => {
+    relief = !relief;
+    btnRelief.classList.toggle('on', relief);
+    appliquerRelief();
+});
+
+const curseurExag = document.getElementById('exag');
+const valeurExag = document.getElementById('s-exag');
+curseurExag.addEventListener('input', () => {
+    exagVert = Number(curseurExag.value);
+    valeurExag.textContent = `×${exagVert}`;
+    // Toucher au curseur rallume le relief ; c'est le seul cas où le fond doit
+    // être reposé, d'où les deux chemins.
+    if (!relief) { relief = true; btnRelief.classList.add('on'); appliquerRelief(); }
+    else appliquerExageration();
+});
+valeurExag.textContent = `×${exagVert}`;
+
+// --- Soleil et ombres portées -------------------------------------------
+// La course du soleil est calculée pour la position du point, au jour et à
+// l'heure choisis ; la scène s'ouvre sur aujourd'hui, à midi.
+//
+// Le curseur de saison déplace le JOUR simulé dans l'année. Il n'existe pas de
+// réglage direct de la hauteur du soleil : hauteur et azimut sont couplés par
+// la latitude et la date, un soleil déplacé à la main dessinerait des ombres
+// qui n'existent pas ici. En changeant le jour, tout suit correctement — la
+// hauteur à midi (64,5° au solstice d'été contre 17,7° à celui d'hiver, à 49°
+// de latitude), les azimuts de lever et de coucher, la longueur du jour. C'est
+// le complément du « masque au sud » : le 21 décembre est le cas d'épreuve, un
+// obstacle inoffensif en juin peut ombrer tout l'hiver.
+//
+// Algorithme NOAA (Astronomical Almanac). Précision de l'ordre du centième de
+// degré, très au-delà de ce qu'exige un rendu.
+const RAD = Math.PI / 180;
+const FUSEAU = 'Europe/Paris';   // celui des horodatages de l'application
+
+/** Décalage d'un fuseau à un instant donné, en minutes. Gère l'heure d'été. */
+function decalageMinutes(instant, fuseau) {
+    const fmt = new Intl.DateTimeFormat('en-US', {
+        timeZone: fuseau, hour12: false,
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const p = Object.fromEntries(fmt.formatToParts(instant).map(x => [x.type, x.value]));
+    const h = p.hour === '24' ? 0 : Number(p.hour);   // certains moteurs rendent 24
+    const enUTC = Date.UTC(+p.year, p.month - 1, +p.day, h, +p.minute, +p.second);
+    return (enUTC - instant.getTime()) / 60000;
+}
+
+/** Instant UTC correspondant à une heure locale du fuseau de l'application. */
+function instantLocal(annee, mois, jour, heures) {
+    const h = Math.floor(heures);
+    const mn = Math.round((heures - h) * 60);
+    const brut = new Date(Date.UTC(annee, mois - 1, jour, h, mn));
+    // Une seule correction suffit hors des deux heures de bascule d'heure d'été.
+    return new Date(brut.getTime() - decalageMinutes(brut, FUSEAU) * 60000);
+}
+
+/**
+ * Azimut (0 = nord, sens horaire) et hauteur du soleil, en degrés.
+ */
+function positionSoleil(instant, lat, lon) {
+    const jj = instant.getTime() / 86400000 + 2440587.5;     // jour julien
+    const t = (jj - 2451545) / 36525;                         // siècles juliens
+
+    const L0 = (280.46646 + t * (36000.76983 + t * 0.0003032)) % 360;
+    const M = 357.52911 + t * (35999.05029 - 0.0001537 * t);
+    const e = 0.016708634 - t * (0.000042037 + 0.0000001267 * t);
+    const centre = Math.sin(M * RAD) * (1.914602 - t * (0.004817 + 0.000014 * t))
+                 + Math.sin(2 * M * RAD) * (0.019993 - 0.000101 * t)
+                 + Math.sin(3 * M * RAD) * 0.000289;
+    const omega = 125.04 - 1934.136 * t;
+    const lambda = L0 + centre - 0.00569 - 0.00478 * Math.sin(omega * RAD);
+    const eps0 = 23 + (26 + (21.448 - t * (46.815 + t * (0.00059 - t * 0.001813))) / 60) / 60;
+    const eps = eps0 + 0.00256 * Math.cos(omega * RAD);
+    const declinaison = Math.asin(Math.sin(eps * RAD) * Math.sin(lambda * RAD)) / RAD;
+
+    // Équation du temps, en minutes : l'écart entre midi solaire et midi horloge.
+    const y = Math.tan(eps / 2 * RAD) ** 2;
+    const eqTemps = 4 / RAD * (
+        y * Math.sin(2 * L0 * RAD)
+        - 2 * e * Math.sin(M * RAD)
+        + 4 * e * y * Math.sin(M * RAD) * Math.cos(2 * L0 * RAD)
+        - 0.5 * y * y * Math.sin(4 * L0 * RAD)
+        - 1.25 * e * e * Math.sin(2 * M * RAD));
+
+    const minutesUTC = instant.getUTCHours() * 60 + instant.getUTCMinutes()
+                     + instant.getUTCSeconds() / 60;
+    const solaire = (minutesUTC + eqTemps + 4 * lon + 1440) % 1440;
+    const angleHoraire = solaire / 4 - 180;                   // degrés, 0 à midi vrai
+
+    const cosZ = Math.sin(lat * RAD) * Math.sin(declinaison * RAD)
+               + Math.cos(lat * RAD) * Math.cos(declinaison * RAD) * Math.cos(angleHoraire * RAD);
+    const zenith = Math.acos(Math.min(1, Math.max(-1, cosZ))) / RAD;
+    const hauteur = 90 - zenith;
+
+    let azimut;
+    const den = Math.cos(lat * RAD) * Math.sin(zenith * RAD);
+    if (Math.abs(den) < 1e-9) {
+        azimut = 180;                                          // soleil au zénith
+    } else {
+        const q = (Math.sin(lat * RAD) * Math.cos(zenith * RAD) - Math.sin(declinaison * RAD)) / den;
+        const a = Math.acos(Math.min(1, Math.max(-1, q))) / RAD;
+        // Convention NOAA. Le complément à 540 le matin et l'ajout de 180
+        // l'après-midi ne sont pas interchangeables avec un simple 360 - a :
+        // celui-ci intervertit les saisons (lever au sud-est en juin).
+        azimut = angleHoraire > 0 ? (a + 180) % 360 : (540 - a) % 360;
+    }
+    return { azimut, hauteur };
+}
+
+// Date de la scène : aujourd'hui, à midi. Le curseur de saison la déplace.
+const DATE_SCENE = (() => {
+    const n = new Date();
+    return { annee: n.getFullYear(), mois: n.getMonth() + 1, jour: n.getDate(),
+             heure: 12 };
+})();
+
+const COULEUR_RASANTE = new THREE.Color(0xff9542);
+const COULEUR_ZENITH  = new THREE.Color(0xfff2dd);
+const POINTS_CARDINAUX = ['N', 'NE', 'E', 'SE', 'S', 'SO', 'O', 'NO'];
+
+// Jour simulé par le curseur de saison ; on part d'aujourd'hui.
+const DATE_SIMULEE = { annee: DATE_SCENE.annee, mois: DATE_SCENE.mois, jour: DATE_SCENE.jour };
+
+const MOIS_COURTS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin',
+                     'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
+
+function jourDeLAnnee(annee, mois, jour) {
+    return Math.round((Date.UTC(annee, mois - 1, jour) - Date.UTC(annee, 0, 1)) / 86400000) + 1;
+}
+
+function poserJourSimule(n) {
+    const d = new Date(Date.UTC(DATE_SIMULEE.annee, 0, 1) + (n - 1) * 86400000);
+    DATE_SIMULEE.mois = d.getUTCMonth() + 1;
+    DATE_SIMULEE.jour = d.getUTCDate();
+}
+
+function majSoleil(heures) {
+    const instant = instantLocal(DATE_SIMULEE.annee, DATE_SIMULEE.mois, DATE_SIMULEE.jour, heures);
+    const { azimut, hauteur } = positionSoleil(instant, CENTER[1], CENTER[0]);
+
+    // Repère de la scène : le nord est -Z, l'est +X.
+    const cosH = Math.cos(hauteur * RAD);
+    soleil.position.set(
+        Math.sin(azimut * RAD) * cosH,
+        Math.sin(hauteur * RAD),
+        -Math.cos(azimut * RAD) * cosH).multiplyScalar(DISTANCE_SOLEIL);
+    soleil.target.position.set(0, 0, 0);
+
+    // Fondu au crépuscule : le soleil s'éteint sous l'horizon, et rougit en
+    // rasant. Le ciel, lui, garde un reste de lumière — sinon la scène devient
+    // illisible d'un cran de curseur à l'autre.
+    const jour = Math.min(1, Math.max(0, (hauteur + 4) / 10));
+    soleil.intensity = 2.0 * jour;
+    soleil.castShadow = jour > 0.02;
+    soleil.color.copy(COULEUR_RASANTE)
+          .lerp(COULEUR_ZENITH, Math.min(1, Math.max(0, hauteur / 20)));
+    ambiance.intensity = 0.3 + 0.8 * jour;
+
+    const h = Math.floor(heures) % 24, mn = Math.round((heures - Math.floor(heures)) * 60);
+    document.getElementById('s-heure').textContent =
+        `${String(h).padStart(2, '0')}:${String(mn).padStart(2, '0')}`;
+    document.getElementById('s-saison').textContent =
+        `${DATE_SIMULEE.jour} ${MOIS_COURTS[DATE_SIMULEE.mois - 1]}`;
+    // La date affichée est TOUJOURS celle qui est simulée, marquée comme telle
+    // dès qu'elle quitte aujourd'hui.
+    const simulee = DATE_SIMULEE.mois !== DATE_SCENE.mois || DATE_SIMULEE.jour !== DATE_SCENE.jour;
+    document.getElementById('s-date').textContent =
+        `${String(DATE_SIMULEE.jour).padStart(2, '0')}/${String(DATE_SIMULEE.mois).padStart(2, '0')}/${DATE_SIMULEE.annee}`
+        + (simulee ? ' (simulée)' : ' (aujourd’hui)');
+    document.getElementById('s-azimut').textContent = hauteur > -0.83
+        ? `${azimut.toFixed(0)}° ${POINTS_CARDINAUX[Math.round(azimut / 45) % 8]}` : '—';
+    document.getElementById('s-hauteur').textContent = `${hauteur.toFixed(1)}°`;
+    document.getElementById('note-soleil').textContent = hauteur <= -0.83
+        ? 'Soleil sous l’horizon : aucune ombre portée.'
+        : (hauteur < 10 ? 'Soleil rasant : les ombres portées sont longues et très sensibles au relief.'
+                        : 'Ombres portées par le terrain et les bâtiments.');
+}
+
+const curseurHeure = document.getElementById('heure');
+curseurHeure.value = DATE_SCENE.heure.toFixed(2);
+curseurHeure.addEventListener('input', () => majSoleil(Number(curseurHeure.value)));
+
+const curseurSaison = document.getElementById('saison');
+curseurSaison.value = jourDeLAnnee(DATE_SCENE.annee, DATE_SCENE.mois, DATE_SCENE.jour);
+curseurSaison.addEventListener('input', () => {
+    poserJourSimule(Number(curseurSaison.value));
+    majSoleil(Number(curseurHeure.value));
+});
+// Crans rapides : les deux solstices, l'équinoxe, et le retour à aujourd'hui. Le 21 décembre est le cas d'épreuve de l'ensoleillement.
+for (const a of document.querySelectorAll('.saison-cran')) {
+    a.addEventListener('click', e => {
+        e.preventDefault();
+        curseurSaison.value = jourDeLAnnee(DATE_SIMULEE.annee, +a.dataset.mois, +a.dataset.jour);
+        poserJourSimule(Number(curseurSaison.value));
+        majSoleil(Number(curseurHeure.value));
+    });
+}
+document.getElementById('saison-aujourdhui').addEventListener('click', e => {
+    e.preventDefault();
+    curseurSaison.value = jourDeLAnnee(DATE_SCENE.annee, DATE_SCENE.mois, DATE_SCENE.jour);
+    poserJourSimule(Number(curseurSaison.value));
+    majSoleil(Number(curseurHeure.value));
+});
+majSoleil(DATE_SCENE.heure);
+
+// --- Boucle de rendu -----------------------------------------------------
+function dimensionner() {
+    const w = host.clientWidth, h = host.clientHeight;
+    if (!w || !h) return;
+    // updateStyle laissé à sa valeur par défaut (true) : avec setPixelRatio(2)
+    // sur un écran Retina, le tampon fait 2× la taille demandée. Sans mise à
+    // jour du style CSS, le canvas s'affiche à la taille du tampon, déborde du
+    // conteneur, et son centre optique part dans le coin bas-droit.
+    renderer.setSize(w, h);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', dimensionner);
+// Le panneau latéral passe au-dessus de la scène en dessous de 780 px : la
+// hauteur du conteneur change alors sans que la fenêtre soit redimensionnée.
+if (window.ResizeObserver) new ResizeObserver(dimensionner).observe(host);
+dimensionner();
+
+let precedent = performance.now();
+function boucle(maintenant) {
+    const dt = Math.min((maintenant - precedent) / 1000, 0.05);
+    precedent = maintenant;
+    if (orbite) {
+        const a = (Number(vitesse.value) * Math.PI / 180) * dt;
+        const cos = Math.cos(a), sin = Math.sin(a);
+        const dx = camera.position.x - controls.target.x;
+        const dz = camera.position.z - controls.target.z;
+        camera.position.x = controls.target.x + dx * cos - dz * sin;
+        camera.position.z = controls.target.z + dx * sin + dz * cos;
+    }
+    controls.update();
+
+    // Boussole : le nord de la scène est -Z, l'est +X. L'azimut du regard se
+    // mesure donc en atan2(dx, -dz), et la rose tourne à l'inverse pour que
+    // son N désigne toujours le nord à l'écran.
+    const dx = controls.target.x - camera.position.x;
+    const dz = controls.target.z - camera.position.z;
+    const azimut = Math.atan2(dx, -dz);
+    rose.style.transform = `rotate(${(-azimut * 180 / Math.PI).toFixed(1)}deg)`;
+
+    renderer.render(scene, camera);
+    requestAnimationFrame(boucle);
+}
+requestAnimationFrame(boucle);
+</script>
+</body>
+</html>
