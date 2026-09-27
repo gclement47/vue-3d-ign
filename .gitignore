@@ -3,3 +3,8 @@ __pycache__/
 .pytest_cache/
 .venv/
 /cache/
+# Outillage npm local (puppeteer-core pour outils/essai-navigateur.mjs) :
+# l'installation est documentée dans le README, rien de node dans le dépôt.
+node_modules/
+package.json
+package-lock.json
