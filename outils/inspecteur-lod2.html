@@ -1,0 +1,311 @@
+<!-- Visionneuse des B-Rep produits par outils/prototype_brep.py, qui la copie
+     dans cache/mesures/ à côté de donnees-brep.json qu'elle lit :
+       cd cache/mesures && python3 -m http.server 8123
+       http://localhost:8123/inspecteur-lod2.html
+     three.js est importé par URL directe (pas d'importmap ni d'addon : le bac
+     à sable des artefacts claude.ai ne les sert pas), l'orbite est maison. -->
+<title>Inspecteur LoD2</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&display=swap">
+<style>
+  :root {
+    color-scheme: dark;
+    --fond: #12161d;
+    --panneau: rgba(26, 32, 41, .94);
+    --bord: #2a3240;
+    --texte: #e9e5dc;
+    --sourdine: #8b93a1;
+    --accent: #d08c3c;
+    --alerte: #c4564a;
+    --ok: #7fa06b;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--fond); color: var(--texte); overflow: hidden; }
+  canvas { display: block; touch-action: none; }
+  .barre {
+    position: fixed; inset: 0 0 auto 0; z-index: 2;
+    display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+    padding: 10px 16px; padding-top: calc(10px + env(safe-area-inset-top, 0px));
+    background: linear-gradient(rgba(18, 22, 29, .92), rgba(18, 22, 29, .55) 80%, transparent);
+    pointer-events: none;
+  }
+  .barre > * { pointer-events: auto; }
+  h1 {
+    font: 600 17px/1 "Archivo", system-ui, sans-serif;
+    letter-spacing: .02em; margin: 0;
+  }
+  h1 small { color: var(--sourdine); font-weight: 500; margin-left: 8px; }
+  .groupe { display: flex; gap: 6px; align-items: center; }
+  button {
+    font: 500 13px/1 "Archivo", system-ui, sans-serif;
+    color: var(--texte); background: var(--panneau);
+    border: 1px solid var(--bord); border-radius: 6px;
+    padding: 7px 12px; cursor: pointer;
+  }
+  button:hover { border-color: var(--sourdine); }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #191307; }
+  .stats { color: var(--sourdine); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .stats b { color: var(--texte); font-weight: 600; }
+  .fiche {
+    position: fixed; left: 16px; bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    z-index: 2; max-width: min(340px, calc(100vw - 32px));
+    background: var(--panneau); border: 1px solid var(--bord); border-radius: 8px;
+    padding: 10px 14px; font-size: 13px; line-height: 1.55;
+    font-variant-numeric: tabular-nums;
+  }
+  .fiche .cleabs { font: 600 12px "Archivo", system-ui, sans-serif; letter-spacing: .04em; }
+  .fiche .etat-ok { color: var(--ok); }
+  .fiche .etat-ko { color: var(--alerte); }
+  .fiche .aide { color: var(--sourdine); }
+  .legende {
+    position: fixed; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    z-index: 2; color: var(--sourdine); font-size: 12px; text-align: right; line-height: 1.6;
+    max-width: min(300px, calc(100vw - 32px));
+  }
+  .legende .rouge { color: var(--alerte); }
+  .voile[hidden] { display: none; }
+  .voile {
+    position: fixed; inset: 0; z-index: 3; display: grid; place-items: center;
+    background: var(--fond); color: var(--sourdine);
+    font: 500 14px "Archivo", system-ui, sans-serif; letter-spacing: .03em;
+  }
+</style>
+
+<div class="barre">
+  <h1>Inspecteur LoD2 <small>toitures en plans, prototype</small></h1>
+  <div class="groupe" id="sites" role="group" aria-label="Site"></div>
+  <div class="groupe">
+    <button id="b-aretes" aria-pressed="true">Arêtes</button>
+    <button id="b-murs" aria-pressed="true">Murs</button>
+  </div>
+  <span class="stats" id="stats"></span>
+</div>
+
+<div class="fiche" id="fiche"><span class="aide">Glisser pour pivoter · molette pour zoomer · clic sur un volume pour sa fiche.</span></div>
+
+<div class="legende">
+  un aplat de couleur = un plan ajusté · murs et décrochements en pierre grise<br>
+  <span class="rouge">liseré rouge</span> = volume non étanche (arêtes ouvertes)
+</div>
+
+<div class="voile" id="voile">chargement des volumes…</div>
+
+<script>
+  // Garde-fou : toute erreur de chargement s'affiche au lieu d'un voile muet.
+  window.addEventListener('error', function (e) {
+    var v = document.getElementById('voile');
+    if (v && !v.hidden && !window.__pret)
+      v.textContent = 'erreur de chargement : ' + (e.message || (e.target && (e.target.src || e.target.href)) || 'inconnue');
+  }, true);
+  setTimeout(function () {
+    var v = document.getElementById('voile');
+    if (v && !v.hidden && !window.__pret)
+      v.textContent = 'three.js ne s’est pas chargé — recharger la page.';
+  }, 10000);
+</script>
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+window.__pret = true;
+
+const PANS = [0xc98a5b, 0xa8b087, 0x8f9fb8, 0xc9b06b, 0x9b8aa6, 0xb3746a, 0x87a3a0];
+const MUR = 0xb9b2a6, PLANCHER = 0x3a4048;
+const ARETE = 0x10141a, ARETE_KO = 0xc4564a;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x12161d);
+const camera = new THREE.PerspectiveCamera(45, 1, 1, 5000);
+const rendu = new THREE.WebGLRenderer({ antialias: true });
+rendu.setPixelRatio(Math.min(devicePixelRatio, 2));
+document.body.appendChild(rendu.domElement);
+// Orbite maison (l'addon OrbitControls ne se charge pas dans le bac à sable) :
+// glisser = pivoter, clic droit ou ctrl = déplacer la cible, molette et
+// pincement = zoomer.
+const cible = new THREE.Vector3();
+let rayonCam = 100, theta = 0.75, phi = 0.9;
+function placerCamera() {
+  camera.position.set(
+    cible.x + rayonCam * Math.sin(phi) * Math.cos(theta),
+    cible.y + rayonCam * Math.cos(phi),
+    cible.z + rayonCam * Math.sin(phi) * Math.sin(theta));
+  camera.lookAt(cible);
+}
+const doigts = new Map();
+let bouge = 0, pincement = 0;
+rendu.domElement.addEventListener('contextmenu', e => e.preventDefault());
+rendu.domElement.addEventListener('pointerdown', ev => {
+  rendu.domElement.setPointerCapture(ev.pointerId);
+  doigts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+  if (doigts.size === 1) bouge = 0;
+  if (doigts.size === 2) {
+    const [a, b] = [...doigts.values()];
+    pincement = Math.hypot(a.x - b.x, a.y - b.y);
+  }
+});
+rendu.domElement.addEventListener('pointermove', ev => {
+  const d = doigts.get(ev.pointerId);
+  if (!d) return;
+  const dx = ev.clientX - d.x, dy = ev.clientY - d.y;
+  d.x = ev.clientX; d.y = ev.clientY;
+  bouge += Math.abs(dx) + Math.abs(dy);
+  if (doigts.size === 2) {
+    const [a, b] = [...doigts.values()];
+    const ecart = Math.hypot(a.x - b.x, a.y - b.y);
+    if (pincement) rayonCam = Math.min(Math.max(rayonCam * pincement / ecart, 15), 4000);
+    pincement = ecart;
+  } else if (ev.buttons & 2 || ev.ctrlKey || ev.metaKey) {
+    const pas = rayonCam / 600;
+    const droite = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 0);
+    const haut = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 1);
+    cible.addScaledVector(droite, -dx * pas).addScaledVector(haut, dy * pas);
+  } else if (ev.buttons) {
+    theta += dx * 0.005;
+    phi = Math.min(Math.max(phi - dy * 0.005, 0.05), 1.52);
+  }
+  placerCamera();
+});
+const finDoigt = ev => { doigts.delete(ev.pointerId); pincement = 0; };
+rendu.domElement.addEventListener('pointercancel', finDoigt);
+rendu.domElement.addEventListener('wheel', ev => {
+  ev.preventDefault();
+  rayonCam = Math.min(Math.max(rayonCam * Math.exp(ev.deltaY * 0.0012), 15), 4000);
+  placerCamera();
+}, { passive: false });
+
+scene.add(new THREE.HemisphereLight(0xcfd8e6, 0x2a2620, 1.1));
+const soleil = new THREE.DirectionalLight(0xffe8c4, 1.6);
+soleil.position.set(-0.6, 1, 0.35);
+scene.add(soleil);
+
+function geometrie(b, filtre) {
+  const pos = [], col = [], c = new THREE.Color();
+  for (let t = 0; t < b.e.length; t++) {
+    if (!filtre(b.e[t])) continue;
+    c.setHex(b.e[t] >= 0 ? PANS[b.e[t] % PANS.length] : b.e[t] === -1 ? MUR : PLANCHER);
+    for (const i of [b.t[3 * t], b.t[3 * t + 1], b.t[3 * t + 2]]) {
+      // Repère : x est, y (fichier) sud depuis y0, hauteur au-dessus de la base.
+      pos.push(b.x0 + b.s[3 * i], b.base + b.s[3 * i + 2], b.s[3 * i + 1] - b.y0);
+      col.push(c.r, c.g, c.b);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.computeVertexNormals();
+  return g;
+}
+
+const MAT = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
+const groupes = {}, listes = {};
+
+function construireSite(nom, batiments) {
+  const groupe = new THREE.Group();
+  const baseMin = Math.min(...batiments.map(b => b.base));
+  for (const b of batiments) {
+    const toits = new THREE.Mesh(geometrie(b, e => e >= 0), MAT);
+    const murs = new THREE.Mesh(geometrie(b, e => e < 0), MAT);
+    toits.userData = murs.userData = b;
+    const aretes = new THREE.LineSegments(
+      new THREE.EdgesGeometry(toits.geometry, 20),
+      new THREE.LineBasicMaterial({ color: b.ouvertes ? ARETE_KO : ARETE }));
+    aretes.userData.aretes = true;
+    for (const o of [toits, murs, aretes]) { o.position.y = -baseMin; groupe.add(o); }
+  }
+  groupe.visible = false;
+  scene.add(groupe);
+  return groupe;
+}
+
+function cadrer(groupe) {
+  const boite = new THREE.Box3().setFromObject(groupe);
+  const centre = boite.getCenter(new THREE.Vector3());
+  const rayon = boite.getSize(new THREE.Vector3()).length() / 2;
+  cible.copy(centre);
+  rayonCam = Math.max(rayon * 1.7, 30);
+  theta = 0.75; phi = 0.9;
+  camera.near = Math.max(rayon / 100, 0.5); camera.far = rayon * 20 + 500;
+  camera.updateProjectionMatrix();
+  placerCamera();
+}
+
+let siteActif = null;
+function afficher(nom) {
+  siteActif = nom;
+  for (const [n, g] of Object.entries(groupes)) g.visible = n === nom;
+  for (const bouton of document.querySelectorAll('#sites button'))
+    bouton.setAttribute('aria-pressed', bouton.textContent === nom);
+  const bats = listes[nom];
+  const etanches = bats.filter(b => !b.ouvertes).length;
+  document.getElementById('stats').innerHTML =
+    `<b>${bats.length}</b> volumes · <b>${etanches}</b> étanches · écart médian <b>${
+      mediane(bats.map(b => b.ecart)).toFixed(2)} m</b>`;
+  cadrer(groupes[nom]);
+}
+
+const mediane = v => [...v].sort((a, b) => a - b)[v.length >> 1];
+
+// Bascules d'affichage.
+let voirAretes = true, voirMurs = true;
+function appliquerBascules() {
+  for (const g of Object.values(groupes))
+    g.children.forEach((o, i) => {
+      if (o.userData.aretes) o.visible = voirAretes;
+      else if (i % 3 === 1) o.visible = voirMurs;   // toits, murs, arêtes par bâtiment
+    });
+}
+document.getElementById('b-aretes').addEventListener('click', e => {
+  voirAretes = !voirAretes;
+  e.target.setAttribute('aria-pressed', voirAretes);
+  appliquerBascules();
+});
+document.getElementById('b-murs').addEventListener('click', e => {
+  voirMurs = !voirMurs;
+  e.target.setAttribute('aria-pressed', voirMurs);
+  appliquerBascules();
+});
+
+// Fiche au relâchement, si le geste n'était pas une rotation.
+const palpeur = new THREE.Raycaster(), pointeur = new THREE.Vector2();
+rendu.domElement.addEventListener('pointerup', ev => {
+  finDoigt(ev);
+  if (bouge > 6) return;
+  pointeur.set((ev.clientX / innerWidth) * 2 - 1, -(ev.clientY / innerHeight) * 2 + 1);
+  palpeur.setFromCamera(pointeur, camera);
+  const cibles = groupes[siteActif] ? groupes[siteActif].children.filter(o => o.isMesh && o.visible) : [];
+  const touche = palpeur.intersectObjects(cibles, false)[0];
+  if (!touche) return;
+  const b = touche.object.userData;
+  document.getElementById('fiche').innerHTML =
+    `<div class="cleabs">${b.cleabs}</div>`
+    + `${b.faces} pans · ${b.e.length} triangles · écart au LiDAR ${b.ecart.toFixed(2)} m<br>`
+    + (b.ouvertes
+       ? `<span class="etat-ko">non étanche : ${b.ouvertes} arête(s) ouverte(s)</span>`
+       : `<span class="etat-ok">étanche : 0 arête ouverte</span>`);
+});
+
+function taille() {
+  rendu.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+}
+addEventListener('resize', taille);
+taille();
+
+rendu.setAnimationLoop(() => rendu.render(scene, camera));
+
+fetch('donnees-brep.json').then(r => r.json()).then(donnees => {
+  const conteneur = document.getElementById('sites');
+  for (const [nom, bats] of Object.entries(donnees)) {
+    listes[nom] = bats;
+    groupes[nom] = construireSite(nom, bats);
+    const bouton = document.createElement('button');
+    bouton.textContent = nom;
+    bouton.addEventListener('click', () => afficher(nom));
+    conteneur.appendChild(bouton);
+  }
+  document.getElementById('voile').hidden = true;
+  afficher(Object.keys(donnees)[0]);
+}).catch(() => {
+  document.getElementById('voile').textContent = 'données introuvables — republier donnees-brep.json';
+});
+</script>
