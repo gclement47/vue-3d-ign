@@ -74,6 +74,24 @@ def _bil(west, south, east, north, largeur, hauteur):
     return np.frombuffer(reponse.content[:attendu], dtype="<f4").reshape(hauteur, largeur)
 
 
+def _quantifier(grille, trous, west, south, east, north):
+    """Grille d'altitudes en décimètres au-dessus de son minimum, en base64."""
+    hauteur, largeur = grille.shape
+    zero = float(np.floor(grille[~trous].min()))
+    quant = np.rint((grille - zero) / RELIEF_PAS_M)
+    quant = np.clip(quant, RELIEF_SENTINELLE + 1, 32767)
+    quant[trous] = RELIEF_SENTINELLE
+    return {
+        "width": largeur, "height": hauteur,
+        "bbox": [west, south, east, north],
+        "zero_m": round(zero, 1),
+        "pas_m": RELIEF_PAS_M,
+        "source": "RGE ALTI (IGN)",
+        "precision": "1 m, modèle de terrain",
+        "altitudes": base64.b64encode(quant.astype("<i2").tobytes()).decode("ascii"),
+    }
+
+
 def fetch_relief(west, south, east, north, taille=RELIEF_TAILLE):
     """Relief de l'emprise, prêt à embarquer dans la scène.
 
@@ -88,19 +106,62 @@ def fetch_relief(west, south, east, north, taille=RELIEF_TAILLE):
     trous = grille <= RELIEF_NODATA + 1
     if trous.mean() > RELIEF_PART_TROUS_MAX:
         return None
-    valides = grille[~trous]
-    if not valides.size:
+    if trous.all():
         return None
-    zero = float(np.floor(valides.min()))
-    quant = np.rint((grille - zero) / RELIEF_PAS_M)
-    quant = np.clip(quant, RELIEF_SENTINELLE + 1, 32767)
-    quant[trous] = RELIEF_SENTINELLE
-    return {
-        "width": taille, "height": taille,
-        "bbox": [west, south, east, north],
-        "zero_m": round(zero, 1),
-        "pas_m": RELIEF_PAS_M,
-        "source": "RGE ALTI (IGN)",
-        "precision": "1 m, modèle de terrain",
-        "altitudes": base64.b64encode(quant.astype("<i2").tobytes()).decode("ascii"),
-    }
+    return _quantifier(grille, trous, west, south, east, north)
+
+
+# --- Anneau de contexte ---------------------------------------------------
+# Autour de la scène, un relief grossier évite l'effet de maquette posée dans
+# le vide. Il se fond dans le brouillard de la vue : sa précision compte peu,
+# son poids beaucoup moins encore. Mesuré sur 2 km de côté contre une
+# référence à 512 points, pour la même emprise :
+#
+#                      grille 64   96     128    192
+#   maille               32 m     21 m   16 m   10 m
+#   Versailles  méd.     0,38     0,24   0,18   0,12 m    (34 m de dénivelé)
+#               p95      2,2      1,5    1,2    0,7 m
+#   Gordes      méd.     2,3      1,4    1,1    0,7 m     (242 m)
+#               p95     10,5      6,9    5,2    3,5 m
+#   Chamonix    p95     27,9     18,9   15,0    9,1 m     (671 m)
+#   compressé           3 Ko     7 Ko  12 Ko   26 Ko
+#
+# 128 : un mètre d'erreur médiane même en pente, pour 12 Ko au plus.
+ANNEAU_TAILLE = 128
+# L'anneau touche la mer ou la frontière bien plus souvent que la scène : un
+# quart de trous à Saint-Malo comme à Menton. Il n'est donc pas refusé pour
+# autant, ses trous restent simplement vides.
+#
+# Mais le service rééchantillonne SANS masquer ses −99 999 : il les mélange à
+# leurs voisins, et sort des altitudes de −8 700 m ou −61 m à plusieurs pixels
+# du trou. Mesuré à Saint-Malo et Menton, un seuil à −20 m suivi d'un
+# élargissement de deux pixels (31 m) est le premier qui ne laisse que des
+# altitudes plausibles (−5 m au plus bas, sur l'estran).
+ANNEAU_TROU_SOUS_M = -20
+ANNEAU_ELARGISSEMENT = 2
+
+
+def _elargir(masque, pas):
+    """Dilatation en croix de `pas` pixels, sans dépendance à scipy."""
+    for _ in range(pas):
+        m = masque.copy()
+        m[1:] |= masque[:-1]
+        m[:-1] |= masque[1:]
+        m[:, 1:] |= masque[:, :-1]
+        m[:, :-1] |= masque[:, 1:]
+        masque = m
+    return masque
+
+
+def fetch_relief_anneau(west, south, east, north, taille=ANNEAU_TAILLE):
+    """Relief grossier autour de la scène, trous compris.
+
+    Même format que `fetch_relief`. None seulement si rien n'est couvert.
+    """
+    west, south, east, north = map(float, (west, south, east, north))
+    grille = _bil(west, south, east, north, taille, taille).astype(np.float64)
+    trous = _elargir(grille < ANNEAU_TROU_SOUS_M, ANNEAU_ELARGISSEMENT)
+    if trous.all():
+        return None
+    return _quantifier(grille, trous, west, south, east, north)
+
