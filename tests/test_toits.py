@@ -374,7 +374,8 @@ def test_le_toit_resume_suit_l_axe_mesure():
 
 def test_toits_pour_emprise_choisit_bâtiment_par_bâtiment():
     """Deux bâtiments sur une même grille : chacun reçoit son profil, et seule
-    la maison surélevée reçoit la surface (la boucle ne mélange pas les deux)."""
+    la maison surélevée reçoit une forme mesurée — ses deux niveaux, en pans
+    (la boucle ne mélange pas les deux)."""
     import math
     import numpy as np
     from vue3d.toits import toits_pour_emprise
@@ -399,8 +400,9 @@ def test_toits_pour_emprise_choisit_bâtiment_par_bâtiment():
                 "geometry": {"type": "Polygon", "coordinates": [c]}}
     bats = {"features": [carre(-14, 8, 5, "SIMPLE"), carre(14, 7, 5, "MARCHE")]}
     r = toits_pour_emprise(*bbox, bats, grille, None)
-    assert "surface" not in r["toits"]["SIMPLE"]
-    assert "surface" in r["toits"]["MARCHE"]
+    assert "surface" not in r["toits"]["SIMPLE"] and "pans" not in r["toits"]["SIMPLE"]
+    assert r["toits"]["MARCHE"]["pans"]["n_pans"] == 2
+    assert "surface" not in r["toits"]["MARCHE"]
 
 
 def _emprise_cabane(h_canopee, h_cabane):

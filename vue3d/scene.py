@@ -55,7 +55,8 @@ journal = logging.getLogger(__name__)
 # 5 : lignes à haute tension.
 # 6 : monuments OSM (building:part).
 # 7 : profil minimal (hauteur inconnue) pour les bâtiments illisibles.
-SCENE_VERSION = 7
+# 8 : toits en pans (vue3d/pans.py), préférés à la surface mesurée.
+SCENE_VERSION = 8
 # Demi-côté de l'emprise, en degrés : ~178 m de part et d'autre du point.
 SCENE_DELTA = 0.0016
 # Demi-côté de l'anneau, en mètres et non en degrés : carré sur le terrain.

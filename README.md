@@ -67,9 +67,11 @@ Chaque premier chargement construit la scène, en 20 à 40 secondes.
   rejoint le faîtage, **mesurés au LiDAR HD** quand la mesure est fiable, sinon
   déclarés par la BD TOPO. Un bâtiment en ailes reçoit un toit par corps, chacun
   sur son propre faîtage. Le bouton **Toits mesurés** remplace ce toit résumé
-  par la surface même du LiDAR là où il la manque de plus de 0,7 m : moitié
-  surélevée, faîtage décentré, îlot autour d'une cour. Plus fidèle, plus
-  granuleuse, elle est éteinte au départ.
+  là où il manque le LiDAR de plus de 0,7 m — moitié surélevée, faîtage
+  décentré, îlot autour d'une cour — par des **pans** : quelques plans ajustés
+  au LiDAR, faîtages nets, fermés par leurs murs. Un toit qui n'est pas fait de
+  plans garde la surface même du LiDAR, plus granuleuse. Le bouton est éteint
+  au départ.
 - **Le bâtiment visé**, qui contient le point ou, à défaut, le plus proche à
   moins de 25 m, est en orange et sa fiche s'ouvre d'elle-même : BD TOPO,
   mesures LiDAR, distance au point, forme du toit dessiné. Un clic sur un autre
@@ -137,6 +139,15 @@ principales :
   contour mêlent toit et sol et reprennent leurs voisines. Sur la pente, la
   surface est redressée par le terrain du LiDAR lui-même, non par le RGE ALTI,
   dont les restanques ondulaient le toit. Elle colle au LiDAR à 4 à 8 cm près.
+- **Toits en pans.** Cette surface est d'abord découpée en plans, par
+  croissance de régions déterministe (la scène est cachée pour toujours : pas
+  de tirage au sort). À 12° et 0,15 m, les tolérances courantes, un toit de
+  Strasbourg sur trois seulement se découpait : à maille fixe, le bruit de la
+  normale croît avec la pente. À 25° et 0,40 m, 87 % des toits proposés à
+  Gordes et 55 % à Strasbourg passent en pans, à 8-12 cm du LiDAR ; le reste
+  garde la surface. Chaque volume est vérifié fermé — toute arête portée par
+  deux triangles, en sens opposés — et refusé sinon, jamais approché. Mesure :
+  `python outils/mesure_pans.py [lat lon]`.
 - **Toitures.** Gouttière au 15e centile et faîtage au 85e des hauteurs LiDAR
   de l'emprise érodée, plutôt que le minimum et le maximum : un arbre qui
   surplombe gonfle le maximum (16 m lus sur une maison de 4 m). La mesure est

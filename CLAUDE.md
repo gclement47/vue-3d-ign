@@ -25,6 +25,7 @@ vue3d/
   couches.py    lecture WFS (bâtiments, végétation, BD Forêt, routes)
   mnh.py        hauteurs du sursol, LiDAR HD, repli MNS − MNT
   toits.py      gouttière, faîtage, corps de toit, surface du toit, bâtiments sous les arbres
+  pans.py       toit en pans : plans ajustés au MNH, volume fermé et vérifié
   houppiers.py  segmentation des arbres sur la grille à 0,5 m
   ortho.py      indice de verdure ExG, mosaïque d'orthophoto
   relief.py     RGE ALTI quantifié au décimètre, anneau de relief alentour
@@ -55,6 +56,10 @@ fichier statique qui lit le point dans son URL.
 - **La grille MNH à 0,5 m est lue une fois** et passée aux toitures et aux
   houppiers ; elle n'est jamais embarquée dans la scène (1,9 Mo d'entrée de
   calcul).
+- **Un toit en pans est fermé ou n'est pas publié.** `pans.py` vérifie le
+  volume transmis, après quantification : chaque arête portée par exactement
+  deux triangles, en sens opposés. Sinon il rend None et le toit garde sa
+  surface mesurée. Ne jamais publier un volume « presque » fermé.
 - **La géométrie d'un houppier ne doit jamais se retourner** : rayon croissant
   avec la couronne, hauteur décroissante du sommet au bord, dessous qui remonte
   vers le tronc, lobage partagé par tous les anneaux. Un défaut ici passe

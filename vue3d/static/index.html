@@ -718,6 +718,42 @@ function geometriesSurface(anneau, s) {
     return { toit: toCreasedNormals(geo(toit), ANGLE_PLI_TOIT), murs: geo(murs) };
 }
 
+/**
+ * Toit et murs d'un bâtiment en pans (vue3d/pans.py), en coordonnées de
+ * scène, base à 0 comme geometriesSurface. Les sommets arrivent en dixièmes
+ * de maille depuis la première cellule de la fenêtre (vers l'est, vers le
+ * sud) et en décimètres au-dessus du point bas du terrain ; les triangles,
+ * orientés vers l'extérieur, commencent par ceux du toit.
+ */
+function geometriesPans(s) {
+    const G = TOITS_GRILLE;
+    const [w, sud, e, n] = G.bbox;
+    const lonCol = i => w + (e - w) * (s.i0 + i + 0.5) / G.width;
+    const latLig = j => n - (n - sud) * (s.j0 + j + 0.5) / G.height;
+    const [X0, Y0] = toLocal(lonCol(0), latLig(0));
+    const [X1, Y1] = toLocal(lonCol(1), latLig(1));
+    const dx = (X1 - X0) / 10, dy = (Y0 - Y1) / 10;
+    const S = s.sommets;
+    // Même zéro que la surface : le toit est relevé d'ENFONCEMENT, dont
+    // baseBatiment() enfonce la base ; le pied des murs reste enfoncé.
+    const point = k => {
+        const h = S[3 * k + 2] / 10;
+        return [X0 + S[3 * k] * dx, h > 0 ? h + ENFONCEMENT : 0, -(Y0 - S[3 * k + 1] * dy)];
+    };
+    const geo = (debut, fin) => {
+        const v = [];
+        for (let t = debut; t < fin; t++)
+            for (let m = 0; m < 3; m++) v.push(...point(s.triangles[3 * t + m]));
+        const g = new THREE.BufferGeometry();
+        g.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
+        // Non indexée : une normale par facette, les pans restent nets et le
+        // faîtage franc.
+        g.computeVertexNormals();
+        return g;
+    };
+    return { toit: geo(0, s.n_toit), murs: geo(s.n_toit, s.triangles.length / 3) };
+}
+
 /** Boîte d'un corps de toit LiDAR, centrée, dans le repère de son axe. */
 function rectangleDeCorps(corps) {
     const ang = (corps.axe_deg != null ? corps.axe_deg : 0) * Math.PI / 180;
@@ -946,7 +982,8 @@ function afficherFicheBatiment(ud) {
     // retenue que là où le toit résumé s'écarte du LiDAR (vue3d/toits.py).
     const l = ud.lidar;
     const forme = !l ? ''
-        : stat('toit dessiné', l.surface && toitsEnPente && toitsMesures ? 'surface mesurée'
+        : stat('toit dessiné', l.pans && toitsEnPente && toitsMesures ? `${l.pans.n_pans} pan(s) mesuré(s)`
+               : l.surface && toitsEnPente && toitsMesures ? 'surface mesurée'
                : (l.corps && l.corps.length >= 2 ? `${l.corps.length} corps de toit`
                   : (l.faitage - l.gouttiere > 0.5 ? 'deux pans' : 'plat')))
           + (l.ecart_resume != null ? stat('écart du toit résumé au LiDAR', metres(l.ecart_resume)) : '');
@@ -965,7 +1002,7 @@ function construire(features, toitsEnPente) {
     groupeBatiments.clear();
     meshes.length = 0;
     meshesToits.length = 0;
-    stats = { total: 0, avecToit: 0, pentes: [], lidar: 0, axes: 0, corps: 0, inconnus: 0, surfaces: 0, osm: 0 };
+    stats = { total: 0, avecToit: 0, pentes: [], lidar: 0, axes: 0, corps: 0, inconnus: 0, surfaces: 0, pans: 0, osm: 0 };
     // Bâtiments que les parties OSM remplacent : OSM et la BD TOPO ne découpent
     // pas le bâti pareil, dessiner les deux superposerait deux modèles.
     //
@@ -1066,33 +1103,36 @@ function construire(features, toitsEnPente) {
             groupeBatiments.add(mur);
             meshes.push(mur);
 
-            // Surface mesurée : le toit suit le MNH cellule par cellule, pans,
-            // marches et faîtages décentrés compris. Elle remplace le toit à
-            // deux pans et les corps, qui n'en sont que des résumés — sur
-            // demande seulement : fidèle au LiDAR, elle en garde le grain, et
-            // le toit résumé se lit mieux dans une vue d'ensemble.
-            const surface = toitsEnPente && toitsMesures && lidar && lidar.surface && TOITS_GRILLE
-                ? geometriesSurface(anneau, lidar.surface) : null;
+            // Forme mesurée, là où le toit résumé s'écarte du LiDAR : en pans
+            // (vue3d/pans.py), quelques plans fermés par leurs murs, sinon la
+            // surface, qui suit le MNH cellule par cellule. Elle remplace le
+            // toit à deux pans et les corps, qui n'en sont que des résumés —
+            // sur demande seulement : le toit résumé se lit mieux dans une vue
+            // d'ensemble.
+            const surface = !(toitsEnPente && toitsMesures && lidar && TOITS_GRILLE) ? null
+                : lidar.pans ? geometriesPans(lidar.pans)
+                : lidar.surface ? geometriesSurface(anneau, lidar.surface) : null;
             if (surface) {
                 const provisoire = meshes.pop();
                 groupeBatiments.remove(provisoire);
                 provisoire.geometry.dispose();
                 if (!(aDesAltitudes && denivele > 0.5)) { stats.avecToit++; stats.pentes.push(denivele); }
-                stats.surfaces++;
+                if (lidar.pans) stats.pans++; else stats.surfaces++;
                 // Surface déjà rapportée au point bas du contour par le serveur :
                 // rebaserBatiments() ne la relève pas.
                 const ud = { p, denivele, hMur, anneau, lidar, surface: true };
                 const murs = new THREE.Mesh(surface.murs, materiauMurs(anneau));
                 habillerCible(murs, anneau);
-                const toit = new THREE.Mesh(surface.toit, MAT_TOIT_SURFACE);
+                const toit = new THREE.Mesh(surface.toit, lidar.pans ? MAT_TOIT_VOISIN : MAT_TOIT_SURFACE);
                 for (const m of [murs, toit]) {
                     m.castShadow = true; m.receiveShadow = true; m.userData = ud;
                     groupeBatiments.add(m);
                     meshes.push(m);
                 }
-                // Sans fond, appliquerTextureToits() lui rendra son matériau
-                // lissé plutôt que celui, à facettes, des toits résumés.
-                toit.userData = { ...ud, lisse: true };
+                // Sans fond, appliquerTextureToits() rendra à la surface son
+                // matériau lissé ; les pans, plans, gardent celui à facettes
+                // des toits résumés.
+                toit.userData = { ...ud, lisse: !lidar.pans };
                 meshesToits.push(toit);
                 toit.name = 'toit';
                 continue;
@@ -1179,6 +1219,7 @@ function construire(features, toitsEnPente) {
         stats.total ? `${stats.lidar} (${Math.round(100*stats.lidar/stats.total)} %)`
                       + (stats.axes ? `, faîtage orienté sur ${stats.axes}` : '')
                       + (stats.corps ? `, ${stats.corps} corps de toit` : '')
+                      + (stats.pans ? `, en pans sur ${stats.pans}` : '')
                       + (stats.surfaces ? `, surface mesurée sur ${stats.surfaces}` : '')
                       + (stats.inconnus ? `, ${stats.inconnus} sous les arbres (hauteur inconnue)` : '')
                       + (TOITS_SOURCE === 'mns_mnt' ? ' · photogrammétrie' : '') : '—';

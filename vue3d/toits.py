@@ -46,6 +46,7 @@ import shapely
 from shapely.geometry import shape, Point
 
 from .ortho import EXG_SEUIL
+from .pans import pans_du_toit
 
 journal = logging.getLogger(__name__)
 
@@ -542,6 +543,24 @@ def cellules_du_toit(polygone_m, hauteurs, xs, ys, gouttiere, verdure=None):
             "valides": valides, "lisse": _mediane_3x3(h, valides)}
 
 
+def pans_toit(polygone_m, cellules, sol=None, sol_bas=None):
+    """Toit en pans (vue3d/pans.py) sur la fenêtre d'un toit, ou None.
+
+    Même surface que surface_toit — le MNH lissé, redressé sur le terrain —
+    mais réduite à quelques plans et fermée par ses murs.
+    """
+    i0, i1, j0, j1 = cellules["i0"], cellules["i1"], cellules["j0"], cellules["j1"]
+    valides = cellules["valides"]
+    z = cellules["lisse"]
+    if sol is not None and sol_bas is not None:
+        z = z + np.nan_to_num(np.asarray(sol[j0:j1, i0:i1], dtype=np.float64) - sol_bas)
+    pans = pans_du_toit(polygone_m, cellules["X"], cellules["Y"],
+                        _combler(np.where(valides, z, np.nan)), valides)
+    if pans:
+        pans.update(i0=i0, j0=j0)
+    return pans
+
+
 def surface_toit(polygone_m, hauteurs, xs, ys, gouttiere, verdure=None, sol=None, sol_bas=None,
                  cellules=None):
     """Grille des hauteurs du toit sous une emprise, prête pour la vue.
@@ -891,10 +910,17 @@ def toits_pour_emprise(west, south, east, north, batiments_geojson, grille, exg,
                 profil["ecart_resume"] = round(ecart, 2)
                 if ecart > SURFACE_ECART_RESUME_M:
                     bas = _sol_bas(sol, geom, xs, ys, lon0, lat0, m_lon) if sol is not None else None
-                    surface = surface_toit(poly_seul, hauteurs, xs, ys, profil["gouttiere"],
-                                           exg, sol, bas, fenetre)
-                    if surface:
-                        profil["surface"] = surface
+                    # Les pans d'abord : la forme de la surface, sans son
+                    # grain. La surface reste le repli d'un toit qui n'est pas
+                    # fait de plans.
+                    pans = pans_toit(poly_seul, fenetre, sol, bas)
+                    if pans:
+                        profil["pans"] = pans
+                    else:
+                        surface = surface_toit(poly_seul, hauteurs, xs, ys, profil["gouttiere"],
+                                               exg, sol, bas, fenetre)
+                        if surface:
+                            profil["surface"] = surface
         resultat["toits"][cleabs] = profil
     mesures = sum(1 for p in resultat["toits"].values() if "gouttiere" in p)
     journal.info("Toits LiDAR : %d bâtiment(s) mesuré(s), %d profil(s) minimal(aux), source=%s",
