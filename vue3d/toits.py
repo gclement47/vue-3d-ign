@@ -828,7 +828,9 @@ def toits_pour_emprise(west, south, east, north, batiments_geojson, grille, exg,
     Returns:
         dict: source ('lidar_hd' | 'mns_mnt' | None), resolution_m, ortho, et
         `toits` : {cleabs: profil}. Vide si l'emprise n'est couverte par
-        aucune source d'altitude.
+        aucune source d'altitude. Un bâtiment dont l'emprise ne livre pas
+        assez de cellules reçoit un profil minimal (fiable à faux, part verte
+        qualifiée), jamais rien : la vue doit savoir s'il est sous les arbres.
     """
     from shapely.ops import transform
 
@@ -861,27 +863,40 @@ def toits_pour_emprise(west, south, east, north, batiments_geojson, grille, exg,
         # Projection locale identique à celle des cellules.
         poly = transform(lambda x, y, z=None: ((x - lon0) * m_lon, (y - lat0) * 111320), geom)
         profil = profil_toit(cellules, poly)
-        if profil:
-            part = part_verte(poly, verdure) if verdure is not None else None
-            profil = qualifier_couvert(profil, part)
-            # Seulement là où le profil est un toit : sous un arbre (mode bas),
-            # la grille décrirait le feuillage autant que la toiture.
-            # D'un seul tenant aussi : la vue pose chaque morceau d'une emprise
-            # sur sa propre base, une grille commune n'aurait pas de zéro.
-            if (profil["fiable"] and not profil["mode_bas"] and not profil["hauteur_inconnue"]
-                    and len(_morceaux(geom)) == 1):
-                poly_seul = _morceaux(poly)[0]
-                fenetre = cellules_du_toit(poly_seul, hauteurs, xs, ys, profil["gouttiere"], exg)
-                if fenetre is not None:
-                    ecart = ecart_au_resume(profil, poly_seul, fenetre)
-                    profil["ecart_resume"] = round(ecart, 2)
-                    if ecart > SURFACE_ECART_RESUME_M:
-                        bas = _sol_bas(sol, geom, xs, ys, lon0, lat0, m_lon) if sol is not None else None
-                        surface = surface_toit(poly_seul, hauteurs, xs, ys, profil["gouttiere"],
-                                               exg, sol, bas, fenetre)
-                        if surface:
-                            profil["surface"] = surface
-            resultat["toits"][cleabs] = profil
-    journal.info("Toits LiDAR : %d bâtiment(s) mesuré(s), source=%s",
-                 len(resultat["toits"]), resultat["source"])
+        part = part_verte(poly, verdure) if verdure is not None else None
+        if profil is None:
+            # Emprise illisible : moins de TOITS_MIN_CELLULES cellules une fois
+            # érodée. Sans profil publié, la vue retombait sur les altitudes
+            # BD TOPO même sous le couvert, où elles sortent d'un MNS
+            # photogrammétrique contaminé par la même canopée : 8,1 m de murs
+            # annoncés pour une cabane d'environ 3 m sous les arbres, et le
+            # verdict basculait au gré du calage de la grille (20, 21 ou 19
+            # cellules pour la même cabane selon le point arrondi de la scène).
+            # Un profil minimal laisse qualifier_couvert trancher : hauteur
+            # inconnue si la part verte le justifie, sinon (fiable à faux) la
+            # vue garde son repli BD TOPO — hors canopée, il reste bon.
+            resultat["toits"][cleabs] = qualifier_couvert({"fiable": False, "n": 0}, part)
+            continue
+        profil = qualifier_couvert(profil, part)
+        # Seulement là où le profil est un toit : sous un arbre (mode bas),
+        # la grille décrirait le feuillage autant que la toiture.
+        # D'un seul tenant aussi : la vue pose chaque morceau d'une emprise
+        # sur sa propre base, une grille commune n'aurait pas de zéro.
+        if (profil["fiable"] and not profil["mode_bas"] and not profil["hauteur_inconnue"]
+                and len(_morceaux(geom)) == 1):
+            poly_seul = _morceaux(poly)[0]
+            fenetre = cellules_du_toit(poly_seul, hauteurs, xs, ys, profil["gouttiere"], exg)
+            if fenetre is not None:
+                ecart = ecart_au_resume(profil, poly_seul, fenetre)
+                profil["ecart_resume"] = round(ecart, 2)
+                if ecart > SURFACE_ECART_RESUME_M:
+                    bas = _sol_bas(sol, geom, xs, ys, lon0, lat0, m_lon) if sol is not None else None
+                    surface = surface_toit(poly_seul, hauteurs, xs, ys, profil["gouttiere"],
+                                           exg, sol, bas, fenetre)
+                    if surface:
+                        profil["surface"] = surface
+        resultat["toits"][cleabs] = profil
+    mesures = sum(1 for p in resultat["toits"].values() if "gouttiere" in p)
+    journal.info("Toits LiDAR : %d bâtiment(s) mesuré(s), %d profil(s) minimal(aux), source=%s",
+                 mesures, len(resultat["toits"]) - mesures, resultat["source"])
     return resultat

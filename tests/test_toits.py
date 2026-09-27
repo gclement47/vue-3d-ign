@@ -1,6 +1,7 @@
 """Profil de toit LiDAR (vue3d/toits.py), sur une grille synthétique."""
 import math
 
+import numpy as np
 from shapely.geometry import box, Point
 
 from vue3d.toits import profil_toit, TOITS_MIN_CELLULES
@@ -211,8 +212,9 @@ def test_largeur_min_reste_finie_sur_une_emprise_alignee():
 def test_un_mode_bas_trop_petit_est_refuse():
     # Cabane de 11 m² entièrement sous les arbres : le LiDAR ne voit aucune
     # cellule au niveau du toit, seulement du feuillage étagé. Le mode bas
-    # (8 cellules, 2 m²) n'est pas une toiture — mieux vaut ne rien affirmer
-    # et retomber sur la BD TOPO.
+    # (8 cellules, 2 m²) n'est pas une toiture — mieux vaut ne rien affirmer :
+    # toits_pour_emprise publiera un profil minimal, hauteur inconnue si
+    # l'emprise est verte.
     from vue3d.toits import _coupure_bimodale, TOITS_MIN_CELLULES
     hauteurs = sorted([5.6, 5.8, 6.1, 6.3, 6.5, 6.8, 7.1, 7.2,
                        9.4, 10.2, 11.1, 11.6, 14.3, 15.1, 15.6, 16.2, 16.8, 17.1, 17.4, 18.0, 18.2])
@@ -399,3 +401,75 @@ def test_toits_pour_emprise_choisit_bâtiment_par_bâtiment():
     r = toits_pour_emprise(*bbox, bats, grille, None)
     assert "surface" not in r["toits"]["SIMPLE"]
     assert "surface" in r["toits"]["MARCHE"]
+
+
+def _emprise_cabane(h_canopee, h_cabane):
+    """Grille de 60 m avec une cabane de 2,4 × 3,0 m au centre.
+
+    L'emprise érodée de 0,5 m (le repli d'`eroder`, buffer(-1.5) étant vide)
+    fait 1,4 × 2,0 m : au plus une douzaine de cellules à 0,5 m, toujours sous
+    TOITS_MIN_CELLULES — le profil est illisible quel que soit le calage.
+    Rend (bbox, bats, grille, canopee) ; `canopee` est le masque |X|,|Y| ≤ 8 m.
+    """
+    lat0, lon0, pas = 45.0, 5.0, 0.5
+    m_lon = 111320 * math.cos(math.radians(lat0))
+    n = 120
+    xs = (np.arange(n) + 0.5) * pas - n * pas / 2
+    X, Y = np.meshgrid(xs, -xs)
+    canopee = (np.abs(X) <= 8) & (np.abs(Y) <= 8)
+    h = np.zeros((n, n))
+    h[canopee] = h_canopee
+    cabane = (np.abs(X) <= 1.2) & (np.abs(Y) <= 1.5)
+    h[cabane] = np.maximum(h[cabane], h_cabane)
+    demi = n * pas / 2
+    bbox = (lon0 - demi / m_lon, lat0 - demi / 111320, lon0 + demi / m_lon, lat0 + demi / 111320)
+    grille = {"bbox": list(bbox), "width": n, "height": n, "couvert": True,
+              "source": "lidar_hd", "values": h.ravel().tolist()}
+    c = [(lon0 + dx / m_lon, lat0 + dy / 111320) for dx, dy in
+         ((-1.2, -1.5), (1.2, -1.5), (1.2, 1.5), (-1.2, 1.5), (-1.2, -1.5))]
+    bats = {"features": [{"type": "Feature", "properties": {"cleabs": "CABANE"},
+                          "geometry": {"type": "Polygon", "coordinates": [c]}}]}
+    return bbox, bats, grille, canopee
+
+
+def test_cabane_sous_les_arbres_publie_hauteur_inconnue():
+    """Cabane illisible sous une canopée : le profil minimal doit dire
+    « hauteur inconnue », pas disparaître — absent de `toits`, la vue croyait
+    les altitudes BD TOPO, contaminées par les mêmes arbres (8,1 m de murs
+    annoncés pour une cabane d'environ 3 m)."""
+    from vue3d.toits import toits_pour_emprise
+    from vue3d.ortho import EXG_SEUIL
+    bbox, bats, grille, canopee = _emprise_cabane(h_canopee=12.0, h_cabane=12.0)
+    exg = np.full(canopee.shape, -15, dtype=np.int8)
+    exg[canopee] = EXG_SEUIL + 10   # l'orthophoto voit la canopée verte
+    t = toits_pour_emprise(*bbox, bats, grille, exg)["toits"]["CABANE"]
+    assert t["fiable"] is False
+    assert t["hauteur_inconnue"] is True
+    assert t["sous_couvert"] is True
+    assert t["part_verte"] >= 0.9
+    assert "gouttiere" not in t
+
+
+def test_cabane_hors_canopee_garde_le_repli_bd_topo():
+    """Même cabane illisible mais à découvert : rien n'accuse la BD TOPO, le
+    profil minimal ne doit pas la déclarer inconnue — la vue garde son repli."""
+    from vue3d.toits import toits_pour_emprise
+    bbox, bats, grille, canopee = _emprise_cabane(h_canopee=0.0, h_cabane=2.5)
+    exg = np.full(canopee.shape, -15, dtype=np.int8)
+    t = toits_pour_emprise(*bbox, bats, grille, exg)["toits"]["CABANE"]
+    assert t["fiable"] is False
+    assert t["hauteur_inconnue"] is False
+    assert t["sous_couvert"] is False
+    assert t["part_verte"] == 0.0
+    assert "gouttiere" not in t
+
+
+def test_cabane_sans_orthophoto_ne_declare_rien():
+    """Sans grille ExG (exg=None), pas de second avis : part_verte reste None
+    et le profil minimal n'affirme rien — même repli qu'avant le correctif."""
+    from vue3d.toits import toits_pour_emprise
+    bbox, bats, grille, _ = _emprise_cabane(h_canopee=12.0, h_cabane=12.0)
+    t = toits_pour_emprise(*bbox, bats, grille, None)["toits"]["CABANE"]
+    assert t["fiable"] is False
+    assert t["hauteur_inconnue"] is False
+    assert t["part_verte"] is None
