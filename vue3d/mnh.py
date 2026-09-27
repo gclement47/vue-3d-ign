@@ -39,6 +39,9 @@ MNH_LAYER = "IGNF_LIDAR-HD_MNH_ELEVATION.ELEVATIONGRIDCOVERAGE.WGS84G"
 # LiDAR renvoie -9999, il donne des hauteurs plausibles (11,6 m sur une zone urbaine du Nord).
 MNS_LAYER = "ELEVATION.ELEVATIONGRIDCOVERAGE.HIGHRES.MNS"
 MNT_LAYER = "ELEVATION.ELEVATIONGRIDCOVERAGE.HIGHRES"
+# Le terrain dont le MNH LiDAR est tiré : MNS = MNT + MNH, vérifié à 1 cm près
+# en médiane sous une maison.
+MNT_LIDAR_LAYER = "IGNF_LIDAR-HD_MNT_ELEVATION.ELEVATIONGRIDCOVERAGE.WGS84G"
 
 # Résolution par défaut : 2 m. À 1 m la grille quadruple pour un gain nul à
 # l'écran (les volumes sont déjà rendus en pavés), et la réponse JSON dépasse
@@ -93,6 +96,22 @@ def _grille_wms(layer, west, south, east, north, largeur, hauteur, brut=False):
 
 
 journal = logging.getLogger(__name__)
+
+
+def fetch_sol_grid(west, south, east, north, largeur, hauteur, source):
+    """Terrain sous la grille MNH, cellule pour cellule, en altitudes.
+
+    Le terrain de la même source que le MNH : celui du LiDAR HD, ou le RGE ALTI
+    pour le repli MNS − MNT. Une hauteur de sursol n'a de sens qu'au-dessus du
+    sol dont on l'a soustraite.
+
+    Returns:
+        liste de largeur × hauteur altitudes, lignes depuis le nord-ouest ;
+        NaN là où le service n'a pas de donnée.
+    """
+    layer = MNT_LIDAR_LAYER if source == "lidar_hd" else MNT_LAYER
+    valeurs = _grille_wms(layer, west, south, east, north, largeur, hauteur, brut=True)
+    return [v if v > -1000 else float("nan") for v in valeurs]
 
 
 def fetch_mnh_grid(west, south, east, north, resolution_m=MNH_RESOLUTION_M,

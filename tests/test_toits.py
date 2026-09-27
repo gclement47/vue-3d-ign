@@ -232,3 +232,170 @@ def test_une_traine_d_arbres_clairsemee_laisse_lire_le_toit():
     assert coupure is not None and 4.0 <= coupure <= 8.0
     bas = [h for h in hauteurs if h <= coupure]
     assert len(bas) >= 154
+
+
+# --- Surface du toit ------------------------------------------------------
+
+def _grille_surface(fonction, taille=40, pas=0.5):
+    """Grille MNH carrée centrée sur l'origine : xs croissants, ys décroissants."""
+    import numpy as np
+    xs = (np.arange(taille) + 0.5) * pas - taille * pas / 2
+    ys = -xs
+    X, Y = np.meshgrid(xs, ys)
+    return np.vectorize(fonction)(X, Y).astype(np.float32), xs, ys
+
+
+def _decoder_surface(s):
+    """Inverse de _encoder_ecarts : hauteurs en mètres, lignes depuis le nord."""
+    import numpy as np
+    g = np.array(s["z"], dtype=np.int64).reshape(s["h"], s["l"])
+    g[:, 0] = np.cumsum(g[:, 0])
+    return s["zero_m"] + np.cumsum(g, axis=1) * s["pas_m"]
+
+
+def _maison_surelevee(x, y):
+    """Maison de 14 x 10 m : moitié ouest à 6 m, moitié est à 4 m, sol autour."""
+    if abs(x) > 7 or abs(y) > 5:
+        return 0.0
+    return 6.0 if x < 0 else 4.0
+
+
+def test_la_surface_garde_la_marche_d_une_surelevation():
+    """C'est ce que le toit à deux pans perdait : une marche de 2 m au milieu."""
+    import numpy as np
+    from vue3d.toits import surface_toit
+    h, xs, ys = _grille_surface(_maison_surelevee)
+    s = surface_toit(box(-7, -5, 7, 5), h, xs, ys, gouttiere=4.0)
+    z = _decoder_surface(s)
+    X, Y = np.meshgrid(xs[s["i0"]:s["i0"] + s["l"]], ys[s["j0"]:s["j0"] + s["h"]])
+    dedans = (np.abs(X) < 6.5) & (np.abs(Y) < 4.5)
+    assert np.allclose(z[dedans & (X < -0.5)], 6.0, atol=0.05)
+    assert np.allclose(z[dedans & (X > 0.5)], 4.0, atol=0.05)
+
+
+def test_la_surface_ne_tombe_pas_au_sol_sur_le_contour():
+    """Les cellules du bord mêlent toit et sol : elles reprennent leurs voisines."""
+    import numpy as np
+    from vue3d.toits import surface_toit
+    h, xs, ys = _grille_surface(lambda x, y: 5.0 if abs(x) <= 7 and abs(y) <= 5 else 0.0)
+    # Un bord qui lit le sol, comme au LiDAR : la première rangée intérieure à 1 m.
+    bord = (np.abs(xs) > 6.6) & (np.abs(xs) <= 7)
+    h[np.ix_(np.abs(ys) <= 5, bord)] = 1.0
+    s = surface_toit(box(-7, -5, 7, 5), h, xs, ys, gouttiere=5.0)
+    z = _decoder_surface(s)
+    X, Y = np.meshgrid(xs[s["i0"]:s["i0"] + s["l"]], ys[s["j0"]:s["j0"] + s["h"]])
+    assert np.allclose(z[(np.abs(X) <= 7) & (np.abs(Y) <= 5)], 5.0, atol=0.05)
+
+
+def test_la_surface_ecarte_le_feuillage_et_redresse_la_pente():
+    """Une cellule verte ne soulève pas le toit ; sur un terrain qui monte de
+    1 m vers l'est, le toit plat (5 m au-dessus du sol local) reste horizontal
+    une fois rapporté au point le plus bas du contour."""
+    import numpy as np
+    from vue3d.toits import surface_toit
+    sol = lambda x, y: 0.1 * (x + 7)                       # 0 à l'ouest, 1,4 m à l'est
+    h, xs, ys = _grille_surface(lambda x, y: (5.0 - sol(x, y)) if abs(x) <= 7 and abs(y) <= 5 else 0.0)
+    verdure = np.full(h.shape, -20, dtype=np.int8)
+    j, i = len(ys) // 2, len(xs) // 2
+    h[j, i] = 12.0                                         # une branche au-dessus
+    verdure[j, i] = 40
+    X, Y = np.meshgrid(xs, ys)
+    s = surface_toit(box(-7, -5, 7, 5), h, xs, ys, gouttiere=4.0, verdure=verdure,
+                     sol=sol(X, Y), sol_bas=0.0)
+    z = _decoder_surface(s)
+    X, Y = np.meshgrid(xs[s["i0"]:s["i0"] + s["l"]], ys[s["j0"]:s["j0"] + s["h"]])
+    assert np.allclose(z[(np.abs(X) <= 6) & (np.abs(Y) <= 4)], 5.0, atol=0.1)
+
+
+def test_trop_peu_de_cellules_lisibles_pas_de_surface():
+    from vue3d.toits import surface_toit
+    h, xs, ys = _grille_surface(lambda x, y: 5.0 if abs(x) <= 1.5 and abs(y) <= 1.5 else 0.0)
+    assert surface_toit(box(-1.5, -1.5, 1.5, 1.5), h, xs, ys, gouttiere=5.0) is None
+
+
+def test_encodage_des_ecarts_restitue_les_cellules_utiles():
+    import numpy as np
+    from vue3d.toits import _encoder_ecarts
+    q = np.array([[5, 6, 7, 9], [4, 4, 8, 8], [3, 2, 1, 0]])
+    utile = np.array([[1, 1, 1, 1], [0, 1, 1, 0], [0, 0, 1, 1]], dtype=bool)
+    z = _decoder_surface({"z": _encoder_ecarts(q, utile), "h": 3, "l": 4,
+                          "zero_m": 0.0, "pas_m": 1.0})
+    assert (z[utile] == q[utile]).all()
+
+
+def test_une_emprise_qui_deborde_de_la_grille_n_a_pas_de_surface():
+    """La grille s'arrête au bord de la scène : le toit n'en couvrirait qu'une partie."""
+    from vue3d.toits import surface_toit
+    h, xs, ys = _grille_surface(lambda x, y: 5.0)
+    assert surface_toit(box(5, -5, 15, 5), h, xs, ys, gouttiere=5.0) is None
+
+
+def _profil_et_cellules(fonction, emprise):
+    """Profil LiDAR et cellules lisibles d'une grille synthétique."""
+    import numpy as np
+    from vue3d.toits import cellules_du_toit
+    h, xs, ys = _grille_surface(fonction)
+    X, Y = np.meshgrid(xs, ys)
+    cellules = [(x, y, v) for x, y, v in zip(X.ravel(), Y.ravel(), h.ravel()) if v > 0]
+    profil = profil_toit(cellules, emprise)
+    return profil, cellules_du_toit(emprise, h, xs, ys, profil["gouttiere"])
+
+
+def test_un_toit_a_deux_pans_reste_resume():
+    """Le toit résumé le décrit déjà : la surface n'apporterait que du grain."""
+    from vue3d.toits import ecart_au_resume, SURFACE_ECART_RESUME_M
+    emprise = box(-8, -5, 8, 5)
+    profil, cel = _profil_et_cellules(
+        lambda x, y: 7.0 - 3.0 * abs(y) / 5 if abs(x) <= 8 and abs(y) <= 5 else 0.0, emprise)
+    assert profil["axe_deg"] is not None
+    assert ecart_au_resume(profil, emprise, cel) < SURFACE_ECART_RESUME_M
+
+
+def test_une_surelevation_recoit_la_surface():
+    """Une moitié à 7 m, l'autre à 3 m : deux pans ne savent pas la dessiner."""
+    from vue3d.toits import ecart_au_resume, SURFACE_ECART_RESUME_M
+    emprise = box(-7, -5, 7, 5)
+    profil, cel = _profil_et_cellules(
+        lambda x, y: (7.0 if x < 0 else 3.0) if abs(x) <= 7 and abs(y) <= 5 else 0.0, emprise)
+    assert ecart_au_resume(profil, emprise, cel) > SURFACE_ECART_RESUME_M
+
+
+def test_le_toit_resume_suit_l_axe_mesure():
+    """Deux pans, faîtage le long de l'axe : au faîtage le faîtage, au bord la gouttière."""
+    import numpy as np
+    from vue3d.toits import hauteur_resumee
+    profil = {"gouttiere": 4.0, "faitage": 7.0, "axe_deg": 0.0}
+    X, Y = np.array([[0.0, 0.0, 7.9]]), np.array([[0.0, 4.99, 0.0]])
+    z = hauteur_resumee(profil, box(-8, -5, 8, 5), X, Y)
+    assert np.allclose(z, [[7.0, 4.0, 7.0]], atol=0.01)
+
+
+def test_toits_pour_emprise_choisit_bâtiment_par_bâtiment():
+    """Deux bâtiments sur une même grille : chacun reçoit son profil, et seule
+    la maison surélevée reçoit la surface (la boucle ne mélange pas les deux)."""
+    import math
+    import numpy as np
+    from vue3d.toits import toits_pour_emprise
+    lat0, lon0, pas = 45.0, 5.0, 0.5
+    m_lon = 111320 * math.cos(math.radians(lat0))
+    n = 120                                              # 60 m de côté
+    xs = (np.arange(n) + 0.5) * pas - n * pas / 2
+    X, Y = np.meshgrid(xs, -xs)
+    h = np.zeros((n, n))
+    simple = (np.abs(X + 14) <= 8) & (np.abs(Y) <= 5)
+    h[simple] = 7.0 - 3.0 * np.abs(Y[simple]) / 5
+    marche = (np.abs(X - 14) <= 7) & (np.abs(Y) <= 5)
+    h[marche] = np.where(X[marche] < 14, 7.0, 3.0)
+    demi = n * pas / 2
+    bbox = (lon0 - demi / m_lon, lat0 - demi / 111320, lon0 + demi / m_lon, lat0 + demi / 111320)
+    grille = {"bbox": list(bbox), "width": n, "height": n, "couvert": True,
+              "source": "lidar_hd", "values": h.ravel().tolist()}
+    def carre(cx, lx, ly, cle):
+        c = [(lon0 + (cx + dx) / m_lon, lat0 + dy / 111320) for dx, dy in
+             ((-lx, -ly), (lx, -ly), (lx, ly), (-lx, ly), (-lx, -ly))]
+        return {"type": "Feature", "properties": {"cleabs": cle},
+                "geometry": {"type": "Polygon", "coordinates": [c]}}
+    bats = {"features": [carre(-14, 8, 5, "SIMPLE"), carre(14, 7, 5, "MARCHE")]}
+    r = toits_pour_emprise(*bbox, bats, grille, None)
+    assert "surface" not in r["toits"]["SIMPLE"]
+    assert "surface" in r["toits"]["MARCHE"]

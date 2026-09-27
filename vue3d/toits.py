@@ -403,6 +403,303 @@ def corps_de_toit(dedans, seuil_haut, pas=TOITS_RESOLUTION_M):
     return corps if len(corps) >= 2 else []
 
 
+# --- Surface du toit ------------------------------------------------------
+# Le toit à deux pans par corps résume mal une maison dont une moitié est
+# surélevée, ou dont le faîtage n'est pas au milieu : il en garde une gouttière
+# et un faîtage. Le MNH, lui, voit les pans et les marches. Pour chaque toit
+# fiable, la scène embarque donc la grille des hauteurs sous l'emprise, que la
+# vue découpe sur le contour.
+#
+# Cellules retenues. Mesuré sur 78 toits fiables à Gordes et 106 à Strasbourg,
+# part des cellules qui lisent le sol (moins de la moitié de la gouttière)
+# selon la distance au contour :
+#
+#                  0 m     0,25    0,5     0,75    1 m et au-delà
+#   Gordes        9,4 %    5,1    4,0     2,2     ~1,5 %
+#   Strasbourg    4,9 %    4,1    2,9     2,4     ~1,5 %
+#
+# Au bord, une cellule mêle toit et sol. À 0,75 m on rejoint le palier, fait
+# de cours et de terrasses que le seuil de hauteur écarte ensuite. Les
+# cellules écartées, et celles du bord, reprennent la moyenne de leurs voisines
+# retenues, de proche en proche.
+SURFACE_RETRAIT_M = 0.75
+# Sous cette fraction de la gouttière, une cellule lit le sol (cour, terrasse).
+SURFACE_SOL_PART = 0.5
+#
+# Encodage. Mesuré sur Strasbourg (111 surfaces, 215 000 cellules), poids
+# ajouté à la scène compressée :
+#
+#   int16 en base64                              140 Ko
+#   entiers en liste JSON                        112 Ko
+#   écarts entre voisines, liste JSON             97 Ko
+#   … et cellules inutiles répétées               71 Ko   (Gordes : 35 Ko)
+#
+# Un toit est lisse : l'écart d'une cellule à sa voisine tient presque
+# toujours dans quelques décimètres, que gzip compresse bien mieux que des
+# hauteurs. La fenêtre est la boîte de l'emprise : un bâtiment en biais en
+# laisse plus de la moitié hors du contour (55 % des cellules à Strasbourg),
+# et la vue n'en lit que celles dont le carré touche l'emprise. Les autres
+# répètent leur voisine : un écart nul ne coûte presque rien.
+
+
+def _encoder_ecarts(q, utile):
+    """Écarts entre cellules voisines, en liste, les cellules inutiles répétées.
+
+    Première valeur absolue ; ensuite, dans une ligne, l'écart à la cellule de
+    gauche, et en tête de ligne l'écart à la tête de la ligne précédente.
+    """
+    q = q.astype(np.int64)
+    ny, nx = q.shape
+    # Chaque cellule inutile prend la dernière utile à sa gauche ; en tête de
+    # ligne, faute de gauche, la tête de la ligne précédente.
+    for j in range(ny):
+        if not utile[j, 0]:
+            q[j, 0] = q[j - 1, 0] if j else q[j, 0]
+    idx = np.where(utile, np.arange(nx)[None, :], 0)
+    idx[:, 0] = 0
+    np.maximum.accumulate(idx, axis=1, out=idx)
+    q = np.take_along_axis(q, idx, axis=1)
+    ecarts = np.diff(q, axis=1, prepend=0)
+    ecarts[1:, 0] = np.diff(q[:, 0])
+    return ecarts.ravel().tolist()
+
+
+def _mediane_3x3(grille, valides):
+    """Médiane 3 × 3 des seules cellules retenues ; NaN ailleurs.
+
+    Gomme une cheminée ou une antenne d'une cellule sans arrondir une marche :
+    de part et d'autre d'une arête, la majorité du voisinage est du même côté.
+    """
+    g = np.where(valides, grille, np.nan)
+    p = np.pad(g, 1, constant_values=np.nan)
+    ny, nx = g.shape
+    pile = np.stack([p[dj:dj + ny, di:di + nx] for dj in range(3) for di in range(3)])
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)   # tranche toute en NaN
+        m = np.nanmedian(pile, axis=0)
+    return np.where(valides, m, np.nan)
+
+
+def _combler(grille):
+    """Remplit les NaN par la moyenne des voisins connus, de proche en proche."""
+    g = grille.copy()
+    ny, nx = g.shape
+    while np.isnan(g).any():
+        p = np.pad(g, 1, constant_values=np.nan)
+        voisins = np.stack([p[dj:dj + ny, di:di + nx]
+                            for dj in range(3) for di in range(3) if (dj, di) != (1, 1)])
+        connus = ~np.isnan(voisins)
+        n = connus.sum(axis=0)
+        somme = np.where(connus, voisins, 0).sum(axis=0)
+        a_remplir = np.isnan(g) & (n > 0)
+        if not a_remplir.any():
+            break
+        g[a_remplir] = somme[a_remplir] / n[a_remplir]
+    return g
+
+
+def cellules_du_toit(polygone_m, hauteurs, xs, ys, gouttiere, verdure=None):
+    """Fenêtre de la grille MNH sous une emprise, et ses cellules lisibles.
+
+    Args:
+        polygone_m: emprise en mètres locaux.
+        hauteurs: grille MNH (numpy, lignes depuis le nord) ; xs, ys : mètres
+            locaux de ses colonnes (croissants) et de ses lignes (décroissants).
+        gouttiere: gouttière du profil, pour écarter les cellules de sol.
+        verdure: grille ExG alignée sur `hauteurs`, ou None.
+
+    Returns:
+        dict(i0, i1, j0, j1, X, Y, valides, lisse) — `lisse` est la médiane
+        3 × 3 des cellules retenues, NaN ailleurs — ou None si l'emprise
+        déborde de la grille ou si trop peu de cellules sont lisibles.
+    """
+    minx, miny, maxx, maxy = polygone_m.bounds
+    # Une colonne de centres de chaque côté au-delà de l'emprise : la vue
+    # interpole entre centres, il lui faut encadrer le contour.
+    i0 = max(int(np.searchsorted(xs, minx)) - 1, 0)
+    i1 = min(int(np.searchsorted(xs, maxx, side="right")) + 1, len(xs))
+    j0 = max(int(np.searchsorted(-ys, -maxy)) - 1, 0)
+    j1 = min(int(np.searchsorted(-ys, -miny, side="right")) + 1, len(ys))
+    if i1 - i0 < 2 or j1 - j0 < 2:
+        return None
+    # Une emprise qui déborde de la scène n'aurait qu'une partie de son toit :
+    # la vue garde alors le toit résumé, qui la couvre en entier.
+    if xs[i0] > minx or xs[i1 - 1] < maxx or ys[j0] < maxy or ys[j1 - 1] > miny:
+        return None
+    X, Y = np.meshgrid(xs[i0:i1], ys[j0:j1])
+    h = np.asarray(hauteurs[j0:j1, i0:i1], dtype=np.float64)
+    dedans = shapely.contains_xy(polygone_m, X, Y)
+    loin_du_bord = dedans & (shapely.distance(
+        shapely.points(X.ravel(), Y.ravel()), polygone_m.boundary).reshape(X.shape)
+        >= SURFACE_RETRAIT_M)
+    valides = loin_du_bord & (h >= SURFACE_SOL_PART * gouttiere)
+    if verdure is not None:
+        valides &= verdure[j0:j1, i0:i1] < EXG_SEUIL
+    if valides.sum() < TOITS_MIN_CELLULES:
+        return None
+    return {"i0": i0, "i1": i1, "j0": j0, "j1": j1, "X": X, "Y": Y,
+            "valides": valides, "lisse": _mediane_3x3(h, valides)}
+
+
+def surface_toit(polygone_m, hauteurs, xs, ys, gouttiere, verdure=None, sol=None, sol_bas=None,
+                 cellules=None):
+    """Grille des hauteurs du toit sous une emprise, prête pour la vue.
+
+    Args:
+        polygone_m, hauteurs, xs, ys, gouttiere, verdure: voir cellules_du_toit.
+        sol, sol_bas: terrain aligné sur `hauteurs` (celui dont le MNH est
+            tiré) et son altitude la plus basse sous le contour ; None sur
+            terrain inconnu.
+        cellules: résultat de cellules_du_toit, s'il est déjà calculé.
+
+    Returns:
+        dict(i0, j0, l, h, zero_m, pas_m, z) : fenêtre de la grille MNH (index
+        de sa première colonne et de sa première ligne, dimensions), hauteurs
+        en décimètres au-dessus de zero_m, encodées par `_encoder_ecarts` —
+        rapportées au point le plus bas du terrain sous le contour, comme la
+        base que la vue donne au bâtiment. None si trop peu de cellules sont
+        lisibles.
+    """
+    c = cellules or cellules_du_toit(polygone_m, hauteurs, xs, ys, gouttiere, verdure)
+    if c is None:
+        return None
+    i0, i1, j0, j1, X, Y = c["i0"], c["i1"], c["j0"], c["j1"], c["X"], c["Y"]
+    z = _combler(c["lisse"])
+    if sol is not None and sol_bas is not None:
+        z = z + np.nan_to_num(np.asarray(sol[j0:j1, i0:i1], dtype=np.float64) - sol_bas)
+    zero = float(np.floor(np.nanmin(z)))
+    q = np.rint((z - zero) * 10)
+    # Utile : le carré d'interpolation de la cellule touche l'emprise, soit un
+    # centre à moins d'une demi-diagonale de maille du contour.
+    demi_diagonale = 0.5 * math.hypot(xs[1] - xs[0], ys[0] - ys[1]) + 1e-6
+    utile = shapely.distance(shapely.points(X.ravel(), Y.ravel()),
+                             polygone_m).reshape(X.shape) <= demi_diagonale
+    return {"i0": i0, "j0": j0, "l": i1 - i0, "h": j1 - j0,
+            "zero_m": zero, "pas_m": 0.1, "z": _encoder_ecarts(q, utile)}
+
+
+# --- Toit résumé ou surface ? ----------------------------------------------
+# La surface suit le LiDAR, mais elle en garde le grain : sur un toit simple,
+# le toit résumé (deux pans, corps, pyramide) est aussi juste et plus net. On
+# ne l'abandonne que là où il s'écarte du LiDAR.
+#
+# Écart médian entre le toit résumé et le LiDAR, par toit fiable :
+#
+#                   p25    p50    p75    p90
+#   Gordes (89)    0,37   0,60   1,03   1,49 m
+#   Strasbourg     0,65   0,98   1,40   2,08 m
+#
+# Aucune rupture dans la distribution : le seuil est un arbitrage, fixé sur des
+# toits examinés un à un. Bien résumés : une maison simple (0,10 m), un toit à
+# deux pans de Gordes (0,60), un de Strasbourg (0,64). Manqués : une maison
+# dont une moitié est surélevée (0,81), deux niveaux sous un seul faîtage
+# (1,03), un îlot dont les faîtages font le tour de la cour (0,98), une aile
+# en L (1,40). Un appentis dessiné en deux pans ne s'écarte que de 0,37 m :
+# faux, mais sur 0,8 m de dénivelé, il reste résumé.
+#
+# À 0,7 m, la surface va à 40 % des toits fiables de Gordes, 70 % de ceux de
+# Strasbourg. L'écart relatif au dénivelé ne sépare pas mieux : il gonfle sur
+# les toits peu pentus (0,37 pour le bon résumé de Gordes, 0,30 pour les deux
+# niveaux).
+SURFACE_ECART_RESUME_M = 0.7
+
+
+def _tourner(x, y, ang):
+    c, s = math.cos(-ang), math.sin(-ang)
+    return x * c - y * s, x * s + y * c
+
+
+def _rectangle_selon_axe(pts, ang):
+    u, v = _tourner(pts[:, 0], pts[:, 1], ang)
+    return {"ang": ang, "x0": u.min(), "x1": u.max(), "y0": v.min(), "y1": v.max()}
+
+
+def _rectangle_min(polygone_m):
+    """Rectangle d'aire minimale sur les côtés de l'enveloppe convexe."""
+    enveloppe = np.asarray(polygone_m.convex_hull.exterior.coords)[:-1, :2]
+    meilleur = None
+    for a, b in zip(enveloppe, np.roll(enveloppe, -1, axis=0)):
+        ang = math.atan2(b[1] - a[1], b[0] - a[0])
+        r = _rectangle_selon_axe(enveloppe, ang)
+        aire = (r["x1"] - r["x0"]) * (r["y1"] - r["y0"])
+        if meilleur is None or aire < meilleur[0]:
+            meilleur = (aire, r)
+    return meilleur[1] if meilleur else None
+
+
+def _deux_pans(rect, g, f, X, Y, suivant_x=None):
+    """Toit à deux pans sur le rectangle (NaN au-dehors) ; faîtage au milieu."""
+    u, v = _tourner(X, Y, rect["ang"])
+    lx, ly = rect["x1"] - rect["x0"], rect["y1"] - rect["y0"]
+    if suivant_x is None:
+        suivant_x = lx >= ly
+    d = (np.abs(v - (rect["y0"] + rect["y1"]) / 2) / max(ly / 2, 1e-9) if suivant_x
+         else np.abs(u - (rect["x0"] + rect["x1"]) / 2) / max(lx / 2, 1e-9))
+    e = 1e-6
+    dedans = ((u >= rect["x0"] - e) & (u <= rect["x1"] + e)
+              & (v >= rect["y0"] - e) & (v <= rect["y1"] + e))
+    return np.where(dedans, f - (f - g) * np.clip(d, 0, 1), np.nan)
+
+
+def _pyramide(rect, g, f, X, Y):
+    u, v = _tourner(X, Y, rect["ang"])
+    hx = max((rect["x1"] - rect["x0"]) / 2, 1e-9)
+    hy = max((rect["y1"] - rect["y0"]) / 2, 1e-9)
+    d = np.maximum(np.abs(u - (rect["x0"] + rect["x1"]) / 2) / hx,
+                   np.abs(v - (rect["y0"] + rect["y1"]) / 2) / hy)
+    return np.where(d <= 1 + 1e-6, f - (f - g) * np.clip(d, 0, 1), np.nan)
+
+
+def hauteur_resumee(profil, polygone_m, X, Y):
+    """Hauteur du toit résumé en (X, Y), tel que la vue le dessine.
+
+    Même règle que construire() dans index.html pour un profil LiDAR fiable :
+    un toit par corps (deux pans sur son axe, pyramide sans axe) au-dessus de
+    murs à la plus basse de leurs gouttières ; sinon deux pans sur le
+    rectangle orienté selon l'axe mesuré, ou d'aire minimale ; toit plat sous
+    0,5 m de dénivelé. À tenir en accord avec la vue.
+    """
+    corps = profil.get("corps") or []
+    if len(corps) >= 2:
+        z = np.full(X.shape, max(min(c["gouttiere"] for c in corps), 0.5))
+        for c in corps:
+            ang = math.radians(c["axe_deg"] if c["axe_deg"] is not None else 0.0)
+            cx, cy = _tourner(np.float64(c["cx"]), np.float64(c["cy"]), ang)
+            rect = {"ang": ang, "x0": cx - c["longueur"] / 2, "x1": cx + c["longueur"] / 2,
+                    "y0": cy - c["largeur"] / 2, "y1": cy + c["largeur"] / 2}
+            g = max(c["gouttiere"], 0.5)
+            f = max(c["faitage"], g + 0.3)
+            toit = (_deux_pans(rect, g, f, X, Y, True) if c["axe_deg"] is not None
+                    else _pyramide(rect, g, f, X, Y))
+            z = np.fmax(z, toit)
+        return z
+    mur = max(profil["gouttiere"], 0.5)
+    denivele = max(profil["faitage"] - profil["gouttiere"], 0.0)
+    if denivele <= 0.5:
+        return np.full(X.shape, mur)
+    axe = profil.get("axe_deg")
+    if axe is not None:
+        pts = np.asarray(polygone_m.exterior.coords)[:-1, :2]
+        rect = _rectangle_selon_axe(pts, math.radians(axe))
+    else:
+        rect = _rectangle_min(polygone_m)
+    z = _deux_pans(rect, mur, mur + denivele, X, Y, True if axe is not None else None)
+    return np.where(np.isnan(z), mur, z)
+
+
+def ecart_au_resume(profil, polygone_m, cellules):
+    """Écart médian, en mètres, entre le toit résumé et le LiDAR lissé.
+
+    Sur la forme seule : le toit résumé ignore la pente du terrain, on le
+    compare donc au MNH, hauteur au-dessus du sol local, et non à la surface
+    redressée.
+    """
+    v = cellules["valides"]
+    resume = hauteur_resumee(profil, polygone_m, cellules["X"], cellules["Y"])
+    return float(np.median(np.abs(resume - cellules["lisse"])[v]))
+
+
 def part_verte(polygone_m, verdure):
     """Part des cellules de l'emprise que l'orthophoto voit vertes.
 
@@ -491,12 +788,42 @@ def _verdure_locale(exg, bbox, lon0, lat0):
     return exg, xs, ys
 
 
-def toits_pour_emprise(west, south, east, north, batiments_geojson, grille, exg):
+def _morceaux(geom):
+    return [geom] if geom.geom_type == "Polygon" else list(geom.geoms)
+
+
+def _sol_bas(sol, geom, xs, ys, lon0, lat0, m_lon):
+    """Altitude la plus basse du terrain aux sommets du contour extérieur.
+
+    Comme la base que la vue donne au bâtiment (baseBatiment) : toit et murs
+    partent ainsi du même zéro. Cellule la plus proche : sous un bâtiment, le
+    terrain LiDAR est interpolé depuis le sol alentour, donc lisse.
+    """
+    alts = []
+    for a in _morceaux(geom):
+        for lon, lat, *_ in a.exterior.coords:
+            i = int(np.clip(np.searchsorted(xs, (lon - lon0) * m_lon), 0, len(xs) - 1))
+            j = int(np.clip(np.searchsorted(-ys, -(lat - lat0) * 111320), 0, len(ys) - 1))
+            alts.append(sol[j, i])
+    bas = np.nanmin(alts) if alts and not np.all(np.isnan(alts)) else np.nan
+    return float(bas) if np.isfinite(bas) else None
+
+
+def toits_pour_emprise(west, south, east, north, batiments_geojson, grille, exg,
+                       sol=None):
     """Profils de toit LiDAR pour les bâtiments d'une emprise.
 
     Args:
         grille, exg: grille MNH à 0,5 m et grille de verdure ExG, téléchargées
             une fois et partagées avec la segmentation des houppiers.
+        sol: terrain sous la grille MNH (`mnh.fetch_sol_grid`), ou None. Il
+            redresse la surface des toits sur un terrain en pente : le MNH est
+            une hauteur au-dessus du sol local, et un faîtage horizontal y
+            paraît incliné comme le sol. Sous une emprise, ce terrain varie de
+            3,1 m en médiane à Gordes (p90 6,7 m, jusqu'à 11 m), de 0,6 m à
+            Strasbourg. Pas le RGE ALTI de la scène : sur un coteau en
+            restanques, il variait de 2,1 m sous une maison dont le terrain
+            LiDAR ne varie que de 0,6 m, et ondulait le toit d'autant.
 
     Returns:
         dict: source ('lidar_hd' | 'mns_mnt' | None), resolution_m, ortho, et
@@ -507,7 +834,10 @@ def toits_pour_emprise(west, south, east, north, batiments_geojson, grille, exg)
 
     west, south, east, north = map(float, (west, south, east, north))
     resultat = {"source": grille.get("source"), "resolution_m": TOITS_RESOLUTION_M,
-                "toits": {}, "ortho": exg is not None}
+                "toits": {}, "ortho": exg is not None,
+                # Les fenêtres des surfaces de toit sont des index de cette grille.
+                "grille": {"bbox": grille.get("bbox"), "width": grille.get("width"),
+                           "height": grille.get("height")}}
     if not grille.get("couvert"):
         return resultat
     lon0, lat0 = (west + east) / 2, (south + north) / 2
@@ -515,6 +845,11 @@ def toits_pour_emprise(west, south, east, north, batiments_geojson, grille, exg)
     cellules = _cellules_locales(grille, lon0, lat0)
     # Second avis de l'orthophoto : sans elle, la canopée passe pour un toit.
     verdure = _verdure_locale(exg, grille["bbox"], lon0, lat0) if exg is not None else None
+    hauteurs = np.asarray(grille["values"], dtype=np.float32).reshape(
+        grille["height"], grille["width"])
+    xs, ys = _verdure_locale(hauteurs, grille["bbox"], lon0, lat0)[1:]
+    if sol is not None:
+        sol = np.asarray(sol, dtype=np.float64).reshape(hauteurs.shape)
     for f in batiments_geojson.get("features", []):
         cleabs = (f.get("properties") or {}).get("cleabs")
         if not cleabs or not f.get("geometry"):
@@ -528,7 +863,25 @@ def toits_pour_emprise(west, south, east, north, batiments_geojson, grille, exg)
         profil = profil_toit(cellules, poly)
         if profil:
             part = part_verte(poly, verdure) if verdure is not None else None
-            resultat["toits"][cleabs] = qualifier_couvert(profil, part)
+            profil = qualifier_couvert(profil, part)
+            # Seulement là où le profil est un toit : sous un arbre (mode bas),
+            # la grille décrirait le feuillage autant que la toiture.
+            # D'un seul tenant aussi : la vue pose chaque morceau d'une emprise
+            # sur sa propre base, une grille commune n'aurait pas de zéro.
+            if (profil["fiable"] and not profil["mode_bas"] and not profil["hauteur_inconnue"]
+                    and len(_morceaux(geom)) == 1):
+                poly_seul = _morceaux(poly)[0]
+                fenetre = cellules_du_toit(poly_seul, hauteurs, xs, ys, profil["gouttiere"], exg)
+                if fenetre is not None:
+                    ecart = ecart_au_resume(profil, poly_seul, fenetre)
+                    profil["ecart_resume"] = round(ecart, 2)
+                    if ecart > SURFACE_ECART_RESUME_M:
+                        bas = _sol_bas(sol, geom, xs, ys, lon0, lat0, m_lon) if sol is not None else None
+                        surface = surface_toit(poly_seul, hauteurs, xs, ys, profil["gouttiere"],
+                                               exg, sol, bas, fenetre)
+                        if surface:
+                            profil["surface"] = surface
+            resultat["toits"][cleabs] = profil
     journal.info("Toits LiDAR : %d bâtiment(s) mesuré(s), source=%s",
                  len(resultat["toits"]), resultat["source"])
     return resultat
