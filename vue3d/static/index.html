@@ -1042,6 +1042,16 @@ function construire(features, toitsEnPente) {
                                : (lidar ? Math.max(gout, 0.5)
                                         : (hauteur != null && hauteur > 0 ? hauteur : 6));
 
+            // Les hauteurs BD TOPO — altitudes comme attribut `hauteur`, qui
+            // vaut altitude_minimale_toit − altitude_minimale_sol — se
+            // comptent depuis le Z le plus bas du pourtour au sol, le même
+            // point que la base posée par rebaserBatiments() : les relever du
+            // terrain médian compterait la pente deux fois (mesuré : +2,3 m
+            // sur une cabane aux murs déjà annoncés à 8,1 m). Le MNH (hauteur
+            // au-dessus du sol local) et le repli notionnel de 6 m partent du
+            // sol du bâtiment : eux seuls restent relevés.
+            const releve = lidar ? true : !(pente || (hauteur != null && hauteur > 0));
+
             // L'emprise est conservée : c'est elle, et non un point, qui sert à
             // reposer le bâtiment. Le placement vertical lui-même est délégué à
             // rebaserBatiments(), appelé en fin de construction — une seule
@@ -1052,7 +1062,7 @@ function construire(features, toitsEnPente) {
             const mur = new THREE.Mesh(geo, materiauMurs(anneau));
             habillerCible(mur, anneau);
             mur.castShadow = true; mur.receiveShadow = true;
-            mur.userData = { p, denivele, hMur, anneau, lidar };
+            mur.userData = { p, denivele, hMur, anneau, lidar, releve };
             groupeBatiments.add(mur);
             meshes.push(mur);
 
@@ -1868,14 +1878,17 @@ function deplacerTerrain() {
  *
  * Sur une forte pente, le toit est de plus relevé au-dessus du terrain médian
  * de l'emprise (releveSol) : les murs s'allongent vers le bas d'autant, le
- * toit monte, le bâtiment ne flotte toujours pas côté aval.
+ * toit monte, le bâtiment ne flotte toujours pas côté aval. Seules les
+ * hauteurs comptées depuis le sol local y ont droit (releve !== false) :
+ * celles de la BD TOPO partent déjà du point bas, les relever comptait la
+ * pente deux fois.
  */
 function rebaserBatiments() {
     for (const o of groupeBatiments.children) {
         const ud = o.userData;
         if (!ud.anneau) continue;
         const base = baseBatiment(ud.anneau);
-        const d = ud.surface ? 0 : releveSol(ud.anneau);
+        const d = ud.surface || ud.releve === false ? 0 : releveSol(ud.anneau);
         if (o.name === 'toit') {
             o.position.y = base + d;
         } else {
@@ -1887,11 +1900,10 @@ function rebaserBatiments() {
 
 // Relèvement sur la pente. La base est le point le plus bas du terrain sous le
 // contour, pour qu'un bâtiment à cheval sur une rupture de pente ne flotte pas
-// côté aval ; mais ses hauteurs se comptent depuis son sol, plus haut : le MNH
-// LiDAR au-dessus du sol de chaque cellule, la BD TOPO depuis un sol que ses
-// propres levés placent au pied du bâtiment. Posées sur le point bas, elles
-// enfouissaient le toit sous le terrain. Mesuré, toits passant sous le point
-// le plus haut du terrain de leur emprise :
+// côté aval ; mais les hauteurs LiDAR se comptent depuis son sol, plus haut :
+// le MNH est une hauteur au-dessus du sol de chaque cellule. Posées sur le
+// point bas, elles enfouissaient le toit sous le terrain. Mesuré, toits
+// passant sous le point le plus haut du terrain de leur emprise :
 //
 //                     posés au point bas   relevés du terrain médian
 //   Mont-Saint-Michel       15 / 104                1
@@ -1900,6 +1912,16 @@ function rebaserBatiments() {
 //
 // L'écart médiane − point bas y atteint 23 m au Mont, 63 m à Rocamadour, pour
 // 1 à 2 m en médiane : il ne change presque rien ailleurs.
+// Les hauteurs BD TOPO, elles, partent d'un sol que ses propres levés placent
+// au point bas du pied du bâtiment — la référence de la base : leur relevé
+// comptait la pente deux fois (+2,3 m sur une cabane aux murs déjà annoncés à
+// 8,1 m). releve === false les en dispense. Mesuré (même critère, enfoncement
+// déduit) : la dispense ne ré-enfouit rien à Gordes (10 avant comme après) ni
+// au Mont (7) ; à Rocamadour, 1 toit sur 19 en repli BD TOPO passe sous le
+// point le plus haut de son emprise (16 → 17) sans passer sous le terrain
+// médian — accepté. Un garde-fou « relever quand même si médiane − point bas
+// dépasse la hauteur du bâtiment » ne se déclenchait sur aucun des trois
+// sites : retiré.
 const cacheSolEmprise = new WeakMap();
 
 /** Terrain sous une emprise : point le plus bas du contour, médiane dedans. */
