@@ -26,6 +26,17 @@ def test_l_emprise_est_centree_sur_le_point():
     assert est - ouest == pytest.approx(2 * scene.SCENE_DELTA)
 
 
+def test_l_anneau_est_carre_en_metres_et_contient_l_emprise():
+    import math
+    lat, lon = 48.8, 2.1
+    ouest, sud, est, nord = scene.emprise_anneau(lat, lon)
+    largeur_m = (est - ouest) * 111320 * math.cos(math.radians(lat))
+    hauteur_m = (nord - sud) * 111320
+    assert largeur_m == pytest.approx(hauteur_m) == pytest.approx(2 * scene.ANNEAU_DEMI_M)
+    o, s, e, n = emprise(lat, lon)
+    assert ouest < o and est > e and sud < s and nord > n
+
+
 def test_une_scene_n_est_construite_qu_une_fois(tmp_path):
     appels = []
 
@@ -88,7 +99,9 @@ def test_assembler_n_embarque_pas_les_grilles():
     art = scene.assembler(*grille["bbox"], {"features": []}, {"features": []}, None,
                           {"features": []}, grille, np.full(H.shape, 20, dtype=np.int8), None)
     assert set(art) == {"version", "bbox", "batiments", "toits", "routes",
-                        "houppiers", "masses", "vegetation", "relief"}
+                        "houppiers", "masses", "vegetation", "relief", "anneau",
+                        "eau", "lignes", "monuments"}
+    assert art["monuments"] is None
     assert len(art["houppiers"]) == 1
     charge = json.dumps(art)
     assert '"values"' not in charge and '"exg"' not in charge

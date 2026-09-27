@@ -4,9 +4,13 @@ Une scène, c'est tout ce que la vue 3D affiche autour d'une coordonnée, dans u
 carré de ±0,0016° (environ 356 m de côté) :
 
 - les bâtiments BD TOPO et leurs toitures mesurées au LiDAR HD ;
+- les parties de monuments OSM (`building:part`), là où elles sont plus
+  riches que la BD TOPO ;
 - les houppiers et masses de sursol segmentés sur le MNH LiDAR HD à 0,5 m ;
 - les routes, pour orienter Street View ;
 - le relief RGE ALTI, quantifié au décimètre ;
+- un anneau de relief grossier sur 2 km de côté, pour que la scène ne flotte
+  pas dans le vide ;
 - et, dans un fichier à part, une mosaïque d'orthophoto en une seule image.
 
 La construction coûte une vingtaine à une trentaine de secondes, dont la moitié
@@ -26,24 +30,37 @@ demande suivante réessaie.
 import gzip
 import json
 import logging
+import math
 import os
 import tempfile
 import threading
 
 from .couches import (COUCHE_BATIMENTS, COUCHE_FORET, COUCHE_ROUTES,
                       COUCHE_VEGETATION, lire_couche)
+from .eau import COUCHE_COURS_EAU, COUCHE_SURFACES_EAU, eau_pour_emprise
+from .lignes import COUCHE_LIGNES, COUCHE_PYLONES, lignes_pour_emprise
 from .houppiers import houppiers_pour_emprise
-from .mnh import fetch_mnh_grid
+from .mnh import fetch_mnh_grid, fetch_sol_grid
+from .monuments import fetch_monuments, monuments_pour_emprise
 from .ortho import fetch_exg_grid, fetch_ortho_jpeg
-from .relief import fetch_relief
+from .relief import fetch_relief, fetch_relief_anneau
 from .toits import TOITS_RESOLUTION_M, toits_pour_emprise
 
 journal = logging.getLogger(__name__)
 
 # Format de la scène. L'incrémenter invalide tout le cache.
-SCENE_VERSION = 1
+# 2 : anneau de relief autour de l'emprise.
+# 3 : surface mesurée des toits fiables.
+# 4 : eau de surface.
+# 5 : lignes à haute tension.
+# 6 : monuments OSM (building:part).
+SCENE_VERSION = 6
 # Demi-côté de l'emprise, en degrés : ~178 m de part et d'autre du point.
 SCENE_DELTA = 0.0016
+# Demi-côté de l'anneau, en mètres et non en degrés : carré sur le terrain.
+# La vue s'éloigne de 900 m au plus et son brouillard s'achève à 900 m de la
+# caméra : au-delà d'un kilomètre du point, l'anneau ne serait jamais vu.
+ANNEAU_DEMI_M = 1000
 # Arrondi du point pour la clé de cache : 4 décimales, une dizaine de mètres.
 SCENE_ARRONDI = 4
 NOM_SCENE = "scene.json.gz"
@@ -77,15 +94,24 @@ def emprise(lat, lon, delta=SCENE_DELTA):
     return lon - delta, lat - delta, lon + delta, lat + delta
 
 
+def emprise_anneau(lat, lon, demi_m=ANNEAU_DEMI_M):
+    """Emprise (ouest, sud, est, nord) de l'anneau, carrée en mètres."""
+    dlat = demi_m / 111320
+    dlon = demi_m / (111320 * math.cos(math.radians(lat)))
+    return lon - dlon, lat - dlat, lon + dlon, lat + dlat
+
+
 def assembler(west, south, east, north, batiments, vegetation, forets, routes,
-              grille, exg, relief):
+              grille, exg, relief, anneau=None, sol=None, eau=None, lignes=None,
+              monuments=None):
     """Contenu de la scène à partir des sources déjà obtenues.
 
-    Séparée de `construire` pour être testable sans réseau. Les grilles MNH et
-    ExG ne sont PAS embarquées : ce sont des entrées de calcul de 1,9 Mo et
-    475 Ko, sans usage une fois les toitures et les houppiers obtenus.
+    Séparée de `construire` pour être testable sans réseau. Les grilles MNH,
+    ExG et de terrain ne sont PAS embarquées : ce sont des entrées de calcul
+    de 1,9 Mo, 475 Ko et 1,4 Mo, sans usage une fois les toitures et les
+    houppiers obtenus.
     """
-    toits = toits_pour_emprise(west, south, east, north, batiments, grille, exg)
+    toits = toits_pour_emprise(west, south, east, north, batiments, grille, exg, sol)
     veg = houppiers_pour_emprise(west, south, east, north, batiments, vegetation,
                                  forets, grille, exg)
     return {
@@ -101,6 +127,19 @@ def assembler(west, south, east, north, batiments, vegetation, forets, routes,
             "veg_disponible", "foret_disponible", "hauteur_max", "nb_ortho")},
         # None hors couverture RGE ALTI : la vue bascule sur son repli mondial.
         "relief": relief,
+        # Contient l'emprise, que la vue découpe : ses trous (mer, frontière)
+        # restent vides. None si rien n'y est couvert.
+        "anneau": anneau,
+        # Étendues et cours d'eau, découpés sur l'emprise (vue3d/eau.py).
+        "eau": eau_pour_emprise(west, south, east, north, *eau) if eau else None,
+        # Sur l'emprise de l'anneau : une ligne se voit de loin (vue3d/lignes.py).
+        "lignes": lignes,
+        # Parties de monuments OSM et bâtiments BD TOPO qu'elles remplacent
+        # (vue3d/monuments.py). None si l'emprise n'en a aucune — le cas de
+        # presque partout.
+        "monuments": monuments_pour_emprise(west, south, east, north,
+                                            monuments, batiments)
+                     if monuments is not None else None,
     }
 
 
@@ -125,6 +164,8 @@ def construire(lat, lon):
                       west, south, east, north)
     forets = lire("BD Forêt", lire_couche, COUCHE_FORET, west, south, east, north)
     routes = lire("routes", lire_couche, COUCHE_ROUTES, west, south, east, north)
+    eau = (lire("étendues d'eau", lire_couche, COUCHE_SURFACES_EAU, west, south, east, north),
+           lire("cours d'eau", lire_couche, COUCHE_COURS_EAU, west, south, east, north))
 
     # La grille à 0,5 m sert aux toitures ET aux houppiers : lue une fois.
     grille = lire("hauteurs du sursol", fetch_mnh_grid, west, south, east, north,
@@ -136,11 +177,25 @@ def construire(lat, lon):
         raise SceneIncomplete("hauteurs du sursol indisponibles (ni LiDAR HD ni MNS − MNT)")
     exg = lire("orthophoto", fetch_exg_grid, west, south, east, north,
                grille["width"], grille["height"])
+    # Le terrain dont le MNH est tiré, pour redresser les toits sur la pente :
+    # une entrée de calcul, comme le MNH, jamais embarquée dans la scène.
+    sol = lire("terrain sous les toits", fetch_sol_grid, west, south, east, north,
+               grille["width"], grille["height"], grille["source"])
     relief = lire("relief", fetch_relief, west, south, east, north)
+    anneau = lire("relief de l'anneau", fetch_relief_anneau, *emprise_anneau(lat, lon))
+    lignes = lignes_pour_emprise(
+        *emprise_anneau(lat, lon),
+        lire("lignes électriques", lire_couche, COUCHE_LIGNES, *emprise_anneau(lat, lon)),
+        lire("pylônes", lire_couche, COUCHE_PYLONES, *emprise_anneau(lat, lon)))
+    # La seule source hors Géoplateforme : Overpass (OpenStreetMap). Même
+    # règle que les autres — un échec lève SceneIncomplete, une emprise sans
+    # partie est un fait et donne une couche nulle.
+    monuments = lire("monuments OSM", fetch_monuments, west, south, east, north)
     mosaique, _, _ = lire("mosaïque d'orthophoto", fetch_ortho_jpeg, west, south, east, north)
 
     scene = assembler(west, south, east, north, batiments, vegetation, forets,
-                      routes, grille, exg, relief)
+                      routes, grille, exg, relief, anneau, sol, eau, lignes,
+                      monuments)
     journal.info("Scène %.4f, %.4f : %d bâtiment(s), %d houppier(s), source %s",
                  lat, lon, len(batiments.get("features", [])),
                  len(scene["houppiers"]), grille.get("source"))
