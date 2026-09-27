@@ -38,7 +38,16 @@ const etat = await page.evaluate(() => ({
 console.log(JSON.stringify(etat, null, 1));
 // Arrête l'orbite, puis survole et clique au centre (bâtiment visé).
 await page.click('#t-orbit');
+// L'orbite avance d'un cran par image : là où elle s'arrête dépend de la vitesse
+// du rendu, et un arbre peut alors masquer le bâtiment visé (constaté à Gordes,
+// un feuillu de 9 m devant lui). La végétation est masquée pour le clic.
+if (await page.$eval('#t-veg', e => e.classList.contains('on'))) await page.click('#t-veg');
 const cadre = await page.$eval('#scene canvas', c => { const r = c.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; });
+// La fiche du bâtiment visé s'ouvre d'elle-même : on la relève, puis on la
+// vide pour que le clic soit réellement éprouvé.
+console.log('fiche à l\'ouverture :', (await page.$eval('#fiche-batiment', e => e.textContent.trim())).slice(0, 120) || '(vide)');
+console.log('note :', await page.$eval('#note-batiment', e => e.textContent));
+await page.$eval('#fiche-batiment', e => { e.innerHTML = ''; });
 let fiche = '';
 for (const [fx, fy] of [[0.5, 0.5], [0.5, 0.45], [0.48, 0.52], [0.52, 0.5], [0.45, 0.48]]) {
   const x = cadre.x + cadre.w * fx, y = cadre.y + cadre.h * fy;

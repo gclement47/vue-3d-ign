@@ -41,7 +41,8 @@
         .lien-ext:hover { border-color:var(--accent); }
         #scene { flex:1; position:relative; }
         #scene canvas { display:block; }
-        #hint { position:absolute; left:12px; bottom:12px; z-index:2;
+        /* En haut : le bas de la vue est aux crédits, qu'il chevauchait. */
+        #hint { position:absolute; left:12px; top:12px; z-index:2; max-width:calc(100% - 110px);
                 background:rgba(31,35,40,.88); color:#e8eaed; font-size:11px;
                 padding:6px 10px; border-radius:5px; pointer-events:none; }
         #boussole { position:absolute; top:14px; right:14px; z-index:3; width:64px; height:64px;
@@ -69,11 +70,18 @@
                    line-height:1.6; text-shadow:0 1px 3px #000; }
         #attente[hidden] { display:none; }
         .saison-cran, #saison-aujourdhui { color:var(--accent); text-decoration:none; }
+        /* Crédits obligatoires : Licence Ouverte (IGN) et, en repli, Terrain Tiles. */
+        #credits { position:absolute; right:12px; bottom:12px; z-index:2; max-width:55%;
+                   background:rgba(31,35,40,.78); color:var(--muted); font-size:10px;
+                   line-height:1.4; padding:4px 8px; border-radius:5px; text-align:right; }
+        #credits a { color:var(--text); text-decoration:none; }
+        #credits a:hover { text-decoration:underline; }
         #tip { position:absolute; z-index:3; background:rgba(31,35,40,.95); color:#e8eaed;
                font-size:11px; padding:6px 9px; border-radius:5px; pointer-events:none;
                display:none; max-width:230px; line-height:1.4; }
         @media (max-width:780px) { #app { flex-direction:column; }
-            #panel { width:100%; flex:0 0 auto; max-height:45%; } }
+            #panel { width:100%; flex:0 0 auto; max-height:45%; }
+            #credits { max-width:none; left:12px; } }
     </style>
 </head>
 <body>
@@ -94,11 +102,16 @@
             <h2>Affichage</h2>
             <div class="toggles">
                 <button class="toggle on" id="t-roof">Toits en pente</button>
+                <button class="toggle" id="t-mesure" title="Surface du LiDAR là où le toit résumé s'en écarte de plus de 0,7 m">Toits mesurés</button>
+                <button class="toggle on" id="t-monuments" hidden title="Parties de bâtiments modélisées dans OpenStreetMap (building:part)">Monuments OSM</button>
                 <button class="toggle on" id="t-orbit">Orbite</button>
                 <button class="toggle on" id="t-fond">Photo aérienne</button>
-                <button class="toggle" id="t-osm">Plan OSM</button>
+                <button class="toggle" id="t-plan">Plan IGN</button>
                 <button class="toggle on" id="t-relief">Relief</button>
                 <button class="toggle" id="t-veg">Végétation</button>
+                <button class="toggle on" id="t-eau">Eau</button>
+                <button class="toggle on" id="t-routes">Routes</button>
+                <button class="toggle on" id="t-lignes">Lignes HT</button>
                 <button class="toggle" id="t-moi">Ma position</button>
             </div>
             <div class="row">
@@ -155,7 +168,7 @@
         <div class="section">
             <h2>Bâtiment</h2>
             <div id="fiche-batiment"></div>
-            <div class="note" id="note-batiment">Cliquer un bâtiment pour afficher sa fiche BD TOPO. Le bâtiment visé par le point est en orange.</div>
+            <div class="note" id="note-batiment">Chargement des bâtiments…</div>
         </div>
 
         <div class="section">
@@ -197,6 +210,7 @@
             </div>
         </div>
         <div id="tip"></div>
+        <div id="credits"></div>
     </div>
 </div>
 
@@ -211,6 +225,7 @@
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
 
 // --- Point visé ----------------------------------------------------------
 // Donné dans l'URL (?lat=…&lon=…). Sans point, on en propose un par défaut : la
@@ -260,6 +275,13 @@ const chargementArtefact = fetch(URL_VUE3D)
 // Rempli avant construire() — le rendu s'en sert en priorité sur la BD TOPO.
 let TOITS = {};
 let TOITS_SOURCE = null;
+// Grille MNH dont les surfaces de toit sont des fenêtres : { bbox, width, height }.
+let TOITS_GRILLE = null;
+// Monuments OSM : { parties, remplaces } ou null (vue3d/monuments.py). Dessinés
+// d'office quand la scène en a — c'est la seule source qui sache la forme d'un
+// monument sans LiDAR — et débrayables par le bouton, qui n'apparaît qu'alors.
+let MONUMENTS = null;
+let monumentsActifs = true;
 // La scène est toujours cadrée sur le point : il n'y a pas d'autre repère.
 const CENTRE_FORCE = true;
 
@@ -387,10 +409,14 @@ grille.visible = false;
 scene.add(grille);
 
 // --- Géométrie des bâtiments --------------------------------------------
-const MAT_CIBLE = new THREE.MeshStandardMaterial({ color: 0xe07b00, roughness: 0.75, flatShading: true });
+const MAT_CIBLE = new THREE.MeshStandardMaterial({ color: 0xc9a88a, roughness: 0.8, flatShading: true });
+const MAT_CONTOUR_CIBLE = new THREE.LineBasicMaterial({ color: 0xff8a00 });
 const MAT_VOISIN   = new THREE.MeshStandardMaterial({ color: 0x9aa3ad, roughness: 0.85, flatShading: true });
 const MAT_TOIT     = new THREE.MeshStandardMaterial({ color: 0x8d5a3b, roughness: 0.8, flatShading: true });
 const MAT_TOIT_VOISIN = new THREE.MeshStandardMaterial({ color: 0x6f7883, roughness: 0.9, flatShading: true });
+// Surface mesurée : ombrage lissé par les normales pliées (geometriesSurface),
+// que flatShading ignorerait.
+const MAT_TOIT_SURFACE = new THREE.MeshStandardMaterial({ color: 0x6f7883, roughness: 0.9 });
 // Hauteur inconnue (bâtiment sous les arbres) : volume pâle et translucide,
 // pour dire « on sait qu'il y a un bâtiment, pas sa hauteur ».
 const MAT_INCONNU = new THREE.MeshStandardMaterial({ color: 0xb8c0c8, roughness: 0.9, flatShading: true,
@@ -398,6 +424,9 @@ const MAT_INCONNU = new THREE.MeshStandardMaterial({ color: 0xb8c0c8, roughness:
 // Repli quand ni le LiDAR ni la BD TOPO ne sont crédibles : 3 m par étage
 // BD TOPO connu, un étage sinon. Un ordre de grandeur, affiché comme tel.
 const HAUTEUR_PAR_ETAGE = 3;
+// Dénivelé maximal d'un toit, en fraction de sa largeur : environ 50°, la règle
+// que le serveur applique au LiDAR (TOITS_PENTE_MAX dans vue3d/toits.py).
+const PENTE_TOIT_MAX = 0.6;
 
 const groupeBatiments = new THREE.Group();
 scene.add(groupeBatiments);
@@ -524,6 +553,171 @@ function geometriePyramide(rect, hGouttiere, hFaitage) {
     return geo;
 }
 
+// --- Surface mesurée du toit ----------------------------------------------
+// Le serveur envoie, pour chaque toit fiable, la fenêtre de la grille MNH à
+// 0,5 m qui couvre l'emprise : des hauteurs rapportées au point le plus bas du
+// terrain sous le contour, bords et feuillage déjà écartés (vue3d/toits.py).
+//
+// Le toit est cette grille découpée sur le contour : chaque maille (le carré
+// entre quatre centres de cellules) est coupée par l'emprise, triangulée, et
+// ses sommets prennent la hauteur interpolée. Les murs montent sous le bord du
+// toit, aux mêmes points et aux mêmes hauteurs : pas de fente entre les deux.
+
+const ANGLE_PLI_TOIT = 40 * Math.PI / 180;
+// Au-delà, une facette n'est plus un pan mais la marche entre deux corps : un
+// mur. Le serveur refuse déjà un toit plus raide qu'environ 50°
+// (TOITS_PENTE_MAX) ; texturée par la photo, projetée à la verticale, la
+// marche s'y couvrait de traînées comme une façade.
+const PENTE_MUR_COS = Math.cos(60 * Math.PI / 180);
+
+/** Hauteurs d'une surface, en mètres, lignes depuis le nord. */
+function decoderSurface(s) {
+    const z = new Float64Array(s.l * s.h);
+    let tete = 0;
+    for (let j = 0; j < s.h; j++) {
+        // Tête de ligne : écart à la tête précédente ; ensuite, à la voisine.
+        tete += s.z[j * s.l];
+        let v = tete;
+        z[j * s.l] = v;
+        for (let i = 1; i < s.l; i++) { v += s.z[j * s.l + i]; z[j * s.l + i] = v; }
+    }
+    for (let k = 0; k < z.length; k++) z[k] = s.zero_m + z[k] * s.pas_m;
+    return z;
+}
+
+/** Découpe d'un polygone par le demi-plan `garder` (Sutherland–Hodgman). */
+function couperPolygone(pts, garder, intersection) {
+    const out = [];
+    for (let k = 0; k < pts.length; k++) {
+        const a = pts[k], b = pts[(k + 1) % pts.length];
+        const ga = garder(a), gb = garder(b);
+        if (ga) out.push(a);
+        if (ga !== gb) out.push(intersection(a, b));
+    }
+    return out;
+}
+
+/**
+ * Murs et toit d'un bâtiment à surface mesurée, en coordonnées de scène, base
+ * à 0. Null si la géométrie est dégénérée.
+ */
+function geometriesSurface(anneau, s) {
+    const G = TOITS_GRILLE;
+    const [w, sud, e, n] = G.bbox;
+    // Centres des cellules de la fenêtre, en mètres locaux : x vers l'est, y
+    // vers le nord. La projection locale est affine, la grille reste régulière.
+    const lonCol = i => w + (e - w) * (s.i0 + i + 0.5) / G.width;
+    const latLig = j => n - (n - sud) * (s.j0 + j + 0.5) / G.height;
+    const [X0, Y0] = toLocal(lonCol(0), latLig(0));
+    const [X1, Y1] = toLocal(lonCol(s.l - 1), latLig(s.h - 1));
+    const dx = (X1 - X0) / (s.l - 1), dy = (Y0 - Y1) / (s.h - 1);
+    const z = decoderSurface(s);
+    // Le serveur rapporte les hauteurs au terrain ; la base du bâtiment est
+    // enfoncée d'ENFONCEMENT sous lui (baseBatiment).
+    const hauteur = (x, y) => {
+        const fi = Math.min(Math.max((x - X0) / dx, 0), s.l - 1);
+        const fj = Math.min(Math.max((Y0 - y) / dy, 0), s.h - 1);
+        const i = Math.min(Math.floor(fi), s.l - 2), j = Math.min(Math.floor(fj), s.h - 2);
+        const ai = fi - i, aj = fj - j, v = (a, b) => z[b * s.l + a];
+        return (v(i, j) * (1 - ai) + v(i + 1, j) * ai) * (1 - aj)
+             + (v(i, j + 1) * (1 - ai) + v(i + 1, j + 1) * ai) * aj + ENFONCEMENT;
+    };
+
+    let pts = anneau.map(([lo, la]) => toLocal(lo, la));
+    const [fx, fy] = pts[0], [lx, ly] = pts[pts.length - 1];
+    if (fx === lx && fy === ly) pts = pts.slice(0, -1);
+    if (pts.length < 3) return null;
+
+    // --- Toit : maille par maille. Les facettes trop raides rejoignent les murs.
+    const toit = [], murs = [];
+    const poser = (cible, x, y) => cible.push(x, hauteur(x, y), -y);
+    const minX = Math.min(...pts.map(p => p[0])), maxX = Math.max(...pts.map(p => p[0]));
+    const minY = Math.min(...pts.map(p => p[1])), maxY = Math.max(...pts.map(p => p[1]));
+    const v2 = [];
+    for (let j = 0; j < s.h - 1; j++) {
+        const yh = Y0 - j * dy, yb = yh - dy;
+        if (yb > maxY || yh < minY) continue;
+        for (let i = 0; i < s.l - 1; i++) {
+            const xg = X0 + i * dx, xd = xg + dx;
+            if (xg > maxX || xd < minX) continue;
+            const coupeX = x0 => (a, b) => [x0, a[1] + (b[1] - a[1]) * (x0 - a[0]) / (b[0] - a[0])];
+            const coupeY = y0 => (a, b) => [a[0] + (b[0] - a[0]) * (y0 - a[1]) / (b[1] - a[1]), y0];
+            let c = couperPolygone(pts, p => p[0] >= xg, coupeX(xg));
+            c = couperPolygone(c, p => p[0] <= xd, coupeX(xd));
+            c = couperPolygone(c, p => p[1] >= yb, coupeY(yb));
+            c = couperPolygone(c, p => p[1] <= yh, coupeY(yh));
+            if (c.length < 3) continue;
+            v2.length = 0;
+            for (const [x, y] of c) v2.push(new THREE.Vector2(x, y));
+            for (const [a, b, d] of THREE.ShapeUtils.triangulateShape(v2, [])) {
+                // Le plan (x, y) devient (x, -z) : l'ordre qui tourne dans le
+                // sens trigonométrique vu du nord... est inversé vu du ciel.
+                // On l'impose d'après l'aire, pour que la face regarde en haut.
+                const [pa, pb, pd] = [c[a], c[b], c[d]];
+                const aire = (pb[0] - pa[0]) * (pd[1] - pa[1]) - (pd[0] - pa[0]) * (pb[1] - pa[1]);
+                if (Math.abs(aire) < 1e-9) continue;
+                const ordre = aire > 0 ? [pa, pb, pd] : [pa, pd, pb];
+                // Pente : composante verticale de la normale, |aire| étant la
+                // projection au sol de ce même produit vectoriel.
+                const [q0, q1, q2] = ordre.map(([x, y]) => [x, hauteur(x, y), -y]);
+                const ux = q1[0] - q0[0], uy = q1[1] - q0[1], uz = q1[2] - q0[2];
+                const vx = q2[0] - q0[0], vy = q2[1] - q0[1], vz = q2[2] - q0[2];
+                const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+                const raide = ny < PENTE_MUR_COS * Math.hypot(nx, ny, nz);
+                for (const [x, y] of ordre) poser(raide ? murs : toit, x, y);
+            }
+        }
+    }
+    if (!toit.length) return null;
+
+    // --- Murs : chaque côté coupé aux lignes de la grille, là où le bord du
+    // toit change de pente, et monté jusqu'à lui.
+    let aire = 0;
+    for (let k = 0; k < pts.length; k++) {
+        const [ax, ay] = pts[k], [bx, by] = pts[(k + 1) % pts.length];
+        aire += ax * by - bx * ay;
+    }
+    const sens = aire > 0 ? 1 : -1;     // +1 : contour trigonométrique
+    for (let k = 0; k < pts.length; k++) {
+        const a = pts[k], b = pts[(k + 1) % pts.length];
+        const ts = [0, 1];
+        for (let i = 0; i < s.l; i++) {
+            const x = X0 + i * dx;
+            if ((x - a[0]) * (x - b[0]) < 0) ts.push((x - a[0]) / (b[0] - a[0]));
+        }
+        for (let j = 0; j < s.h; j++) {
+            const y = Y0 - j * dy;
+            if ((y - a[1]) * (y - b[1]) < 0) ts.push((y - a[1]) / (b[1] - a[1]));
+        }
+        ts.sort((p, q) => p - q);
+        for (let m = 0; m < ts.length - 1; m++) {
+            const p = [a[0] + (b[0] - a[0]) * ts[m], a[1] + (b[1] - a[1]) * ts[m]];
+            const q = [a[0] + (b[0] - a[0]) * ts[m + 1], a[1] + (b[1] - a[1]) * ts[m + 1]];
+            const hp = hauteur(p[0], p[1]), hq = hauteur(q[0], q[1]);
+            // Face vers l'extérieur : à droite du côté parcouru dans le sens
+            // trigonométrique, à gauche sinon.
+            const quad = [[p, 0], [q, 0], [q, hq], [p, 0], [q, hq], [p, hp]];
+            const tri = sens > 0 ? quad : [quad[0], quad[2], quad[1], quad[3], quad[5], quad[4]];
+            for (const [[x, y], h] of tri) murs.push(x, h, -y);
+        }
+    }
+
+    const geo = v => {
+        const g = new THREE.BufferGeometry();
+        g.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
+        g.computeVertexNormals();
+        return g;
+    };
+    // Le bruit du LiDAR, quelques centimètres d'une cellule à l'autre, incline
+    // chaque facette de 0,5 m : ombrée à plat, la toiture paraissait rocheuse.
+    // Lisser les hauteurs l'éloignait du LiDAR sans la rendre moins rugueuse sur
+    // les toits raides ; on lisse donc l'ombrage seul, au-dessous d'un angle de
+    // pli. Mesuré entre facettes voisines (Gordes, Strasbourg, une maison) :
+    // 11° en médiane, 16 à 24° au 75e centile — le bruit — et 3 à 7 % au-delà
+    // de 45° : faîtages, noues et marches, qui doivent rester nets.
+    return { toit: toCreasedNormals(geo(toit), ANGLE_PLI_TOIT), murs: geo(murs) };
+}
+
 /** Boîte d'un corps de toit LiDAR, centrée, dans le repère de son axe. */
 function rectangleDeCorps(corps) {
     const ang = (corps.axe_deg != null ? corps.axe_deg : 0) * Math.PI / 180;
@@ -584,6 +778,8 @@ function majCiblesSurvol() {
     // Les troncs sont exclus : ils ne portent pas d'infobulle.
     if (groupeVegetation.visible) ciblesSurvol.push(
         ...groupeVegetation.children.filter(o => o.userData.vegetation));
+    // Déclarés en `var` plus bas : undefined tant que ce bloc n'est pas évalué.
+    if (groupeLignes && groupeLignes.visible) ciblesSurvol.push(...pylonesSurvol);
 }
 
 /** Point dans polygone par lancer de rayon. Coordonnées en degrés (lon, lat). */
@@ -742,13 +938,25 @@ function afficherFicheBatiment(ud) {
             : (typeof v === 'number' ? (Math.round(v * 100) / 100) : v) + unite;
         return '<div class="stat"><span>' + libelle + '</span><b>' + texte + '</b></div>';
     }).join('');
+    const stat = (libelle, valeur) => '<div class="stat"><span>' + libelle + '</span><b>' + valeur + '</b></div>';
+    const metres = v => v.toFixed(1).replace('.', ',') + ' m';
+    const vise = CIBLE && ud.anneau === CIBLE.anneau
+        ? stat('distance au point', CIBLE.distance === 0 ? 'dedans' : metres(CIBLE.distance)) : '';
+    // Le toit tel qu'il est dessiné, et pourquoi : la surface mesurée n'est
+    // retenue que là où le toit résumé s'écarte du LiDAR (vue3d/toits.py).
+    const l = ud.lidar;
+    const forme = !l ? ''
+        : stat('toit dessiné', l.surface && toitsEnPente && toitsMesures ? 'surface mesurée'
+               : (l.corps && l.corps.length >= 2 ? `${l.corps.length} corps de toit`
+                  : (l.faitage - l.gouttiere > 0.5 ? 'deux pans' : 'plat')))
+          + (l.ecart_resume != null ? stat('écart du toit résumé au LiDAR', metres(l.ecart_resume)) : '');
     const mesure = ud.lidar
-        ? '<div class="stat"><span>gouttière LiDAR</span><b>' + ud.lidar.gouttiere.toFixed(1) + ' m</b></div>'
-          + '<div class="stat"><span>faîtage LiDAR</span><b>' + ud.lidar.faitage.toFixed(1) + ' m</b></div>'
+        ? stat('gouttière LiDAR', metres(ud.lidar.gouttiere))
+          + stat('faîtage LiDAR', metres(ud.lidar.faitage)) + forme
         : (ud.inconnue
             ? '<div class="note">Hauteur inconnue : bâtiment sous les arbres, le LiDAR y lit la canopée.</div>'
             : '<div class="note">Pas de mesure LiDAR fiable : hauteurs de la BD TOPO.</div>');
-    document.getElementById('fiche-batiment').innerHTML = lignes + mesure
+    document.getElementById('fiche-batiment').innerHTML = vise + lignes + mesure
         + '<div class="note">BD TOPO <code>' + (p.cleabs || '—') + '</code></div>'
         + lienStreetView(ud.anneau);
 }
@@ -757,10 +965,28 @@ function construire(features, toitsEnPente) {
     groupeBatiments.clear();
     meshes.length = 0;
     meshesToits.length = 0;
-    stats = { total: 0, avecToit: 0, pentes: [], lidar: 0, axes: 0, corps: 0, inconnus: 0 };
+    stats = { total: 0, avecToit: 0, pentes: [], lidar: 0, axes: 0, corps: 0, inconnus: 0, surfaces: 0, osm: 0 };
+    // Bâtiments que les parties OSM remplacent : OSM et la BD TOPO ne découpent
+    // pas le bâti pareil, dessiner les deux superposerait deux modèles.
+    //
+    // Là où le LiDAR HD mesure, il fait foi : OSM ne prend que les bâtiments
+    // dont le LiDAR ne sait rien — sous les arbres, ou profil non fiable. À
+    // Strasbourg, la couche entière remplaçait des toits mesurés par des
+    // hauteurs estimées ; ce filtre lui laisse l'église Saint-Thomas, que le
+    // LiDAR dessinait à 3 m (« sous les arbres »), et rien d'autre. Sans
+    // LiDAR (photogrammétrie), la couche est entière : c'est le cas qui l'a
+    // motivée, l'abbaye du Mont-Saint-Michel.
+    let remplaces = monumentsActifs && MONUMENTS ? new Set(MONUMENTS.remplaces) : null;
+    if (remplaces && TOITS_SOURCE === 'lidar_hd') {
+        remplaces = new Set([...remplaces].filter(c => {
+            const t = TOITS[c];
+            return !t || t.hauteur_inconnue || t.fiable === false;
+        }));
+    }
 
     for (const f of features) {
         const p = f.properties || {};
+        if (remplaces && remplaces.has(p.cleabs)) continue;
         const sol0 = p.altitude_minimale_sol;
         const hauteur = p.hauteur;
         // Le LiDAR est la référence quand sa mesure est fiable ; la BD TOPO
@@ -796,6 +1022,7 @@ function construire(features, toitsEnPente) {
                 const geo = new THREE.ExtrudeGeometry(anneauVersShape(anneau), { depth: hRepli, bevelEnabled: false });
                 geo.rotateX(-Math.PI / 2);
                 const mur = new THREE.Mesh(geo, MAT_INCONNU);
+                habillerCible(mur, anneau);
                 mur.castShadow = false; mur.receiveShadow = true;
                 mur.userData = { p, denivele: 0, hMur: hRepli, anneau, lidar: null, inconnue: mesure };
                 groupeBatiments.add(mur);
@@ -823,10 +1050,43 @@ function construire(features, toitsEnPente) {
             const geo = new THREE.ExtrudeGeometry(forme, { depth: hMur, bevelEnabled: false });
             geo.rotateX(-Math.PI / 2);   // le plan XY de la Shape devient le sol
             const mur = new THREE.Mesh(geo, materiauMurs(anneau));
+            habillerCible(mur, anneau);
             mur.castShadow = true; mur.receiveShadow = true;
             mur.userData = { p, denivele, hMur, anneau, lidar };
             groupeBatiments.add(mur);
             meshes.push(mur);
+
+            // Surface mesurée : le toit suit le MNH cellule par cellule, pans,
+            // marches et faîtages décentrés compris. Elle remplace le toit à
+            // deux pans et les corps, qui n'en sont que des résumés — sur
+            // demande seulement : fidèle au LiDAR, elle en garde le grain, et
+            // le toit résumé se lit mieux dans une vue d'ensemble.
+            const surface = toitsEnPente && toitsMesures && lidar && lidar.surface && TOITS_GRILLE
+                ? geometriesSurface(anneau, lidar.surface) : null;
+            if (surface) {
+                const provisoire = meshes.pop();
+                groupeBatiments.remove(provisoire);
+                provisoire.geometry.dispose();
+                if (!(aDesAltitudes && denivele > 0.5)) { stats.avecToit++; stats.pentes.push(denivele); }
+                stats.surfaces++;
+                // Surface déjà rapportée au point bas du contour par le serveur :
+                // rebaserBatiments() ne la relève pas.
+                const ud = { p, denivele, hMur, anneau, lidar, surface: true };
+                const murs = new THREE.Mesh(surface.murs, materiauMurs(anneau));
+                habillerCible(murs, anneau);
+                const toit = new THREE.Mesh(surface.toit, MAT_TOIT_SURFACE);
+                for (const m of [murs, toit]) {
+                    m.castShadow = true; m.receiveShadow = true; m.userData = ud;
+                    groupeBatiments.add(m);
+                    meshes.push(m);
+                }
+                // Sans fond, appliquerTextureToits() lui rendra son matériau
+                // lissé plutôt que celui, à facettes, des toits résumés.
+                toit.userData = { ...ud, lisse: true };
+                meshesToits.push(toit);
+                toit.name = 'toit';
+                continue;
+            }
 
             // Plusieurs faîtages mesurés (maison en ailes) : un toit par corps,
             // chacun sur son axe, en pyramide s'il n'a pas de faîtage net. Les
@@ -849,6 +1109,7 @@ function construire(features, toitsEnPente) {
                 const geo = new THREE.ExtrudeGeometry(forme, { depth: hMurs, bevelEnabled: false });
                 geo.rotateX(-Math.PI / 2);
                 const mur = new THREE.Mesh(geo, materiauMurs(anneau));
+                habillerCible(mur, anneau);
                 mur.castShadow = true; mur.receiveShadow = true;
                 mur.userData = { p, denivele: stats.pentes[stats.pentes.length - 1], hMur: hMurs, anneau, lidar };
                 groupeBatiments.add(mur);
@@ -864,6 +1125,7 @@ function construire(features, toitsEnPente) {
                     groupeBatiments.add(toit);
                     meshes.push(toit);
                     meshesToits.push(toit);
+                    toit.name = 'toit';
                 }
                 continue;
             }
@@ -877,26 +1139,37 @@ function construire(features, toitsEnPente) {
                 const rect = axeLidar !== null ? rectangleSelonAxe(pts, axeLidar) : rectangleMin(pts);
                 if (rect) {
                     if (axeLidar !== null) stats.axes++;
+                    // Même garde-fou que le serveur pour le LiDAR : la BD TOPO
+                    // annonçait 14,5 m de dénivelé sur un bâtiment de 12 m de
+                    // large au Mont-Saint-Michel, un toit à 67°.
+                    const den = lidar ? denivele : Math.min(denivele,
+                        PENTE_TOIT_MAX * Math.min(rect.x1 - rect.x0, rect.y1 - rect.y0));
+                    mur.userData.denivele = den;
                     const toit = new THREE.Mesh(
-                        geometrieToit(rect, hMur, hMur + denivele, axeLidar !== null ? true : null),
+                        geometrieToit(rect, hMur, hMur + den, axeLidar !== null ? true : null),
                         MAT_TOIT_VOISIN);
                     toit.castShadow = true; toit.receiveShadow = true;
                     toit.userData = mur.userData;
                     groupeBatiments.add(toit);
                     meshes.push(toit);
                     meshesToits.push(toit);
+                    toit.name = 'toit';
                 }
             }
         }
     }
 
-    document.getElementById('s-total').textContent = stats.total;
+    construireMonuments(features, toitsEnPente, remplaces);
+
+    document.getElementById('s-total').textContent =
+        stats.total + (stats.osm ? ` (+ ${stats.osm} parties OSM)` : '');
     document.getElementById('s-roof').textContent =
         stats.total ? `${stats.avecToit} (${Math.round(100*stats.avecToit/stats.total)} %)` : '—';
     document.getElementById('s-lidar').textContent =
         stats.total ? `${stats.lidar} (${Math.round(100*stats.lidar/stats.total)} %)`
                       + (stats.axes ? `, faîtage orienté sur ${stats.axes}` : '')
                       + (stats.corps ? `, ${stats.corps} corps de toit` : '')
+                      + (stats.surfaces ? `, surface mesurée sur ${stats.surfaces}` : '')
                       + (stats.inconnus ? `, ${stats.inconnus} sous les arbres (hauteur inconnue)` : '')
                       + (TOITS_SOURCE === 'mns_mnt' ? ' · photogrammétrie' : '') : '—';
     const s = stats.pentes.slice().sort((a, b) => a - b);
@@ -911,11 +1184,147 @@ function construire(features, toitsEnPente) {
 }
 
 /**
- * Murs du bâtiment qui contient le point visé : en orange, pour qu'on sache
- * d'un coup d'œil de quel bâtiment parlent l'ombrage et le masque solaire.
+ * Parties de monuments OSM (`building:part`), pour les bâtiments que la BD
+ * TOPO résume trop : sans LiDAR, La Merveille du Mont-Saint-Michel (20 m ×
+ * 67 m, 16 m entre gouttière et faîtage BD TOPO) sortait en toblerone.
+ *
+ * Chaque partie est traitée comme un bâtiment ordinaire — mêmes matériaux,
+ * même repose sur la pente, même fiche au clic (celle du bâtiment BD TOPO qui
+ * la contient). Les murs partent du sol même quand la partie a un
+ * `min_height` : le bas est caché par la partie du dessous, et un volume qui
+ * part du sol suit rebaserBatiments comme les autres.
+ */
+function construireMonuments(features, toitsEnPente, remplaces) {
+    if (!monumentsActifs || !MONUMENTS) return;
+    const parCleabs = new Map();
+    for (const f of features) {
+        if (f.properties && f.properties.cleabs) parCleabs.set(f.properties.cleabs, f.properties);
+    }
+    for (const partie of MONUMENTS.parties) {
+        const anneau = partie.contour;
+        if (!anneau || anneau.length < 4) continue;
+        // Avec LiDAR, seules les parties des bâtiments repris à OSM sont
+        // dessinées (voir le filtre de `remplaces` dans construire()).
+        if (TOITS_SOURCE === 'lidar_hd'
+            && !(partie.bat && remplaces && remplaces.has(partie.bat))) continue;
+        stats.osm++;
+        const p = (partie.bat && parCleabs.get(partie.bat)) || {};
+        const toitH = toitsEnPente && partie.toit ? Math.min(partie.toit.h, partie.h - 0.5) : 0;
+        const hMur = Math.max(partie.h - toitH, 0.5);
+        const geo = new THREE.ExtrudeGeometry(anneauVersShape(anneau), { depth: hMur, bevelEnabled: false });
+        geo.rotateX(-Math.PI / 2);
+        const mur = new THREE.Mesh(geo, MAT_VOISIN);
+        mur.castShadow = true; mur.receiveShadow = true;
+        const ud = { p, anneau, hMur, denivele: toitH, lidar: null, monument: partie };
+        mur.userData = ud;
+        // Le bâtiment visé peut être remplacé par ses parties : le contour
+        // orange passe alors sur chacune d'elles.
+        if (CIBLE && p.cleabs && CIBLE.p && p.cleabs === CIBLE.p.cleabs) {
+            mur.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo, 40), MAT_CONTOUR_CIBLE));
+        }
+        groupeBatiments.add(mur);
+        meshes.push(mur);
+        if (toitH > 0) {
+            const pts = anneau.map(([lo, la]) => toLocal(lo, la));
+            const rect = rectangleMin(pts);
+            if (rect) {
+                // `roof:orientation=across` : faîtage sur le petit côté, donc
+                // l'inverse du choix par défaut de geometrieToit.
+                const forcerX = partie.toit.orientation === 'across'
+                    ? (rect.x1 - rect.x0) < (rect.y1 - rect.y0) : null;
+                const geoT = partie.toit.forme === 'pyramide'
+                    ? geometriePyramide(rect, hMur, partie.h)
+                    : geometrieToit(rect, hMur, partie.h, forcerX);
+                const toit = new THREE.Mesh(geoT, MAT_TOIT_VOISIN);
+                toit.castShadow = true; toit.receiveShadow = true;
+                toit.userData = ud;
+                toit.name = 'toit';
+                groupeBatiments.add(toit);
+                meshes.push(toit);
+                meshesToits.push(toit);
+            }
+        }
+    }
+}
+
+/**
+ * Murs du bâtiment visé : en orange, pour qu'on sache d'un coup d'œil de quel
+ * bâtiment parlent la fiche, l'ombrage et le masque solaire.
  */
 function materiauMurs(anneau) {
-    return pointDansAnneau(CENTER[0], CENTER[1], anneau) ? MAT_CIBLE : MAT_VOISIN;
+    return CIBLE && anneau === CIBLE.anneau ? MAT_CIBLE : MAT_VOISIN;
+}
+
+/**
+ * Contour orange des arêtes du bâtiment visé. Peint en entier, un grand volume
+ * — l'abbaye du Mont-Saint-Michel, 74 m et 182 sommets — n'était plus qu'une
+ * masse orange ; ses murs gardent un ton à peine réchauffé, le contour dit
+ * lequel c'est. Enfant du mur : il suit son relèvement (rebaserBatiments).
+ */
+function habillerCible(mur, anneau) {
+    if (!CIBLE || anneau !== CIBLE.anneau) return;
+    mur.add(new THREE.LineSegments(new THREE.EdgesGeometry(mur.geometry, 40), MAT_CONTOUR_CIBLE));
+}
+
+// --- Bâtiment visé ---------------------------------------------------------
+// Celui qui contient le point ; sinon le plus proche, un point saisi à la main
+// ou pris au GPS tombant souvent dans un jardin, une cour ou la rue. Au-delà
+// de RAYON_VISE, le plus proche n'est plus « le » bâtiment du point : la
+// fiche reste vide et le masque solaire se mesure depuis le sol.
+//
+// La distance est prise au contour, non au centre de la boîte englobante : un
+// grand bâtiment en L voisin l'emportait sur la maison devant laquelle on se
+// tient.
+const RAYON_VISE = 25;
+let CIBLE = null;       // { anneau, p, distance } ; distance 0 : le point est dedans
+
+/** Distance du point à une emprise, en mètres ; 0 s'il est dedans. */
+function distanceAuPoint(anneau) {
+    if (pointDansAnneau(CENTER[0], CENTER[1], anneau)) return 0;
+    const pts = anneau.map(([lo, la]) => toLocal(lo, la));
+    let d = Infinity;
+    for (let i = 0; i < pts.length - 1; i++) {
+        const [ax, ay] = pts[i], [bx, by] = pts[i + 1];
+        const lx = bx - ax, ly = by - ay, l2 = lx * lx + ly * ly;
+        const t = l2 > 0 ? Math.min(Math.max(-(ax * lx + ay * ly) / l2, 0), 1) : 0;
+        d = Math.min(d, Math.hypot(ax + t * lx, ay + t * ly));
+    }
+    return d;
+}
+
+function trouverCible(features) {
+    let meilleur = null;
+    for (const f of features) {
+        for (const anneau of anneauxDe(f.geometry)) {
+            if (!anneau || anneau.length < 4) continue;
+            const distance = distanceAuPoint(anneau);
+            if (!meilleur || distance < meilleur.distance) {
+                meilleur = { anneau, p: f.properties || {}, distance };
+            }
+        }
+    }
+    return meilleur && meilleur.distance <= RAYON_VISE ? meilleur : null;
+}
+
+/** Ouvre la fiche du bâtiment visé et dit dans la note comment il a été choisi. */
+function afficherCible() {
+    const noteB = document.getElementById('note-batiment');
+    if (!CIBLE) {
+        noteB.textContent = `Aucun bâtiment à moins de ${RAYON_VISE} m du point. `
+            + 'Cliquer un bâtiment pour afficher sa fiche BD TOPO.';
+        return;
+    }
+    // Le bâtiment visé peut être remplacé par ses parties OSM : sa fiche
+    // s'ouvre alors depuis l'une d'elles, qui porte les mêmes propriétés.
+    const mesh = groupeBatiments.children.find(o => o.userData.anneau === CIBLE.anneau)
+        || groupeBatiments.children.find(o => o.userData.monument
+               && o.userData.p && CIBLE.p && o.userData.p.cleabs === CIBLE.p.cleabs);
+    if (mesh) afficherFicheBatiment(mesh.userData);
+    noteB.textContent = (CIBLE.distance === 0
+        ? 'Le bâtiment qui contient le point, en orange.'
+        : `Le point n'est dans aucune emprise : le bâtiment le plus proche, `
+          + `à ${CIBLE.distance.toFixed(1).replace('.', ',')} m, est en orange.`)
+        + ' Cliquer un autre bâtiment pour sa fiche.';
 }
 
 // --- Chargement des bâtiments -------------------------------------------
@@ -941,9 +1350,20 @@ async function chargerScene() {
 
 chargerScene()
     .then(([json, toits]) => {
-        if (toits && toits.toits) { TOITS = toits.toits; TOITS_SOURCE = toits.source; }
+        if (toits && toits.toits) { TOITS = toits.toits; TOITS_SOURCE = toits.source; TOITS_GRILLE = toits.grille || null; }
+        MONUMENTS = (ARTEFACT.monuments && ARTEFACT.monuments.parties
+                     && ARTEFACT.monuments.parties.length) ? ARTEFACT.monuments : null;
+        monumentsActifs = !!MONUMENTS;
+        if (MONUMENTS) {
+            const b = document.getElementById('t-monuments');
+            b.hidden = false;
+            b.classList.toggle('on', monumentsActifs);
+            majCredits();
+        }
         features = json.features || [];
+        CIBLE = trouverCible(features);
         construire(features, true);
+        afficherCible();
         note.textContent = stats.total
             ? `${stats.avecToit} bâtiment(s) sur ${stats.total} ont des altitudes de toiture exploitables.`
             : "Aucun bâtiment BD TOPO sur cette emprise.";
@@ -977,10 +1397,14 @@ function cadrer() {
 // --- Fond cartographique -------------------------------------------------
 // Les tuiles sont assemblées dans un canvas unique, qui sert à la fois de sol
 // et de texture pour les toits. Aucun proxy n'est nécessaire : data.geopf.fr
-// et tile.openstreetmap.org renvoient tous deux `access-control-allow-origin: *`,
-// ce qu'exige WebGL pour une texture cross-origin (vérifié). Il faut en
-// revanche crossOrigin='anonymous' sur les images, sinon le canvas serait
-// marqué « souillé » et la texture refusée malgré ces en-têtes.
+// renvoie `access-control-allow-origin: *`, ce qu'exige WebGL pour une texture
+// cross-origin (vérifié, orthophoto et Plan IGN). Il faut en revanche
+// crossOrigin='anonymous' sur les images, sinon le canvas serait marqué
+// « souillé » et la texture refusée malgré cet en-tête.
+//
+// Les deux fonds viennent de l'IGN, sous la même licence que le reste de la
+// scène. Le plan OpenStreetMap qu'on proposait avant dépendait de serveurs
+// dont les conditions d'usage découragent un rechargement à chaque visite.
 const TUILE_ZOOM = 18;
 const TUILE_DELTA = 0.0016;      // même emprise que les bâtiments
 
@@ -989,14 +1413,18 @@ const FONDS = {
         'https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0' +
         '&LAYER=ORTHOIMAGERY.ORTHOPHOTOS&STYLE=normal&FORMAT=image/jpeg' +
         `&TILEMATRIXSET=PM&TILEMATRIX=${z}&TILEROW=${y}&TILECOL=${x}`,
-    osm: (z, x, y) => `https://tile.openstreetmap.org/${z}/${x}/${y}.png`,
+    // PLANIGNV2 : PNG seulement, publié jusqu'au zoom 19 comme l'orthophoto.
+    plan: (z, x, y) =>
+        'https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0' +
+        '&LAYER=GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2&STYLE=normal&FORMAT=image/png' +
+        `&TILEMATRIXSET=PM&TILEMATRIX=${z}&TILEROW=${y}&TILECOL=${x}`,
 };
 
 const groupeFond = new THREE.Group();
 scene.add(groupeFond);
 
-// TILEMATRIXSET=PM de l'IGN suit le même découpage que les tuiles XYZ d'OSM,
-// les deux fonds partagent donc ces conversions.
+// TILEMATRIXSET=PM de l'IGN suit le découpage XYZ standard (Web Mercator) :
+// les deux fonds, et les tuiles de relief de repli, partagent ces conversions.
 const versTuile = (lon, lat, z) => {
     const n = 2 ** z;
     const rad = lat * Math.PI / 180;
@@ -1063,6 +1491,43 @@ function poserPlanDeFond() {
 }
 
 /**
+ * Assemble les tuiles WMTS qui couvrent une emprise en une seule texture.
+ *
+ * Une tuile absente reste transparente. L'emprise rendue est celle du
+ * composite, alignée sur le découpage des tuiles, en coordonnées locales.
+ */
+async function composerTuiles(url, zoom, b) {
+    const [x0, y0] = versTuile(b.o, b.n, zoom);
+    const [x1, y1] = versTuile(b.e, b.s, zoom);
+    const canvas = document.createElement('canvas');
+    canvas.width = (x1 - x0 + 1) * 256;
+    canvas.height = (y1 - y0 + 1) * 256;
+    const ctx = canvas.getContext('2d');
+
+    const chargements = [];
+    for (let x = x0; x <= x1; x++) {
+        for (let y = y0; y <= y1; y++) {
+            chargements.push(
+                chargerImage(url(zoom, x, y))
+                    .then(img => ctx.drawImage(img, (x - x0) * 256, (y - y0) * 256, 256, 256))
+                    .catch(() => { /* tuile absente : reste transparente */ }));
+        }
+    }
+    await Promise.all(chargements);
+
+    // Coin nord-ouest de la première tuile au coin sud-est de la dernière.
+    const [lonO, latN] = versLonLat(x0, y0, zoom);
+    const [lonE, latS] = versLonLat(x1 + 1, y1 + 1, zoom);
+    const [ax, ay] = toLocal(lonO, latN);
+    const [bx, by] = toLocal(lonE, latS);
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    return { texture, bornes: { minX: Math.min(ax, bx), maxX: Math.max(ax, bx),
+                                minZ: Math.min(-ay, -by), maxZ: Math.max(-ay, -by) } };
+}
+
+/**
  * `anonyme` gouverne crossOrigin : nécessaire pour les tuiles d'un autre
  * domaine, dont on lit le canvas, mais à éviter pour nos propres URL, qui
  * portent le cookie de session.
@@ -1085,48 +1550,17 @@ async function poserFond(nom) {
 
     // Orthophoto : une seule image publiée avec l'artefact, quand il existe.
     // Les seize tuiles WMTS restent le chemin de secours — et le seul pour le
-    // fond OSM, qui n'est pas publié.
+    // Plan IGN, qui n'est pas publié.
     if (nom === 'ortho' && URL_VUE3D_ORTHO) {
         await chargementArtefact;
         if (ARTEFACT && await poserMosaique()) return;
     }
 
-    const url = FONDS[nom];
-    const [x0, y0] = versTuile(CENTER[0] - TUILE_DELTA, CENTER[1] + TUILE_DELTA, TUILE_ZOOM);
-    const [x1, y1] = versTuile(CENTER[0] + TUILE_DELTA, CENTER[1] - TUILE_DELTA, TUILE_ZOOM);
-    const nx = x1 - x0 + 1, ny = y1 - y0 + 1;
-
-    const canvas = document.createElement('canvas');
-    canvas.width = nx * 256;
-    canvas.height = ny * 256;
-    const ctx = canvas.getContext('2d');
-
-    const chargements = [];
-    for (let x = x0; x <= x1; x++) {
-        for (let y = y0; y <= y1; y++) {
-            chargements.push(
-                chargerImage(url(TUILE_ZOOM, x, y))
-                    .then(img => ctx.drawImage(img, (x - x0) * 256, (y - y0) * 256, 256, 256))
-                    .catch(() => { /* tuile absente : reste transparente */ }));
-        }
-    }
-    await Promise.all(chargements);
-
-    // Emprise du composite, coin nord-ouest de la première tuile au coin
-    // sud-est de la dernière.
-    const [lonO, latN] = versLonLat(x0, y0, TUILE_ZOOM);
-    const [lonE, latS] = versLonLat(x1 + 1, y1 + 1, TUILE_ZOOM);
-    const [ax, ay] = toLocal(lonO, latN);
-    const [bx, by] = toLocal(lonE, latS);
-    fondBornes = { minX: Math.min(ax, bx), maxX: Math.max(ax, bx),
-                   minZ: Math.min(-ay, -by), maxZ: Math.max(-ay, -by) };
-
-    // Seule l'orthophoto a un sens pour lire la couleur du sol : un plan OSM
-    // est vert là où le cartographe l'a décidé, pas là où il y a des feuilles.
-
-    fondTexture = new THREE.CanvasTexture(canvas);
-    fondTexture.colorSpace = THREE.SRGBColorSpace;
-    fondTexture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    // Seule l'orthophoto a un sens pour lire la couleur du sol : un plan est
+    // vert là où le cartographe l'a décidé, pas là où il y a des feuilles.
+    ({ texture: fondTexture, bornes: fondBornes } = await composerTuiles(
+        FONDS[nom], TUILE_ZOOM,
+        BORNES));
 
     poserPlanDeFond();
 
@@ -1148,7 +1582,7 @@ async function poserFond(nom) {
 function appliquerTextureToits() {
     for (const toit of meshesToits) {
         if (!fondTexture || !fondBornes) {
-            toit.material = MAT_TOIT_VOISIN;
+            toit.material = toit.userData.lisse ? MAT_TOIT_SURFACE : MAT_TOIT_VOISIN;
             continue;
         }
         const geo = toit.geometry;
@@ -1171,12 +1605,40 @@ poserFond(fondActif);
 function basculerFond(nom) {
     fondActif = (fondActif === nom) ? null : nom;
     poserFond(fondActif);
+    poserFondAnneau();
+    majCredits();
     document.getElementById('t-fond').classList.toggle('on', fondActif === 'ortho');
-    document.getElementById('t-osm').classList.toggle('on', fondActif === 'osm');
+    document.getElementById('t-plan').classList.toggle('on', fondActif === 'plan');
     grille.visible = !fondActif;   // le quadrillage n'a de sens que sans fond
 }
 document.getElementById('t-fond').addEventListener('click', () => basculerFond('ortho'));
-document.getElementById('t-osm').addEventListener('click', () => basculerFond('osm'));
+document.getElementById('t-plan').addEventListener('click', () => basculerFond('plan'));
+
+// --- Crédits --------------------------------------------------------------
+// La Licence Ouverte impose de citer la source ; le repli de relief mondial
+// impose de citer ses producteurs. Le texte suit les sources réellement
+// affichées : l'orthophoto y figure toujours, car c'est elle qui classe la
+// végétation, même quand le fond affiché est le plan.
+let sourceRelief = null;
+function majCredits() {
+    const ign = ['BD TOPO', 'BD Forêt', 'LiDAR HD', 'Orthophotos'];
+    if (sourceRelief && /RGE ALTI/.test(sourceRelief)) ign.push('RGE ALTI');
+    if (fondActif === 'plan') ign.push('Plan IGN v2');
+    let html = `Données © <a href="https://geoservices.ign.fr/" target="_blank" rel="noopener">IGN</a>`
+        + ` – Géoplateforme (${ign.join(', ')}), `
+        + `<a href="https://www.etalab.gouv.fr/licence-ouverte-open-licence/" target="_blank" rel="noopener">Licence Ouverte 2.0</a>`;
+    if (sourceRelief && /AWS/.test(sourceRelief)) {
+        html += ' · Relief : <a href="https://github.com/tilezen/joerd/blob/master/docs/attribution.md"'
+            + ' target="_blank" rel="noopener">Mapzen Terrain Tiles</a>, EU-DEM © Copernicus';
+    }
+    // ODbL : la seule couche du projet hors données IGN (vue3d/monuments.py).
+    if (monumentsActifs && MONUMENTS) {
+        html += ' · Monuments 3D © <a href="https://www.openstreetmap.org/copyright"'
+            + ' target="_blank" rel="noopener">contributeurs OpenStreetMap</a>, ODbL';
+    }
+    document.getElementById('credits').innerHTML = html;
+}
+majCredits();
 
 // --- Relief --------------------------------------------------------------
 // Deux sources, dans cet ordre.
@@ -1206,7 +1668,15 @@ const MAT_TERRAIN = new THREE.MeshStandardMaterial({ color: 0x39424c, roughness:
 
 // Emprise du relief : la même que celle de l'ortho, pour que la texture
 // recouvre entièrement le maillage et que les UV restent dans [0,1].
-const BORNES = {
+//
+// Autour du point de l'URL tant que la scène n'est pas arrivée ; ensuite, son
+// emprise exacte (chargerRelief). Le serveur centre la scène sur le point
+// arrondi à 4 décimales : pour un point saisi à 6 décimales, les deux emprises
+// différaient de quelques mètres, et les sommets des bords sud et est, hors de
+// la grille d'altitude, retombaient à l'altitude du centre — un mur en
+// équerre sur deux côtés de la scène (constaté : 4 m en latitude, 1,5 m en
+// longitude).
+let BORNES = {
     o: CENTER[0] - TUILE_DELTA, e: CENTER[0] + TUILE_DELTA,
     s: CENTER[1] - TUILE_DELTA, n: CENTER[1] + TUILE_DELTA,
 };
@@ -1223,10 +1693,20 @@ const versPixel = (lon, lat, z) => {
 
 /** Interpolation bilinéaire sur une grille régulière, ligne 0 au nord. */
 function echantillonneur(valeurs, largeur, hauteur, bornes) {
+    // Un sommet posé exactement sur le bord y revient à un cheveu au-delà :
+    // les positions d'un maillage sont en Float32, soit ~4 µm d'erreur à
+    // 128 m du centre. Mesuré à Gordes et Versailles, les colonnes ouest et
+    // est entières (179 sommets chacune) étaient refusées et retombaient à
+    // l'altitude du centre — un mur tout le long de l'emprise. Un millième de
+    // maille de dépassement (1 mm pour le relief fin) est donc ramené au bord.
+    const TOLERANCE = 1e-3;
     return function (lon, lat) {
-        const fx = (lon - bornes.o) / (bornes.e - bornes.o) * (largeur - 1);
-        const fy = (bornes.n - lat) / (bornes.n - bornes.s) * (hauteur - 1);
-        if (!(fx >= 0 && fy >= 0 && fx <= largeur - 1 && fy <= hauteur - 1)) return null;
+        let fx = (lon - bornes.o) / (bornes.e - bornes.o) * (largeur - 1);
+        let fy = (bornes.n - lat) / (bornes.n - bornes.s) * (hauteur - 1);
+        if (!(fx >= -TOLERANCE && fy >= -TOLERANCE
+              && fx <= largeur - 1 + TOLERANCE && fy <= hauteur - 1 + TOLERANCE)) return null;
+        fx = Math.min(Math.max(fx, 0), largeur - 1);
+        fy = Math.min(Math.max(fy, 0), hauteur - 1);
         const x0 = Math.floor(fx), y0 = Math.floor(fy);
         const x1 = Math.min(x0 + 1, largeur - 1), y1 = Math.min(y0 + 1, hauteur - 1);
         const ax = fx - x0, ay = fy - y0;
@@ -1348,8 +1828,23 @@ function appliquerTextureTerrain() {
         uv[i * 2 + 1] = 1 - (pos.getZ(i) - fondBornes.minZ) / (fondBornes.maxZ - fondBornes.minZ);
     }
     geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
-    terrain.mesh.material = new THREE.MeshStandardMaterial({
-        map: fondTexture, roughness: 1, metalness: 0 });
+    const m = new THREE.MeshStandardMaterial({ map: fondTexture, roughness: 1, metalness: 0 });
+    // Photo projetée du zénith : sur une paroi, un pixel s'étire de 1/cos de la
+    // pente, ×1,3 à 40°, ×2 à 60°, en traînées verticales. Au rocher du
+    // Mont-Saint-Michel, elles se voient dès 40° : on y glisse vers une teinte
+    // de granite, pleine à 60°. Le relief étant posé sans rotation, la
+    // normale du maillage est déjà celle du monde.
+    m.onBeforeCompile = shader => {
+        shader.vertexShader = shader.vertexShader
+            .replace('#include <common>', '#include <common>\nvarying float vNormaleY;')
+            .replace('#include <begin_vertex>', '#include <begin_vertex>\nvNormaleY = normal.y;');
+        shader.fragmentShader = shader.fragmentShader
+            .replace('#include <common>', '#include <common>\nvarying float vNormaleY;')
+            .replace('#include <map_fragment>', '#include <map_fragment>\n'
+                + 'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.22, 0.21, 0.2), smoothstep(0.77, 0.5, vNormaleY));');
+    };
+    m.customProgramCacheKey = () => 'terrain-parois';
+    terrain.mesh.material = m;
 }
 
 /** Redéplace les vertex du terrain selon l'exagération courante. */
@@ -1370,11 +1865,76 @@ function deplacerTerrain() {
  * telle qu'elle est rendue dans la scène, exagération comprise, mais garde sa
  * hauteur réelle. Dilater les volumes eux-mêmes transformait les maisons en
  * tours dès ×3.
+ *
+ * Sur une forte pente, le toit est de plus relevé au-dessus du terrain médian
+ * de l'emprise (releveSol) : les murs s'allongent vers le bas d'autant, le
+ * toit monte, le bâtiment ne flotte toujours pas côté aval.
  */
 function rebaserBatiments() {
     for (const o of groupeBatiments.children) {
-        if (o.userData.anneau) o.position.y = baseBatiment(o.userData.anneau);
+        const ud = o.userData;
+        if (!ud.anneau) continue;
+        const base = baseBatiment(ud.anneau);
+        const d = ud.surface ? 0 : releveSol(ud.anneau);
+        if (o.name === 'toit') {
+            o.position.y = base + d;
+        } else {
+            o.position.y = base;
+            o.scale.y = ud.hMur > 0 ? (ud.hMur + d) / ud.hMur : 1;
+        }
     }
+}
+
+// Relèvement sur la pente. La base est le point le plus bas du terrain sous le
+// contour, pour qu'un bâtiment à cheval sur une rupture de pente ne flotte pas
+// côté aval ; mais ses hauteurs se comptent depuis son sol, plus haut : le MNH
+// LiDAR au-dessus du sol de chaque cellule, la BD TOPO depuis un sol que ses
+// propres levés placent au pied du bâtiment. Posées sur le point bas, elles
+// enfouissaient le toit sous le terrain. Mesuré, toits passant sous le point
+// le plus haut du terrain de leur emprise :
+//
+//                     posés au point bas   relevés du terrain médian
+//   Mont-Saint-Michel       15 / 104                1
+//   Rocamadour              13 / 139                3
+//   Gordes                   3 / 249                1
+//
+// L'écart médiane − point bas y atteint 23 m au Mont, 63 m à Rocamadour, pour
+// 1 à 2 m en médiane : il ne change presque rien ailleurs.
+const cacheSolEmprise = new WeakMap();
+
+/** Terrain sous une emprise : point le plus bas du contour, médiane dedans. */
+function terrainSousEmprise(anneau) {
+    const deja = cacheSolEmprise.get(anneau);
+    if (deja && deja.terrain === terrain) return deja;
+    let min = Infinity;
+    let o = Infinity, e = -Infinity, s = Infinity, n = -Infinity;
+    for (const [lon, lat] of anneau) {
+        const a = terrain.alt(lon, lat);
+        if (a != null) min = Math.min(min, a);
+        o = Math.min(o, lon); e = Math.max(e, lon); s = Math.min(s, lat); n = Math.max(n, lat);
+    }
+    // Une grille de 10 × 10 points sur la boîte, gardés dans l'emprise.
+    const dedans = [];
+    for (let i = 0; i < 10; i++) {
+        for (let j = 0; j < 10; j++) {
+            const lon = o + (e - o) * (i + 0.5) / 10, lat = s + (n - s) * (j + 0.5) / 10;
+            if (!pointDansAnneau(lon, lat, anneau)) continue;
+            const a = terrain.alt(lon, lat);
+            if (a != null) dedans.push(a);
+        }
+    }
+    dedans.sort((a, b) => a - b);
+    const med = dedans.length ? dedans[dedans.length >> 1] : min;
+    const r = { terrain, min, med };
+    cacheSolEmprise.set(anneau, r);
+    return r;
+}
+
+/** Relèvement du toit, en unités de scène (l'exagération s'applique au terrain). */
+function releveSol(anneau) {
+    if (!relief || !terrain) return 0;
+    const { min, med } = terrainSousEmprise(anneau);
+    return Number.isFinite(min) && Number.isFinite(med) ? Math.max(med - min, 0) * exagVert : 0;
 }
 
 /**
@@ -1386,10 +1946,15 @@ function rebaserBatiments() {
  */
 function appliquerExageration() {
     if (terrain) deplacerTerrain();
-    // Le grand plan gris sert de fond au-delà de l'emprise : on le glisse sous
-    // le point le plus bas du terrain pour qu'il ne le traverse pas.
+    if (anneauRelief) deplacerAnneau();
+    if (drapes.length) placerDrapes();
+    if (lignesElec.length) placerLignes();
+    // Le grand plan gris sert de fond au-delà de l'emprise, et sous les trous
+    // de l'anneau : on le glisse sous le point le plus bas du terrain pour
+    // qu'il ne le traverse pas.
+    const plusBas = anneauRelief ? Math.min(terrain.min, anneauRelief.min) : terrain?.min;
     sol.position.y = (relief && terrain)
-        ? Math.min(0, (terrain.min - altitudeRef) * exagVert) - 0.5
+        ? Math.min(0, (plusBas - altitudeRef) * exagVert) - 0.5
         : 0;
     rebaserBatiments();
     placerVegetation();
@@ -1399,6 +1964,9 @@ function appliquerExageration() {
 /** Bascule du relief : le fond passe du plan plat au maillage, ou l'inverse. */
 function appliquerRelief() {
     if (terrain) terrain.mesh.visible = relief;
+    // Sans relief, la scène repose sur le grand plan à 0 : un anneau à plat
+    // le z-fighterait sans rien montrer de plus.
+    if (anneauRelief) anneauRelief.mesh.visible = relief;
     appliquerExageration();
     poserFond(fondActif);
 }
@@ -1417,6 +1985,20 @@ function appliquerRelief() {
  */
 function reliefDeLArtefact() {
     const r = ARTEFACT && ARTEFACT.relief;
+    const alt = decoderRelief(r, true);
+    if (!alt) return null;
+    return { nom: r.source || 'RGE ALTI (IGN)',
+             precision: r.precision || '1 m, modèle de terrain', alt };
+}
+
+/**
+ * Échantillonneur d'une grille de relief de l'artefact, ou null.
+ *
+ * Sans bouchage, un trou vaut NaN, et l'interpolation bilinéaire le propage à
+ * toute maille qui le touche : c'est ce que veut l'anneau, dont la mer et
+ * l'étranger doivent rester vides plutôt que rapiécés.
+ */
+function decoderRelief(r, boucher) {
     if (!r || !r.altitudes) return null;
     const brut = atob(r.altitudes);
     const n = brut.length >> 1;
@@ -1429,18 +2011,19 @@ function reliefDeLArtefact() {
         // -32768 marque un trou, comme côté serveur.
         valeurs[i] = entiers[i] === -32768 ? NaN : r.zero_m + entiers[i] * r.pas_m;
     }
-    boucherTrous(valeurs);
+    if (boucher) boucherTrous(valeurs);
     const b = r.bbox;
-    return { nom: r.source || 'RGE ALTI (IGN)',
-             precision: r.precision || '1 m, modèle de terrain',
-             alt: echantillonneur(valeurs, r.width, r.height,
-                                  { o: b[0], s: b[1], e: b[2], n: b[3] }) };
+    return echantillonneur(valeurs, r.width, r.height, { o: b[0], s: b[1], e: b[2], n: b[3] });
 }
 
 async function chargerRelief() {
     const noteT = document.getElementById('note-terrain');
 
     await chargementArtefact;
+    if (ARTEFACT && ARTEFACT.bbox) {
+        const [o, s, e, n] = ARTEFACT.bbox;
+        BORNES = { o, s, e, n };
+    }
     let source = reliefDeLArtefact();
     if (!source) {
         try { source = await chargerRgeAlti(); }
@@ -1453,6 +2036,9 @@ async function chargerRelief() {
     if (!source) {
         noteT.textContent = "Relief indisponible : aucune source d'altitude n'a répondu.";
         document.getElementById('s-src').textContent = 'aucune';
+        construireEau();            // à plat, faute de terrain
+        construireRoutes();
+        construireLignes();
         return;
     }
 
@@ -1469,7 +2055,14 @@ async function chargerRelief() {
 
     const geo = new THREE.PlaneGeometry(largeur, profondeur, segX, segZ);
     geo.rotateX(-Math.PI / 2);          // le +Y du plan devient le nord (-Z)
-    geo.translate((ax + bx) / 2, 0, (-ay + -by) / 2);
+    const cx = (ax + bx) / 2, cz = (-ay + -by) / 2;
+    geo.translate(cx, 0, cz);
+    // Abscisses et profondeurs des lignes du maillage, par la même formule que
+    // PlaneGeometry : l'anneau s'y raccorde sommet pour sommet.
+    const lignes = {
+        xs: Array.from({ length: segX + 1 }, (_, i) => cx + i * largeur / segX - largeur / 2),
+        zs: Array.from({ length: segZ + 1 }, (_, j) => cz + j * profondeur / segZ - profondeur / 2),
+    };
 
     const pos = geo.attributes.position;
     const hauteurs = new Float64Array(pos.count);
@@ -1488,7 +2081,13 @@ async function chargerRelief() {
     // horaire ne montrerait que les ombres des bâtiments.
     mesh.castShadow = true;
     scene.add(mesh);
-    terrain = { alt: source.alt, min, max, mesh, hauteurs };
+    terrain = { alt: source.alt, min, max, mesh, hauteurs, lignes };
+    construireAnneau();
+    construireEau();
+    construireRoutes();
+    construireLignes();
+    sourceRelief = source.nom;
+    majCredits();
 
     document.getElementById('s-src').textContent = source.nom;
     document.getElementById('s-alt').textContent = `${altitudeRef.toFixed(0)} m`;
@@ -1503,6 +2102,449 @@ async function chargerRelief() {
     cadrer();
 }
 chargerRelief();
+
+// --- Anneau de relief ------------------------------------------------------
+// Autour de l'emprise, un relief grossier (maille de 16 m, sur 2 km de côté)
+// drapé d'un fond en basse résolution : la scène ne flotte plus dans le vide,
+// et les coteaux voisins portent leur ombre quand le soleil rase.
+//
+// Le maillage est une grille aux lignes irrégulières : celles de l'anneau au
+// large, celles du terrain fin à travers l'emprise, que l'on retire. Le bord
+// du trou porte donc exactement les sommets du terrain fin, à la même
+// altitude : pas de fente au raccord, quelle que soit l'exagération.
+//
+// Zoom 15 : 3,4 m par pixel à 46° de latitude, trois à quatre tuiles de côté
+// pour 2 km, donc seize requêtes au plus. Au zoom 16, ce serait trente-six
+// tuiles pour un décor que le brouillard efface à partir de 300 m.
+const ANNEAU_ZOOM = 15;
+// `var` et non `let`, comme vegPrete : appliquerExageration() le lit avant
+// que cette ligne ait été évaluée.
+var anneauRelief = null;     // { mesh, hauteurs, min, bornes }
+var generationAnneau = 0;
+
+function construireAnneau() {
+    const r = ARTEFACT && ARTEFACT.anneau;
+    const alt = decoderRelief(r, false);
+    if (!alt || !terrain) return;
+    const b = r.bbox;
+    const [ox, ny] = toLocal(b[0], b[3]);
+    const [ex, sy] = toLocal(b[2], b[1]);
+    const bornes = { minX: ox, maxX: ex, minZ: -ny, maxZ: -sy };
+
+    // Lignes de l'anneau hors de l'emprise, et toutes celles du terrain fin.
+    // Une ligne grossière à moins d'une demi-maille du bord ferait une facette
+    // en lame : on la laisse tomber.
+    const axe = (min, max, n, fines) => {
+        const pas = (max - min) / (n - 1);
+        const a = fines.slice();
+        for (let k = 0; k < n; k++) {
+            const v = min + k * pas;
+            if (v < fines[0] - pas / 2 || v > fines[fines.length - 1] + pas / 2) a.push(v);
+        }
+        return a.sort((p, q) => p - q);
+    };
+    const { xs: finsX, zs: finsZ } = terrain.lignes;
+    const xs = axe(bornes.minX, bornes.maxX, r.width, finsX);
+    const zs = axe(bornes.minZ, bornes.maxZ, r.height, finsZ);
+    const nx = xs.length, nz = zs.length;
+    const EPS = 1e-6;
+    const dedansX = x => x >= finsX[0] - EPS && x <= finsX[finsX.length - 1] + EPS;
+    const dedansZ = z => z >= finsZ[0] - EPS && z <= finsZ[finsZ.length - 1] + EPS;
+
+    const positions = new Float32Array(nx * nz * 3);
+    const hauteurs = new Float64Array(nx * nz);
+    for (let j = 0; j < nz; j++) {
+        for (let i = 0; i < nx; i++) {
+            const k = j * nx + i;
+            const [lon, lat] = toLonLat(xs[i], -zs[j]);
+            // Sur le bord du trou (et dedans, où rien n'est tracé), l'altitude
+            // du terrain fin : c'est ce qui ferme le raccord.
+            const a = (dedansX(xs[i]) && dedansZ(zs[j])) ? terrain.alt(lon, lat) : alt(lon, lat);
+            hauteurs[k] = a ?? NaN;
+            positions[k * 3] = xs[i];
+            positions[k * 3 + 2] = zs[j];
+        }
+    }
+
+    const indices = [];
+    let min = Infinity;
+    for (let j = 0; j < nz - 1; j++) {
+        for (let i = 0; i < nx - 1; i++) {
+            if (dedansX(xs[i]) && dedansX(xs[i + 1]) && dedansZ(zs[j]) && dedansZ(zs[j + 1])) continue;
+            const a = j * nx + i, c = a + nx;          // c : un rang plus au sud
+            const coins = [a, a + 1, c, c + 1];
+            if (coins.some(q => Number.isNaN(hauteurs[q]))) continue;   // mer, étranger
+            for (const q of coins) min = Math.min(min, hauteurs[q]);
+            // Même ordre que PlaneGeometry : faces vers le ciel.
+            indices.push(a, c, a + 1, c, c + 1, a + 1);
+        }
+    }
+    if (!indices.length) return;
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setIndex(indices);
+    const mesh = new THREE.Mesh(geo, MAT_TERRAIN);
+    mesh.receiveShadow = true;
+    mesh.castShadow = true;
+    mesh.visible = relief;
+    scene.add(mesh);
+    // `alt` sert aussi aux pylônes posés au-delà de l'emprise.
+    anneauRelief = { mesh, hauteurs, min, bornes, alt };
+    deplacerAnneau();
+    poserFondAnneau();
+}
+
+/** Même règle que le terrain fin : seule l'altitude suit l'exagération. */
+function deplacerAnneau() {
+    const { mesh, hauteurs } = anneauRelief;
+    const pos = mesh.geometry.attributes.position;
+    for (let k = 0; k < pos.count; k++) {
+        // Un sommet sans altitude n'appartient à aucune facette : 0 suffit.
+        pos.setY(k, Number.isNaN(hauteurs[k]) ? 0 : (hauteurs[k] - altitudeRef) * exagVert);
+    }
+    pos.needsUpdate = true;
+    mesh.geometry.computeVertexNormals();
+    mesh.geometry.computeBoundingSphere();
+}
+
+/** Drape le fond actif sur l'anneau, par projection zénithale. */
+async function poserFondAnneau() {
+    if (!anneauRelief) return;
+    const generation = ++generationAnneau;
+    const { mesh, bornes } = anneauRelief;
+    if (!fondActif) { mesh.material = MAT_TERRAIN; return; }
+    const lonLat = [toLonLat(bornes.minX, -bornes.minZ), toLonLat(bornes.maxX, -bornes.maxZ)];
+    const { texture, bornes: tb } = await composerTuiles(FONDS[fondActif], ANNEAU_ZOOM,
+        { o: lonLat[0][0], n: lonLat[0][1], e: lonLat[1][0], s: lonLat[1][1] });
+    // Un autre fond a été choisi pendant le chargement : il gagne.
+    if (generation !== generationAnneau) { texture.dispose(); return; }
+    const pos = mesh.geometry.attributes.position;
+    const uv = new Float32Array(pos.count * 2);
+    for (let k = 0; k < pos.count; k++) {
+        uv[k * 2] = (pos.getX(k) - tb.minX) / (tb.maxX - tb.minX);
+        uv[k * 2 + 1] = 1 - (pos.getZ(k) - tb.minZ) / (tb.maxZ - tb.minZ);
+    }
+    mesh.geometry.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    const ancien = mesh.material;
+    mesh.material = new THREE.MeshStandardMaterial({ map: texture, roughness: 1, metalness: 0 });
+    if (ancien !== MAT_TERRAIN) { ancien.map?.dispose(); ancien.dispose(); }
+}
+
+// --- Eau de surface ----------------------------------------------------------
+// Étendues (lacs, retenues, bassins, rivières larges) et cours d'eau étroits de
+// la BD TOPO, découpés sur l'emprise par le serveur (vue3d/eau.py). L'eau est
+// posée sur le relief de la scène, comme le sol : l'altitude que porte la BD
+// TOPO vient d'une autre source, et les mêler la ferait flotter ou sombrer.
+//
+// Un lac arrive en quelques grands triangles ; posés tels quels, ils couperaient
+// le relief. Ils sont redécoupés jusqu'à EAU_MAILLE, l'ordre du maillage du
+// terrain (un sommet tous les 2 m), et chaque sommet prend l'altitude du sol.
+const EAU_MAILLE = 2.5;
+// Au-dessus du sol : l'ortho drapée montre déjà l'eau, le bleu s'y superpose.
+// Assez pour ne pas scintiller avec le terrain, trop peu pour se voir.
+const EAU_DECALAGE = 0.15;
+const MAT_EAU = new THREE.MeshStandardMaterial({
+    color: 0x2f6f9f, roughness: 0.12, metalness: 0.0, transparent: true, opacity: 0.8,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+const MAT_EAU_INTERMITTENTE = MAT_EAU.clone();
+MAT_EAU_INTERMITTENTE.opacity = 0.45;
+const groupeEau = new THREE.Group();
+scene.add(groupeEau);
+// `var` : appliquerExageration() le lit avant que cette ligne soit évaluée.
+// Eau et routes : maillages drapés sur le sol, replacés à chaque exagération.
+var drapes = [];            // { mesh, alts, decalage } — altitude du sol sous chaque sommet
+
+/** Coupe au milieu de leur plus long côté les triangles plus grands que `maille`. */
+function subdiviser(tris, maille) {
+    const out = [];
+    const pile = tris.slice();
+    while (pile.length) {
+        const t = pile.pop();
+        const l = [0, 1, 2].map(k => Math.hypot(t[(k + 1) % 3][0] - t[k][0], t[(k + 1) % 3][1] - t[k][1]));
+        const k = l.indexOf(Math.max(...l));
+        if (l[k] <= maille) { out.push(t); continue; }
+        const a = t[k], b = t[(k + 1) % 3], c = t[(k + 2) % 3];
+        const m = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+        pile.push([a, m, c], [m, b, c]);
+    }
+    return out;
+}
+
+/** Triangles (en mètres locaux, sens trigonométrique) d'un polygone GeoJSON. */
+function trianglesPolygone(anneaux) {
+    const contour = anneaux[0].map(([lo, la]) => new THREE.Vector2(...toLocal(lo, la)));
+    const trous = anneaux.slice(1).map(a => a.map(([lo, la]) => new THREE.Vector2(...toLocal(lo, la))));
+    // triangulateShape retire les sommets de fermeture en place : les index
+    // renvoyés portent sur les tableaux ainsi raccourcis.
+    const faces = THREE.ShapeUtils.triangulateShape(contour, trous);
+    const pts = contour.concat(...trous).map(v => [v.x, v.y]);
+    return faces.map(([a, b, c]) => {
+        const t = [pts[a], pts[b], pts[c]];
+        const aire = (t[1][0] - t[0][0]) * (t[2][1] - t[0][1]) - (t[2][0] - t[0][0]) * (t[1][1] - t[0][1]);
+        return aire >= 0 ? t : [t[0], t[2], t[1]];
+    });
+}
+
+/** Triangles d'un ruban de `largeur` le long d'une ligne, un point tous les 2 m. */
+function trianglesRuban(ligne, largeur) {
+    const brut = ligne.map(([lo, la]) => toLocal(lo, la));
+    const pts = [brut[0]];
+    for (let i = 1; i < brut.length; i++) {
+        const [ax, ay] = brut[i - 1], [bx, by] = brut[i];
+        const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / 2));
+        for (let k = 1; k <= n; k++) pts.push([ax + (bx - ax) * k / n, ay + (by - ay) * k / n]);
+    }
+    if (pts.length < 2) return [];
+    const bords = pts.map((p, i) => {
+        const a = pts[Math.max(i - 1, 0)], b = pts[Math.min(i + 1, pts.length - 1)];
+        const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1;
+        const nx = -dy / l * largeur / 2, ny = dx / l * largeur / 2;
+        return [[p[0] + nx, p[1] + ny], [p[0] - nx, p[1] - ny]];   // gauche, droite
+    });
+    const tris = [];
+    for (let i = 0; i < bords.length - 1; i++) {
+        const [g0, d0] = bords[i], [g1, d1] = bords[i + 1];
+        // Dans le sens trigonométrique vu du ciel : droite, droite suivante, gauche suivante…
+        tris.push([d0, d1, g1], [d0, g1, g0]);
+    }
+    return tris;
+}
+
+/** Un maillage drapé à partir de triangles locaux ; les hauteurs viennent de placerDrapes(). */
+function maillageDrape(tris, materiau, groupe, decalage) {
+    const positions = new Float32Array(tris.length * 9);
+    const normales = new Float32Array(tris.length * 9);
+    const alts = new Float64Array(tris.length * 3);
+    let k = 0;
+    for (const t of tris) {
+        for (const [x, y] of t) {
+            positions[k * 3] = x; positions[k * 3 + 2] = -y;
+            // Normales au zénith : une eau plane renvoie la lumière d'un bloc,
+            // même là où elle suit la pente d'une rivière, et une route ne se
+            // moire pas des facettes du relief.
+            normales[k * 3 + 1] = 1;
+            // Ramené dans l'emprise : le bord d'un ruban la déborde de sa
+            // demi-largeur, et un sommet sans altitude filait jusqu'au zéro de
+            // la scène — un trait bleu tiré vers le ciel au Mont-Saint-Michel.
+            const [lo, la] = toLonLat(x, y);
+            const a = terrain ? terrain.alt(Math.min(Math.max(lo, BORNES.o), BORNES.e),
+                                            Math.min(Math.max(la, BORNES.s), BORNES.n)) : null;
+            alts[k++] = a == null ? NaN : a;
+        }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute('normal', new THREE.BufferAttribute(normales, 3));
+    const mesh = new THREE.Mesh(geo, materiau);
+    mesh.receiveShadow = true;
+    groupe.add(mesh);
+    drapes.push({ mesh, alts, decalage });
+}
+
+function construireEau() {
+    const eau = ARTEFACT && ARTEFACT.eau;
+    if (!eau || groupeEau.children.length) return;
+    const polygones = g => g.type === 'Polygon' ? [g.coordinates]
+                         : g.type === 'MultiPolygon' ? g.coordinates : [];
+    const lignes = g => g.type === 'LineString' ? [g.coordinates]
+                      : g.type === 'MultiLineString' ? g.coordinates : [];
+    const materiau = e => e.persistance === 'Intermittent' ? MAT_EAU_INTERMITTENTE : MAT_EAU;
+    for (const s of eau.surfaces) {
+        const tris = polygones(s.geometrie).flatMap(p => subdiviser(trianglesPolygone(p), EAU_MAILLE));
+        if (tris.length) maillageDrape(tris, materiau(s), groupeEau, EAU_DECALAGE);
+    }
+    for (const c of eau.cours) {
+        const tris = lignes(c.geometrie).flatMap(l => trianglesRuban(l, c.largeur_m));
+        if (tris.length) maillageDrape(tris, materiau(c), groupeEau, EAU_DECALAGE);
+    }
+    placerDrapes();
+}
+
+/** Même règle que le terrain : l'altitude suit l'exagération, un peu au-dessus. */
+function placerDrapes() {
+    for (const { mesh, alts, decalage } of drapes) {
+        const pos = mesh.geometry.attributes.position;
+        for (let k = 0; k < pos.count; k++) {
+            const a = alts[k];
+            pos.setY(k, (relief && terrain && !Number.isNaN(a) ? (a - altitudeRef) * exagVert : 0) + decalage);
+        }
+        pos.needsUpdate = true;
+        mesh.geometry.computeBoundingSphere();
+    }
+}
+
+// --- Routes -------------------------------------------------------------------
+// Tronçons de route BD TOPO, déjà dans la scène pour Street View, dessinés en
+// rubans sur le relief. Largeur de chaussée quand elle est renseignée : 267
+// tronçons sur 367 dans cinq scènes (Gordes, Strasbourg, Carcassonne,
+// Versailles, Annecy) — 3 m en médiane à une chaussée, 5,5 m à deux, 4 m pour
+// un rond-point. Jamais pour les chemins, sentiers, routes empierrées et
+// escaliers : leur largeur ci-dessous est une convention.
+//
+// Seuls les tronçons au niveau du sol : un pont (4 sur 367) posé sur le relief
+// plongerait dans la rivière, un tunnel traverserait la colline.
+const ROUTE_DECALAGE = 0.1;            // sous l'eau (EAU_DECALAGE), sur le sol
+const LARGEUR_ROUTE_PAR_NATURE = {
+    'Route à 1 chaussée': 3, 'Route à 2 chaussées': 5.5, 'Rond-point': 4, 'Bretelle': 4,
+    'Route empierrée': 3, 'Chemin': 2.5, 'Sentier': 1.2, 'Escalier': 1.5,
+};
+const NATURES_TERRE = new Set(['Route empierrée', 'Chemin', 'Sentier', 'Escalier']);
+const MAT_ROUTE = new THREE.MeshStandardMaterial({
+    color: 0x5f636a, roughness: 0.95, transparent: true, opacity: 0.9,
+    polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
+const MAT_CHEMIN = MAT_ROUTE.clone();
+MAT_CHEMIN.color.set(0x9c8a6e);
+MAT_CHEMIN.opacity = 0.75;
+const groupeRoutes = new THREE.Group();
+scene.add(groupeRoutes);
+
+function construireRoutes() {
+    const routes = ARTEFACT && ARTEFACT.routes;
+    if (!routes || groupeRoutes.children.length) return;
+    const parMateriau = new Map([[MAT_ROUTE, []], [MAT_CHEMIN, []]]);
+    for (const f of routes.features || []) {
+        const p = f.properties || {};
+        if (p.fictif || String(p.position_par_rapport_au_sol ?? '0') !== '0') continue;
+        const g = f.geometry || {};
+        const lignes = g.type === 'LineString' ? [g.coordinates]
+                     : g.type === 'MultiLineString' ? g.coordinates : [];
+        const largeur = p.largeur_de_chaussee > 0 ? p.largeur_de_chaussee
+                      : (LARGEUR_ROUTE_PAR_NATURE[p.nature] || 3);
+        const tris = parMateriau.get(NATURES_TERRE.has(p.nature) ? MAT_CHEMIN : MAT_ROUTE);
+        for (const l of lignes) tris.push(...trianglesRuban(l, largeur));
+    }
+    // Un maillage par matériau plutôt que par tronçon : quelques centaines de
+    // tronçons feraient autant d'appels de dessin.
+    for (const [materiau, tris] of parMateriau) {
+        if (tris.length) maillageDrape(tris, materiau, groupeRoutes, ROUTE_DECALAGE);
+    }
+    placerDrapes();
+}
+
+document.getElementById('t-routes').addEventListener('click', e => {
+    groupeRoutes.visible = !groupeRoutes.visible;
+    e.currentTarget.classList.toggle('on', groupeRoutes.visible);
+});
+
+// --- Lignes à haute tension ------------------------------------------------
+// Réseau de transport de la BD TOPO (vue3d/lignes.py) : chaque sommet d'une
+// ligne est un support, avec la hauteur de son pylône BD TOPO ou, à défaut, la
+// médiane de sa tension. Les lignes viennent de toute l'emprise de l'anneau :
+// un pylône de 35 m se voit de loin, et c'est souvent au-delà de la scène
+// qu'il passe.
+//
+// La flèche des câbles est une convention : 3 % de la portée, l'ordre de
+// grandeur d'une ligne tendue à température moyenne. La BD TOPO ne la donne
+// pas, et le MNH LiDAR ne voit pas les câbles — vérifié sous une portée de
+// 225 kV de 489 m entre pylônes de 27 et 21 m : 0 à 18 m, la végétation seule.
+const FLECHE_PART = 0.03;
+// Le point bas d'un câble ne descend pas à moins de ce dégagement au-dessus du
+// pied des pylônes : ordre de grandeur des distances de sécurité en HTB.
+const DEGAGEMENT_M = 8;
+// Demi-longueur de la traverse : les phases s'écartent avec la tension.
+const BRAS_PAR_TENSION = { '63 kV': 2.5, '90 kV': 3, '150 kV': 4, '225 kV': 5, '400 kV': 8 };
+const MAT_PYLONE = new THREE.MeshStandardMaterial({ color: 0x9aa0a6, metalness: 0.5, roughness: 0.55 });
+const MAT_CABLE = new THREE.LineBasicMaterial({ color: 0x23272c });
+var groupeLignes = new THREE.Group();
+scene.add(groupeLignes);
+var lignesElec = [];       // { tension, supports: [{ x, y, h, alt, ang, groupe }], cables }
+var pylonesSurvol = [];    // fûts des pylônes, pour l'infobulle
+
+/** Sol sous un point : terrain de la scène, sinon anneau, sinon null. */
+function altSolEtendu(lon, lat) {
+    const a = terrain ? terrain.alt(lon, lat) : null;
+    if (a != null) return a;
+    const b = anneauRelief ? anneauRelief.alt(lon, lat) : null;
+    return b != null && !Number.isNaN(b) ? b : null;
+}
+
+function construireLignes() {
+    const lignes = ARTEFACT && ARTEFACT.lignes;
+    if (!lignes || lignesElec.length) return;
+    for (const l of lignes) {
+        const bras = BRAS_PAR_TENSION[l.tension] || 3;
+        const s = l.supports.map(([lon, lat, h, mesuree]) => {
+            const [x, y] = toLocal(lon, lat);
+            return { x, y, h, mesuree, alt: altSolEtendu(lon, lat) };
+        });
+        // Un support hors de tout relief (au-delà de l'anneau, ou en mer)
+        // prend le sol de son voisin : le câble va jusqu'au bord sans plonger.
+        for (let i = 1; i < s.length; i++) if (s[i].alt == null) s[i].alt = s[i - 1].alt;
+        for (let i = s.length - 2; i >= 0; i--) if (s[i].alt == null) s[i].alt = s[i + 1].alt;
+        for (const p of s) if (p.alt == null) p.alt = altitudeRef;
+        s.forEach((p, i) => {
+            // Traverse perpendiculaire à la ligne : bissectrice des portées voisines.
+            const a = s[Math.max(i - 1, 0)], b = s[Math.min(i + 1, s.length - 1)];
+            p.ang = Math.atan2(b.y - a.y, b.x - a.x);
+            const g = new THREE.Group();
+            const fut = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 1.8, p.h, 4, 1), MAT_PYLONE);
+            fut.position.y = p.h / 2;
+            fut.rotation.y = Math.PI / 4;
+            fut.userData = { pylone: true, tension: l.tension, gestionnaire: l.gestionnaire, h: p.h, mesuree: p.mesuree };
+            const traverse = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.5, 2 * bras), MAT_PYLONE);
+            traverse.position.y = p.h - 2;
+            g.add(fut, traverse);
+            g.position.set(p.x, 0, -p.y);
+            g.rotation.y = p.ang;          // +X local le long de la ligne, la traverse en Z
+            fut.castShadow = traverse.castShadow = true;
+            groupeLignes.add(g);
+            pylonesSurvol.push(fut);
+            p.groupe = g;
+        });
+        const cables = new THREE.LineSegments(new THREE.BufferGeometry(), MAT_CABLE);
+        groupeLignes.add(cables);
+        lignesElec.push({ tension: l.tension, bras, supports: s, cables });
+    }
+    placerLignes();
+    majCiblesSurvol();
+}
+
+/** Pieds des pylônes sur le sol exagéré, hauteurs réelles ; câbles recalculés. */
+function placerLignes() {
+    const SEGMENTS = 16;
+    for (const l of lignesElec) {
+        for (const p of l.supports) {
+            p.base = relief && terrain ? (p.alt - altitudeRef) * exagVert : 0;
+            p.groupe.position.y = p.base;
+        }
+        // Trois phases : les deux bouts de la traverse et le sommet.
+        const attaches = [[-l.bras, -2], [l.bras, -2], [0, 0]];
+        const pts = [];
+        for (let i = 0; i < l.supports.length - 1; i++) {
+            const A = l.supports[i], B = l.supports[i + 1];
+            const portee = Math.hypot(B.x - A.x, B.y - A.y);
+            const fleche = Math.max(0, Math.min(FLECHE_PART * portee,
+                Math.min(A.h, B.h) - 2 - DEGAGEMENT_M));
+            for (const [z, dy] of attaches) {
+                // Point d'attache : décalé de z le long de la traverse, tournée de `ang`.
+                const bout = (P) => [P.x + z * Math.sin(P.ang), P.base + P.h + dy, -P.y + z * Math.cos(P.ang)];
+                const a = bout(A), b = bout(B);
+                let prec = a;
+                for (let k = 1; k <= SEGMENTS; k++) {
+                    const t = k / SEGMENTS;
+                    const q = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t - 4 * fleche * t * (1 - t),
+                               a[2] + (b[2] - a[2]) * t];
+                    pts.push(...prec, ...q);
+                    prec = q;
+                }
+            }
+        }
+        l.cables.geometry.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+        l.cables.geometry.computeBoundingSphere();
+    }
+}
+
+document.getElementById('t-lignes').addEventListener('click', e => {
+    groupeLignes.visible = !groupeLignes.visible;
+    e.currentTarget.classList.toggle('on', groupeLignes.visible);
+    majCiblesSurvol();
+});
+
+document.getElementById('t-eau').addEventListener('click', e => {
+    groupeEau.visible = !groupeEau.visible;
+    e.currentTarget.classList.toggle('on', groupeEau.visible);
+});
 // --- Végétation et sursol (MNH LiDAR HD) ---------------------------------
 // La BD TOPO dit OÙ est la végétation mais jamais sa hauteur : `zone_de_vegetation`
 // n'expose que la nature et la géométrie. La hauteur vient du MNH LiDAR HD, une
@@ -1994,56 +3036,16 @@ function ajouterHouppier(tampon, el, sol) {
     return faces;
 }
 
-/** Point dans un anneau, en coordonnées locales (mètres). Lancer de rayon. */
-function dansAnneau(a, x, y) {
-    if (x < a.minX || x > a.maxX || y < a.minY || y > a.maxY) return false;
-    const p = a.pts;
-    let dedans = false;
-    for (let i = 0, j = p.length - 1; i < p.length; j = i++) {
-        const xi = p[i][0], yi = p[i][1], xj = p[j][0], yj = p[j][1];
-        if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) dedans = !dedans;
-    }
-    return dedans;
-}
-
-/** Anneaux d'un jeu de features, projetés en local et bornés pour le filtrage. */
-function anneauxLocaux(feats) {
-    const out = [];
-    for (const f of feats || []) {
-        for (const anneau of anneauxDe(f.geometry)) {
-            if (!anneau || anneau.length < 4) continue;
-            const pts = anneau.map(([lo, la]) => toLocal(lo, la));
-            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-            for (const [x, y] of pts) {
-                if (x < minX) minX = x; if (x > maxX) maxX = x;
-                if (y < minY) minY = y; if (y > maxY) maxY = y;
-            }
-            out.push({ pts, minX, maxX, minY, maxY,
-                       nature: (f.properties || {}).nature, props: f.properties || {} });
-        }
-    }
-    return out;
-}
-
 /**
  * Hauteur de la toiture du bâtiment visé, en mètres.
  *
  * Sert de référence au masque solaire : c'est là que seraient posés des
- * capteurs. On prend le bâtiment qui contient le point, sinon le plus proche. Faute de bâtiment exploitable, on retombe
- * sur 0 — le masque redevient alors un angle mesuré depuis le sol, ce que la
- * note du panneau signale.
+ * capteurs. C'est le bâtiment visé (trouverCible). Faute de bâtiment à moins
+ * de RAYON_VISE, on retombe sur 0 — le masque redevient alors un angle mesuré
+ * depuis le sol, ce que la note du panneau signale.
  */
 function hauteurReference() {
-    const anneaux = anneauxLocaux(features);
-    let contient = null, plusProche = null, distMin = Infinity;
-    for (let i = 0; i < anneaux.length; i++) {
-        const a = anneaux[i];
-        if (dansAnneau(a, 0, 0)) { contient = features_hauteur(a); break; }
-        const cx = (a.minX + a.maxX) / 2, cy = (a.minY + a.maxY) / 2;
-        const d = Math.hypot(cx, cy);
-        if (d < distMin) { distMin = d; plusProche = features_hauteur(a); }
-    }
-    const h = contient != null ? contient : (distMin < 25 ? plusProche : null);
+    const h = CIBLE ? features_hauteur({ props: CIBLE.p }) : null;
     return h != null && h > 0 ? h : 0;
 }
 
@@ -2323,9 +3325,33 @@ renderer.domElement.addEventListener('pointermove', e => {
         return;
     }
 
+    if (touche && touche.object.userData.pylone) {
+        const u = touche.object.userData;
+        tip.innerHTML = `<b>Ligne ${u.tension || 'haute tension'}</b>`
+            + (u.gestionnaire ? `<br>${u.gestionnaire}` : '')
+            + `<br>pylône ${u.h.toFixed(1)} m `
+            + (u.mesuree ? '<i>(BD TOPO)</i>' : '<i>(hauteur typique de la tension)</i>');
+        tip.style.display = 'block';
+        tip.style.left = (e.clientX - r.left + 14) + 'px';
+        tip.style.top = (e.clientY - r.top + 14) + 'px';
+        return;
+    }
+
     const hit = raycaster.intersectObjects(ciblesSurvol, false)[0];
     const ud = hit ? hit.object.userData : null;
     if (!ud || !ud.anneau) { tip.style.display = 'none'; return; }
+    if (ud.monument) {
+        const m = ud.monument;
+        tip.innerHTML = `<b>${m.nom || ud.p.usage_1 || ud.p.nature || 'Monument'}</b>`
+            + `<br>partie OSM · ${m.h.toFixed(1).replace('.', ',')} m`
+            + (m.estime ? ' <i>(hauteur estimée : OSM ne la donne pas)</i>' : '')
+            + (m.toit ? ` · toit ${m.toit.forme === 'pyramide' ? 'en pyramide' : 'à deux pans'}` : '')
+            + `<br><i>clic pour la fiche</i>`;
+        tip.style.display = 'block';
+        tip.style.left = (e.clientX - r.left + 14) + 'px';
+        tip.style.top = (e.clientY - r.top + 14) + 'px';
+        return;
+    }
     const { p, denivele, hMur } = ud;
     tip.innerHTML =
         `<b>${p.usage_1 || p.nature || 'Bâtiment'}</b>` +
@@ -2355,6 +3381,26 @@ btnRoof.addEventListener('click', () => {
     btnRoof.classList.toggle('on', toitsEnPente);
     btnRoof.textContent = toitsEnPente ? 'Toits en pente' : 'Toits plats';
     construire(features, toitsEnPente);
+});
+
+// Éteint au départ : la surface est fidèle mais granuleuse, le toit résumé
+// plus lisible. Allumé, il ne touche que les toits que le résumé manque.
+let toitsMesures = false;
+const btnMesure = document.getElementById('t-mesure');
+btnMesure.addEventListener('click', () => {
+    toitsMesures = !toitsMesures;
+    btnMesure.classList.toggle('on', toitsMesures);
+    construire(features, toitsEnPente);
+    afficherCible();
+});
+
+const btnMonuments = document.getElementById('t-monuments');
+btnMonuments.addEventListener('click', () => {
+    monumentsActifs = !monumentsActifs;
+    btnMonuments.classList.toggle('on', monumentsActifs);
+    construire(features, toitsEnPente);
+    afficherCible();
+    majCredits();
 });
 
 let orbite = true;
