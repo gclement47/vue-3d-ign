@@ -26,7 +26,10 @@ ICI = os.path.dirname(os.path.abspath(__file__))
 def creer_app(dossier_cache=None, construire=construire_scene):
     """`construire` est injectable pour les tests, qui n'appellent pas l'IGN."""
     app = Flask(__name__, static_folder=os.path.join(ICI, "static"), static_url_path="/static")
-    cache = Cache(dossier_cache or os.environ.get("VUE3D_CACHE", "/tmp/vue3d-cache"))
+    # Absolu : send_from_directory résout un chemin relatif depuis le dossier
+    # de l'application, pas depuis le répertoire courant — avec
+    # VUE3D_CACHE=./cache, l'orthophoto répondait 404.
+    cache = Cache(os.path.abspath(dossier_cache or os.environ.get("VUE3D_CACHE", "/tmp/vue3d-cache")))
 
     def point():
         try:
