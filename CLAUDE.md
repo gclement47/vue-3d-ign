@@ -8,6 +8,7 @@ méthode : [README.md](README.md).
 ## Commandes
 
 ```bash
+python3.12 -m venv .venv && . .venv/bin/activate   # 3.12, comme l'image ; pas 3.14 (0 houppier)
 pip install -r requirements.txt pytest          # dépendances
 pytest                                           # tests Python (réseau jamais appelé)
 VUE3D_CACHE=./cache flask --app vue3d.app run --port 8080   # serveur local
@@ -23,10 +24,13 @@ vue3d/
   scene.py      assemblage d'une scène, cache disque par point arrondi
   couches.py    lecture WFS (bâtiments, végétation, BD Forêt, routes)
   mnh.py        hauteurs du sursol, LiDAR HD, repli MNS − MNT
-  toits.py      gouttière, faîtage, corps de toit, bâtiments sous les arbres
+  toits.py      gouttière, faîtage, corps de toit, surface du toit, bâtiments sous les arbres
   houppiers.py  segmentation des arbres sur la grille à 0,5 m
   ortho.py      indice de verdure ExG, mosaïque d'orthophoto
-  relief.py     RGE ALTI quantifié au décimètre
+  relief.py     RGE ALTI quantifié au décimètre, anneau de relief alentour
+  eau.py        étendues et cours d'eau BD TOPO, découpés sur l'emprise
+  lignes.py     lignes à haute tension et hauteur de leurs supports
+  monuments.py  parties de monuments OSM (building:part), seule source hors IGN
   geopf.py      GET avec reprise sur la Géoplateforme
   static/index.html   la page entière : HTML, CSS et JavaScript (three.js r160)
 ```
