@@ -217,6 +217,7 @@ principales :
 | `GET /?lat=…&lon=…` | La page |
 | `GET /api/scene?lat=…&lon=…` | La scène, en JSON gzippé |
 | `GET /api/ortho?lat=…&lon=…` | L'orthophoto de la scène, en JPEG |
+| `GET /api/avancement?lat=…&lon=…` | L'étape de la construction en cours (17 au total), que la page affiche pendant l'attente |
 | `GET /api/sante` | `{"ok": true}` |
 
 Codes d'erreur : 400 sans coordonnées valides, 422 hors de France métropolitaine,

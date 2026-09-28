@@ -3,6 +3,7 @@
     GET /                          la page ; `?lat=…&lon=…` pour viser un point
     GET /api/scene?lat=…&lon=…     la scène, JSON gzippé (construite au besoin)
     GET /api/ortho?lat=…&lon=…     l'orthophoto de la scène, en JPEG
+    GET /api/avancement?lat=…&lon=…  l'étape de la construction en cours
     GET /api/sante                 contrôle de vie, pour Docker
 
 La première demande d'un point construit sa scène : une vingtaine à une
@@ -79,6 +80,20 @@ def creer_app(dossier_cache=None, construire=construire_scene):
             return err
         reponse = send_from_directory(dossier, NOM_ORTHO, mimetype="image/jpeg")
         reponse.headers["Cache-Control"] = "public, max-age=86400"
+        return reponse
+
+    @app.get("/api/avancement")
+    def avancement():
+        """Pour la page qui attend sa scène : jamais mis en cache, il change
+        d'une seconde à l'autre."""
+        p = point()
+        if p is None:
+            return erreur(400, "Paramètres lat et lon attendus, en degrés décimaux.")
+        try:
+            reponse = jsonify(cache.avancement(*p))
+        except HorsEmprise as exc:
+            return erreur(422, str(exc))
+        reponse.headers["Cache-Control"] = "no-store"
         return reponse
 
     @app.get("/api/sante")

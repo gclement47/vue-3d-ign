@@ -69,6 +69,11 @@
                    z-index:4; pointer-events:none; color:#e8eaed; font-size:13px; text-align:center;
                    line-height:1.6; text-shadow:0 1px 3px #000; }
         #attente[hidden] { display:none; }
+        #attente .avancement { width:240px; height:3px; margin:8px auto 0; border-radius:2px;
+                               background:rgba(255,255,255,.18); overflow:hidden; }
+        #attente .avancement i { display:block; height:100%; background:var(--accent);
+                                 transition:width .4s ease-out; }
+        @media (prefers-reduced-motion: reduce) { #attente .avancement i { transition:none; } }
         .saison-cran, #saison-aujourdhui { color:var(--accent); text-decoration:none; }
         /* Crédits obligatoires : Licence Ouverte (IGN) et, en repli, Terrain Tiles. */
         #credits { position:absolute; right:12px; bottom:12px; z-index:2; max-width:55%;
@@ -271,6 +276,21 @@ const chargementArtefact = fetch(URL_VUE3D)
         attente.innerHTML = 'Scène indisponible<br><small>' + err.message + '</small>';
         return null;
     });
+// Suivi de la construction : pendant l'attente, le serveur dit à quelle étape
+// il en est (/api/avancement). Une scène déjà en cache arrive avant la
+// première question. Un confort : son échec ne touche pas la scène.
+const suiviConstruction = setInterval(async () => {
+    try {
+        const r = await fetch(`api/avancement?${REQUETE}`, { cache: 'no-store' });
+        const a = r.ok ? await r.json() : null;
+        if (!a || a.etat !== 'construction' || ARTEFACT || ERREUR_SCENE) return;
+        attente.innerHTML = '<div>Construction de la scène…<br><small>'
+            + `étape ${a.etape} sur ${a.total} : ${a.libelle} · ${a.secondes} s</small>`
+            // La barre compte les étapes terminées, pas celle en cours.
+            + `<div class="avancement"><i style="width:${Math.round(100 * (a.etape - 1) / a.total)}%"></i></div></div>`;
+    } catch (e) { /* réseau coupé : le message d'attente d'origine reste */ }
+}, 500);
+chargementArtefact.finally(() => clearInterval(suiviConstruction));
 // Toitures LiDAR par cleabs : {gouttiere, faitage, denivele, axe_deg, ...}.
 // Rempli avant construire() — le rendu s'en sert en priorité sur la BD TOPO.
 let TOITS = {};

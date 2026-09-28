@@ -34,6 +34,7 @@ import math
 import os
 import tempfile
 import threading
+import time
 
 from .couches import (COUCHE_BATIMENTS, COUCHE_FORET, COUCHE_ROUTES,
                       COUCHE_VEGETATION, lire_couche)
@@ -65,6 +66,12 @@ SCENE_DELTA = 0.0016
 ANNEAU_DEMI_M = 1000
 # Arrondi du point pour la clé de cache : 4 décimales, une dizaine de mètres.
 SCENE_ARRONDI = 4
+# Étapes d'une construction, que la page affiche pendant l'attente : les
+# quinze lectures de construire(), puis les toitures et les houppiers
+# d'assembler(). Un compteur plutôt qu'un pourcentage : les étapes sont très
+# inégales (moins d'une seconde pour la plupart des lectures, plusieurs pour
+# la grille MNH et les deux calculs), une part du temps serait fausse.
+ETAPES_SCENE = 17
 NOM_SCENE = "scene.json.gz"
 NOM_ORTHO = "ortho.jpg"
 
@@ -105,15 +112,19 @@ def emprise_anneau(lat, lon, demi_m=ANNEAU_DEMI_M):
 
 def assembler(west, south, east, north, batiments, vegetation, forets, routes,
               grille, exg, relief, anneau=None, sol=None, eau=None, lignes=None,
-              monuments=None):
+              monuments=None, avancer=None):
     """Contenu de la scène à partir des sources déjà obtenues.
 
     Séparée de `construire` pour être testable sans réseau. Les grilles MNH,
     ExG et de terrain ne sont PAS embarquées : ce sont des entrées de calcul
     de 1,9 Mo, 475 Ko et 1,4 Mo, sans usage une fois les toitures et les
-    houppiers obtenus.
+    houppiers obtenus. `avancer`, s'il est donné, est appelé au début de
+    chacun des deux calculs, avec son libellé.
     """
+    avancer = avancer or (lambda libelle: None)
+    avancer("toitures")
     toits = toits_pour_emprise(west, south, east, north, batiments, grille, exg, sol)
+    avancer("houppiers")
     veg = houppiers_pour_emprise(west, south, east, north, batiments, vegetation,
                                  forets, grille, exg)
     return {
@@ -145,17 +156,23 @@ def assembler(west, south, east, north, batiments, vegetation, forets, routes,
     }
 
 
-def construire(lat, lon):
+def construire(lat, lon, avancer=None):
     """Construit la scène d'un point.
+
+    Args:
+        avancer: appelé au début de chacune des ETAPES_SCENE étapes avec son
+            libellé, pour le suivi que la page affiche.
 
     Returns:
         (octets gzip de la scène, octets JPEG de l'orthophoto).
     Raises:
         SceneIncomplete si une source n'a pas pu être lue.
     """
+    avancer = avancer or (lambda libelle: None)
     west, south, east, north = emprise(lat, lon)
 
     def lire(nom, fn, *args, **kwargs):
+        avancer(nom)
         try:
             return fn(*args, **kwargs)
         except Exception as exc:
@@ -197,7 +214,7 @@ def construire(lat, lon):
 
     scene = assembler(west, south, east, north, batiments, vegetation, forets,
                       routes, grille, exg, relief, anneau, sol, eau, lignes,
-                      monuments)
+                      monuments, avancer)
     journal.info("Scène %.4f, %.4f : %d bâtiment(s), %d houppier(s), source %s",
                  lat, lon, len(batiments.get("features", [])),
                  len(scene["houppiers"]), grille.get("source"))
@@ -218,6 +235,9 @@ class Cache:
         os.makedirs(dossier, exist_ok=True)
         self._verrous = {}
         self._verrou_global = threading.Lock()
+        # Constructions en cours, par point : en mémoire, comme les verrous —
+        # le service tourne en un seul processus (Dockerfile).
+        self._avancements = {}
 
     def _dossier_point(self, lat, lon):
         return os.path.join(self.dossier, f"v{SCENE_VERSION}",
@@ -233,6 +253,18 @@ class Cache:
     def present(self, lat, lon):
         return all(os.path.exists(self.chemin(lat, lon, n)) for n in (NOM_SCENE, NOM_ORTHO))
 
+    def avancement(self, lat, lon):
+        """Où en est la scène du point : prête, en construction (à quelle
+        étape, depuis combien de secondes), ou pas encore commencée."""
+        lat, lon = point_normalise(lat, lon)
+        if self.present(lat, lon):
+            return {"etat": "prete"}
+        a = self._avancements.get((lat, lon))
+        if a is None:
+            return {"etat": "attente"}
+        return {"etat": "construction", "etape": a["etape"], "total": ETAPES_SCENE,
+                "libelle": a["libelle"], "secondes": round(time.monotonic() - a["debut"])}
+
     def obtenir(self, lat, lon, construire=construire):
         """Chemin de la scène du point, construite au besoin."""
         lat, lon = point_normalise(lat, lon)
@@ -241,15 +273,29 @@ class Cache:
         with self._verrou((lat, lon)):
             if self.present(lat, lon):          # construite pendant l'attente
                 return self._dossier_point(lat, lon)
-            scene, mosaique = construire(lat, lon)
-            dossier = self._dossier_point(lat, lon)
-            os.makedirs(dossier, exist_ok=True)
-            # L'orthophoto d'abord, la scène ensuite : `present` teste les deux,
-            # une interruption entre les deux laisse une scène absente, pas
-            # une scène sans image.
-            for nom, octets in ((NOM_ORTHO, mosaique), (NOM_SCENE, scene)):
-                fd, tmp = tempfile.mkstemp(dir=dossier)
-                with os.fdopen(fd, "wb") as f:
-                    f.write(octets)
-                os.replace(tmp, os.path.join(dossier, nom))
-            return dossier
+            debut = time.monotonic()
+            etape = [0]
+
+            def avancer(libelle):
+                etape[0] += 1
+                # Remplacé d'un bloc : une lecture concurrente ne voit jamais
+                # l'étape d'un libellé et le libellé d'une autre.
+                self._avancements[(lat, lon)] = {"etape": etape[0], "libelle": libelle,
+                                                 "debut": debut}
+
+            try:
+                scene, mosaique = construire(lat, lon, avancer=avancer)
+                dossier = self._dossier_point(lat, lon)
+                os.makedirs(dossier, exist_ok=True)
+                # L'orthophoto d'abord, la scène ensuite : `present` teste les
+                # deux, une interruption entre les deux laisse une scène
+                # absente, pas une scène sans image.
+                for nom, octets in ((NOM_ORTHO, mosaique), (NOM_SCENE, scene)):
+                    fd, tmp = tempfile.mkstemp(dir=dossier)
+                    with os.fdopen(fd, "wb") as f:
+                        f.write(octets)
+                    os.replace(tmp, os.path.join(dossier, nom))
+                return dossier
+            finally:
+                # Succès ou échec, la construction n'est plus en cours.
+                self._avancements.pop((lat, lon), None)

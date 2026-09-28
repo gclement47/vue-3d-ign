@@ -40,7 +40,7 @@ def test_l_anneau_est_carre_en_metres_et_contient_l_emprise():
 def test_une_scene_n_est_construite_qu_une_fois(tmp_path):
     appels = []
 
-    def construire(lat, lon):
+    def construire(lat, lon, avancer=None):
         appels.append((lat, lon))
         return b"scene", b"jpeg"
 
@@ -52,19 +52,67 @@ def test_une_scene_n_est_construite_qu_une_fois(tmp_path):
     assert open(os.path.join(d1, scene.NOM_ORTHO), "rb").read() == b"jpeg"
 
 
+def test_le_suivi_suit_la_construction_puis_s_efface(tmp_path):
+    """Pendant la construction, l'étape en cours ; après, « prête ». Une
+    construction en échec ne reste pas « en cours » pour toujours."""
+    cache = Cache(str(tmp_path))
+    vus = []
+
+    def construire(lat, lon, avancer):
+        for libelle in ("bâtiments", "routes"):
+            avancer(libelle)
+            vus.append(cache.avancement(lat, lon))
+        return b"s", b"j"
+
+    assert cache.avancement(48.8049, 2.1204) == {"etat": "attente"}
+    cache.obtenir(48.8049, 2.1204, construire=construire)
+    assert [(v["etat"], v["etape"], v["total"], v["libelle"]) for v in vus] == [
+        ("construction", 1, scene.ETAPES_SCENE, "bâtiments"),
+        ("construction", 2, scene.ETAPES_SCENE, "routes")]
+    assert cache.avancement(48.8049, 2.1204) == {"etat": "prete"}
+
+    def en_panne(lat, lon, avancer):
+        avancer("bâtiments")
+        raise SceneIncomplete("bâtiments illisibles : Read timed out")
+
+    with pytest.raises(SceneIncomplete):
+        cache.obtenir(47.0, 2.0, construire=en_panne)
+    assert cache.avancement(47.0, 2.0) == {"etat": "attente"}
+
+
+def test_construire_annonce_chacune_de_ses_etapes(monkeypatch):
+    """ETAPES_SCENE suit construire() : chaque lecture et chaque calcul est
+    annoncé, et le compte tombe juste — sinon la page afficherait « étape 18
+    sur 17 »."""
+    grille = {"couvert": True, "width": 2, "height": 2, "source": "lidar_hd",
+              "bbox": [0, 0, 1, 1], "values": [0.0] * 4}
+    for nom, valeur in {
+            "lire_couche": {"features": []}, "fetch_mnh_grid": grille,
+            "fetch_exg_grid": None, "fetch_sol_grid": None, "fetch_relief": None,
+            "fetch_relief_anneau": None, "lignes_pour_emprise": None,
+            "fetch_monuments": None, "fetch_ortho_jpeg": (b"jpeg", None, None),
+            "toits_pour_emprise": {}, "houppiers_pour_emprise": {},
+            "eau_pour_emprise": None}.items():
+        monkeypatch.setattr(scene, nom, lambda *a, _v=valeur, **k: _v)
+    etapes = []
+    scene.construire(48.8049, 2.1204, avancer=etapes.append)
+    assert len(etapes) == scene.ETAPES_SCENE
+    assert etapes[0] == "bâtiments" and etapes[-2:] == ["toitures", "houppiers"]
+
+
 def test_une_scene_incomplete_n_est_pas_mise_en_cache(tmp_path):
     """Le cache ne périme pas : une scène figée pendant une panne resterait
     fausse pour toujours. Rien n'est écrit, la demande suivante réessaie."""
     cache = Cache(str(tmp_path))
 
-    def en_panne(lat, lon):
+    def en_panne(lat, lon, avancer=None):
         raise SceneIncomplete("orthophoto illisible : Read timed out")
 
     with pytest.raises(SceneIncomplete):
         cache.obtenir(48.8049, 2.1204, construire=en_panne)
     assert not cache.present(48.8049, 2.1204)
     # La demande suivante, service revenu, réussit.
-    cache.obtenir(48.8049, 2.1204, construire=lambda lat, lon: (b"s", b"j"))
+    cache.obtenir(48.8049, 2.1204, construire=lambda lat, lon, avancer=None: (b"s", b"j"))
     assert cache.present(48.8049, 2.1204)
 
 
@@ -72,7 +120,7 @@ def test_deux_demandes_simultanees_ne_construisent_pas_deux_fois(tmp_path):
     appels = []
     depart = threading.Event()
 
-    def lente(lat, lon):
+    def lente(lat, lon, avancer=None):
         appels.append(1)
         depart.wait(2)
         return b"s", b"j"
