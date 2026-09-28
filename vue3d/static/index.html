@@ -109,7 +109,7 @@
                 <button class="toggle on" id="t-roof">Toits en pente</button>
                 <button class="toggle on" id="t-mesure" title="Pans mesurés au LiDAR là où le toit résumé s'en écarte de plus de 0,7 m">Toits mesurés</button>
                 <button class="toggle on" id="t-monuments" hidden title="Parties de bâtiments modélisées dans OpenStreetMap (building:part)">Monuments OSM</button>
-                <button class="toggle on" id="t-orbit">Orbite</button>
+                <button class="toggle" id="t-orbit">Orbite</button>
                 <button class="toggle on" id="t-fond">Photo aérienne</button>
                 <button class="toggle" id="t-plan">Plan IGN</button>
                 <button class="toggle on" id="t-relief">Relief</button>
@@ -1476,6 +1476,7 @@ chargerScene()
             ? `${stats.avecToit} bâtiment(s) sur ${stats.total} ont des altitudes de toiture exploitables.`
             : "Aucun bâtiment BD TOPO sur cette emprise.";
         cadrer();
+        demarrerOrbite();
         // La végétation ne peut être classée qu'une fois les emprises bâties
         // connues : c'est par elles qu'on écarte les toitures du sursol. D'où
         // ce chaînage plutôt qu'un chargement en parallèle.
@@ -3560,13 +3561,25 @@ btnMonuments.addEventListener('click', () => {
     majCredits();
 });
 
-let orbite = true;
+// L'orbite démarre avec la scène, pas avec la page : pendant les 20 à 40 s de
+// la construction, elle tournait autour d'un sol vide, et un glissement de
+// souris pendant l'attente l'arrêtait avant même que la scène n'apparaisse.
+// Seul un choix fait au bouton pendant l'attente l'emporte.
+let orbite = false;
+let orbiteChoisie = false;
 const btnOrbit = document.getElementById('t-orbit');
 const vitesse = document.getElementById('speed');
 btnOrbit.addEventListener('click', () => {
+    orbiteChoisie = true;
     orbite = !orbite;
     btnOrbit.classList.toggle('on', orbite);
 });
+
+function demarrerOrbite() {
+    if (orbiteChoisie) return;
+    orbite = true;
+    btnOrbit.classList.add('on');
+}
 // OrbitControls fait tourner la caméra autour de sa cible : l'inertie
 // (enableDamping) donne un mouvement fluide sans boucle manuelle sur le cap.
 controls.addEventListener('start', () => { if (orbite) { orbite = false; btnOrbit.classList.remove('on'); } });
