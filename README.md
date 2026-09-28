@@ -84,7 +84,8 @@ Chaque premier chargement construit la scène, en 20 à 40 secondes.
   rejeté) sont repris à OSM — la cathédrale de Strasbourg, que la règle
   « sous les arbres » écrasait à 3 m, y gagne son modèle complet. Le bouton
   **Monuments OSM** débraye la couche ; il n'apparaît que si la scène a des
-  parties.
+  parties. Elles arrivent après la scène : OpenStreetMap répond de 0,6 s à
+  plus de 100 s, la vue ne l'attend pas et réessaie s'il ne répond pas.
 - **L'eau** : lacs, retenues, bassins et rivières larges en nappes, ruisseaux en
   rubans de la largeur de leur classe, posés sur le relief.
 - **Les routes**, en rubans sur le relief, à leur largeur de chaussée.
@@ -217,7 +218,8 @@ principales :
 | `GET /?lat=…&lon=…` | La page |
 | `GET /api/scene?lat=…&lon=…` | La scène, en JSON gzippé |
 | `GET /api/ortho?lat=…&lon=…` | L'orthophoto de la scène, en JPEG |
-| `GET /api/avancement?lat=…&lon=…` | L'étape de la construction en cours (17 au total), que la page affiche pendant l'attente |
+| `GET /api/monuments?lat=…&lon=…` | La couche des monuments OSM, en JSON gzippé (`null` sans partie), que la page demande une fois la scène affichée |
+| `GET /api/avancement?lat=…&lon=…` | L'étape de la construction en cours (16 au total), que la page affiche pendant l'attente |
 | `GET /api/sante` | `{"ok": true}` |
 
 Codes d'erreur : 400 sans coordonnées valides, 422 hors de France métropolitaine,

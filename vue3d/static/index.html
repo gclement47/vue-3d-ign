@@ -168,6 +168,7 @@
             <div class="stat"><span>toit mesuré au LiDAR</span><b id="s-lidar">—</b></div>
             <div class="stat"><span>dénivelé médian</span><b id="s-slope">—</b></div>
             <div class="note" id="note">Chargement des bâtiments…</div>
+            <div class="note" id="note-monuments" hidden></div>
         </div>
 
         <div class="section">
@@ -1275,6 +1276,41 @@ function construire(features, toitsEnPente) {
  * `min_height` : le bas est caché par la partie du dessous, et un volume qui
  * part du sol suit rebaserBatiments comme les autres.
  */
+// Monuments OSM : une couche à part (/api/monuments), demandée une fois la
+// scène affichée. OpenStreetMap répond de 0,6 s à plus de 100 s et tombe
+// parfois : la scène ne l'attend pas. À l'arrivée des parties, les bâtiments
+// sont reconstruits comme le fait le bouton « Monuments OSM ».
+const URL_MONUMENTS = `api/monuments?${REQUETE}`;
+const ESSAIS_MONUMENTS = 4;
+const ATTENTE_MONUMENTS_S = 30;
+
+async function chargerMonuments(essai = 1) {
+    const etat = document.getElementById('note-monuments');
+    etat.hidden = false;
+    etat.textContent = 'Monuments OpenStreetMap : chargement…';
+    try {
+        const r = await fetch(URL_MONUMENTS);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const m = await r.json();
+        etat.hidden = true;
+        if (!m || !m.parties || !m.parties.length) return;   // presque partout
+        MONUMENTS = m;
+        const b = document.getElementById('t-monuments');
+        b.hidden = false;
+        b.classList.toggle('on', monumentsActifs);
+        construire(features, toitsEnPente);
+        afficherCible();
+        majCredits();
+    } catch (e) {
+        if (essai >= ESSAIS_MONUMENTS) {
+            etat.textContent = 'Monuments OpenStreetMap indisponibles : recharger la page pour réessayer.';
+            return;
+        }
+        etat.textContent = `Monuments OpenStreetMap indisponibles : nouvel essai dans ${ATTENTE_MONUMENTS_S} s.`;
+        setTimeout(() => chargerMonuments(essai + 1), ATTENTE_MONUMENTS_S * 1000);
+    }
+}
+
 function construireMonuments(features, toitsEnPente, remplaces) {
     if (!monumentsActifs || !MONUMENTS) return;
     const parCleabs = new Map();
@@ -1432,15 +1468,6 @@ async function chargerScene() {
 chargerScene()
     .then(([json, toits]) => {
         if (toits && toits.toits) { TOITS = toits.toits; TOITS_SOURCE = toits.source; TOITS_GRILLE = toits.grille || null; }
-        MONUMENTS = (ARTEFACT.monuments && ARTEFACT.monuments.parties
-                     && ARTEFACT.monuments.parties.length) ? ARTEFACT.monuments : null;
-        monumentsActifs = !!MONUMENTS;
-        if (MONUMENTS) {
-            const b = document.getElementById('t-monuments');
-            b.hidden = false;
-            b.classList.toggle('on', monumentsActifs);
-            majCredits();
-        }
         features = json.features || [];
         CIBLE = trouverCible(features);
         construire(features, true);
@@ -1453,6 +1480,7 @@ chargerScene()
         // connues : c'est par elles qu'on écarte les toitures du sursol. D'où
         // ce chaînage plutôt qu'un chargement en parallèle.
         activerVegetation();
+        chargerMonuments();
     })
     .catch(err => {
         note.textContent = 'Chargement impossible : ' + err.message;

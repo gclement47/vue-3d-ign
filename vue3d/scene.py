@@ -4,14 +4,19 @@ Une scène, c'est tout ce que la vue 3D affiche autour d'une coordonnée, dans u
 carré de ±0,0016° (environ 356 m de côté) :
 
 - les bâtiments BD TOPO et leurs toitures mesurées au LiDAR HD ;
-- les parties de monuments OSM (`building:part`), là où elles sont plus
-  riches que la BD TOPO ;
 - les houppiers et masses de sursol segmentés sur le MNH LiDAR HD à 0,5 m ;
 - les routes, pour orienter Street View ;
 - le relief RGE ALTI, quantifié au décimètre ;
 - un anneau de relief grossier sur 2 km de côté, pour que la scène ne flotte
   pas dans le vide ;
 - et, dans un fichier à part, une mosaïque d'orthophoto en une seule image.
+
+Les monuments OSM (`building:part`), là où ils sont plus riches que la BD
+TOPO, forment une couche à part (`Cache.obtenir_monuments`), que la vue
+demande une fois la scène affichée. OpenStreetMap répond de 0,6 s à plus de
+100 s et tombe parfois : la scène ne l'attend pas, et n'échoue pas avec lui.
+La lecture d'Overpass part pourtant dès la demande de la scène, en tâche de
+fond, pour que la couche soit souvent prête quand la vue la demande.
 
 La construction coûte une vingtaine à une trentaine de secondes, dont la moitié
 à télécharger la grille MNH. Le résultat est donc mis en cache sur disque, par
@@ -27,6 +32,7 @@ pas réussi à la lire », qui est un incident : rien n'est alors écrit, et la
 demande suivante réessaie.
 """
 
+import concurrent.futures
 import gzip
 import json
 import logging
@@ -57,7 +63,8 @@ journal = logging.getLogger(__name__)
 # 6 : monuments OSM (building:part).
 # 7 : profil minimal (hauteur inconnue) pour les bâtiments illisibles.
 # 8 : toits en pans (vue3d/pans.py), préférés à la surface mesurée.
-SCENE_VERSION = 8
+# 9 : monuments OSM hors de la scène, en couche à part (NOM_MONUMENTS).
+SCENE_VERSION = 9
 # Demi-côté de l'emprise, en degrés : ~178 m de part et d'autre du point.
 SCENE_DELTA = 0.0016
 # Demi-côté de l'anneau, en mètres et non en degrés : carré sur le terrain.
@@ -67,13 +74,14 @@ ANNEAU_DEMI_M = 1000
 # Arrondi du point pour la clé de cache : 4 décimales, une dizaine de mètres.
 SCENE_ARRONDI = 4
 # Étapes d'une construction, que la page affiche pendant l'attente : les
-# quinze lectures de construire(), puis les toitures et les houppiers
+# quatorze lectures de construire(), puis les toitures et les houppiers
 # d'assembler(). Un compteur plutôt qu'un pourcentage : les étapes sont très
 # inégales (moins d'une seconde pour la plupart des lectures, plusieurs pour
 # la grille MNH et les deux calculs), une part du temps serait fausse.
-ETAPES_SCENE = 17
+ETAPES_SCENE = 16
 NOM_SCENE = "scene.json.gz"
 NOM_ORTHO = "ortho.jpg"
+NOM_MONUMENTS = "monuments.json.gz"
 
 # Le service couvre la France. Au-delà, les couches répondent vide et la scène
 # n'aurait rien à montrer : mieux vaut le dire tout de suite.
@@ -86,6 +94,11 @@ class SceneIncomplete(RuntimeError):
 
 class HorsEmprise(ValueError):
     """Le point est hors de la zone couverte par les données IGN."""
+
+
+class MonumentsIndisponibles(RuntimeError):
+    """Overpass n'a pas répondu : la couche OSM n'est pas mise en cache, la
+    scène reste affichée sans elle, réessayer plus tard."""
 
 
 def point_normalise(lat, lon):
@@ -112,7 +125,7 @@ def emprise_anneau(lat, lon, demi_m=ANNEAU_DEMI_M):
 
 def assembler(west, south, east, north, batiments, vegetation, forets, routes,
               grille, exg, relief, anneau=None, sol=None, eau=None, lignes=None,
-              monuments=None, avancer=None):
+              avancer=None):
     """Contenu de la scène à partir des sources déjà obtenues.
 
     Séparée de `construire` pour être testable sans réseau. Les grilles MNH,
@@ -147,12 +160,6 @@ def assembler(west, south, east, north, batiments, vegetation, forets, routes,
         "eau": eau_pour_emprise(west, south, east, north, *eau) if eau else None,
         # Sur l'emprise de l'anneau : une ligne se voit de loin (vue3d/lignes.py).
         "lignes": lignes,
-        # Parties de monuments OSM et bâtiments BD TOPO qu'elles remplacent
-        # (vue3d/monuments.py). None si l'emprise n'en a aucune — le cas de
-        # presque partout.
-        "monuments": monuments_pour_emprise(west, south, east, north,
-                                            monuments, batiments)
-                     if monuments is not None else None,
     }
 
 
@@ -206,15 +213,10 @@ def construire(lat, lon, avancer=None):
         *emprise_anneau(lat, lon),
         lire("lignes électriques", lire_couche, COUCHE_LIGNES, *emprise_anneau(lat, lon)),
         lire("pylônes", lire_couche, COUCHE_PYLONES, *emprise_anneau(lat, lon)))
-    # La seule source hors Géoplateforme : Overpass (OpenStreetMap). Même
-    # règle que les autres — un échec lève SceneIncomplete, une emprise sans
-    # partie est un fait et donne une couche nulle.
-    monuments = lire("monuments OSM", fetch_monuments, west, south, east, north)
     mosaique, _, _ = lire("mosaïque d'orthophoto", fetch_ortho_jpeg, west, south, east, north)
 
     scene = assembler(west, south, east, north, batiments, vegetation, forets,
-                      routes, grille, exg, relief, anneau, sol, eau, lignes,
-                      monuments, avancer)
+                      routes, grille, exg, relief, anneau, sol, eau, lignes, avancer)
     journal.info("Scène %.4f, %.4f : %d bâtiment(s), %d houppier(s), source %s",
                  lat, lon, len(batiments.get("features", [])),
                  len(scene["houppiers"]), grille.get("source"))
@@ -228,9 +230,12 @@ class Cache:
     fois la même scène — trente secondes et quelques mégaoctets d'appels IGN
     pour rien. L'écriture passe par un fichier temporaire renommé : une scène
     lue est toujours une scène entière.
+
+    La couche des monuments OSM se range à côté de la scène, sous la même
+    règle : écrite entière, ou pas du tout.
     """
 
-    def __init__(self, dossier):
+    def __init__(self, dossier, lire_monuments=fetch_monuments):
         self.dossier = dossier
         os.makedirs(dossier, exist_ok=True)
         self._verrous = {}
@@ -238,6 +243,19 @@ class Cache:
         # Constructions en cours, par point : en mémoire, comme les verrous —
         # le service tourne en un seul processus (Dockerfile).
         self._avancements = {}
+        # Lectures d'Overpass lancées en tâche de fond, par point (Future) ;
+        # injectable pour les tests, qui n'appellent pas le réseau.
+        self.lire_monuments = lire_monuments
+        self._overpass = {}
+        self._taches = concurrent.futures.ThreadPoolExecutor(max_workers=2,
+                                                             thread_name_prefix="overpass")
+
+    def _ecrire(self, dossier, nom, octets):
+        """Écrit d'un bloc : un fichier temporaire, renommé une fois complet."""
+        fd, tmp = tempfile.mkstemp(dir=dossier)
+        with os.fdopen(fd, "wb") as f:
+            f.write(octets)
+        os.replace(tmp, os.path.join(dossier, nom))
 
     def _dossier_point(self, lat, lon):
         return os.path.join(self.dossier, f"v{SCENE_VERSION}",
@@ -291,11 +309,63 @@ class Cache:
                 # deux, une interruption entre les deux laisse une scène
                 # absente, pas une scène sans image.
                 for nom, octets in ((NOM_ORTHO, mosaique), (NOM_SCENE, scene)):
-                    fd, tmp = tempfile.mkstemp(dir=dossier)
-                    with os.fdopen(fd, "wb") as f:
-                        f.write(octets)
-                    os.replace(tmp, os.path.join(dossier, nom))
+                    self._ecrire(dossier, nom, octets)
                 return dossier
             finally:
                 # Succès ou échec, la construction n'est plus en cours.
                 self._avancements.pop((lat, lon), None)
+
+    def prelire_monuments(self, lat, lon):
+        """Lance la lecture d'Overpass en tâche de fond, si la couche OSM du
+        point n'est ni en cache ni déjà demandée.
+
+        Appelée à la demande de la scène : Overpass ne dépend pas de l'IGN, sa
+        réponse arrive pendant la construction, et la couche est souvent prête
+        quand la vue la demande.
+        """
+        lat, lon = point_normalise(lat, lon)
+        if os.path.exists(self.chemin(lat, lon, NOM_MONUMENTS)):
+            return
+        with self._verrou_global:
+            if (lat, lon) not in self._overpass:
+                self._overpass[(lat, lon)] = self._taches.submit(
+                    self.lire_monuments, *emprise(lat, lon))
+
+    def obtenir_monuments(self, lat, lon, construire=construire):
+        """Chemin du dossier où la couche OSM du point est écrite.
+
+        La couche lit les bâtiments de la scène — les hauteurs de repli des
+        parties, les bâtiments qu'elles remplacent — qui est donc construite
+        d'abord au besoin. La réponse d'Overpass est celle de la tâche de fond
+        si elle a été lancée, sinon elle est lue ici.
+
+        Raises:
+            MonumentsIndisponibles si Overpass n'a pas répondu : rien n'est
+            écrit, la demande suivante réessaie.
+        """
+        dossier = self.obtenir(lat, lon, construire=construire)
+        lat, lon = point_normalise(lat, lon)
+        chemin = os.path.join(dossier, NOM_MONUMENTS)
+        if os.path.exists(chemin):
+            return dossier
+        with self._verrou(("monuments", lat, lon)):
+            if os.path.exists(chemin):          # écrite pendant l'attente
+                return dossier
+            with self._verrou_global:
+                tache = self._overpass.pop((lat, lon), None)
+            try:
+                brut = tache.result() if tache else self.lire_monuments(*emprise(lat, lon))
+            except Exception as exc:
+                raise MonumentsIndisponibles(f"monuments OSM illisibles : {exc}") from exc
+            with gzip.open(os.path.join(dossier, NOM_SCENE), "rt", encoding="utf-8") as f:
+                batiments = json.load(f).get("batiments") or {"features": []}
+            # Parties OSM et bâtiments BD TOPO qu'elles remplacent
+            # (vue3d/monuments.py). None si l'emprise n'en a aucune — le cas de
+            # presque partout, qui est un fait et se met en cache comme tel.
+            couche = monuments_pour_emprise(*emprise(lat, lon), brut, batiments)
+            self._ecrire(dossier, NOM_MONUMENTS,
+                         gzip.compress(json.dumps(couche, separators=(",", ":")).encode(), 6))
+            # Une lecture relancée entre-temps (page rechargée) ne sert plus.
+            with self._verrou_global:
+                self._overpass.pop((lat, lon), None)
+            return dossier

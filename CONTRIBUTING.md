@@ -66,16 +66,17 @@ En conteneur : `docker compose up -d --build`, sur le port 8080 (ou
 flowchart LR
     P["Page<br/>static/index.html<br/>three.js"] -->|"GET /api/scene"| A["app.py<br/>Flask"]
     P -.->|"GET /api/avancement<br/>toutes les 0,5 s"| A
+    P -.->|"GET /api/monuments<br/>après la scène"| A
     A --> C{"Cache<br/>scene.py"}
-    C -->|"déjà construite"| D[("cache/vN/lat_lon/<br/>scene.json.gz · ortho.jpg")]
-    C -->|"absente : verrou par point"| B["construire()<br/>15 lectures"]
+    C -->|"déjà construite"| D[("cache/vN/lat_lon/<br/>scene.json.gz · ortho.jpg<br/>monuments.json.gz")]
+    C -->|"absente : verrou par point"| B["construire()<br/>14 lectures"]
+    C -.->|"tâche de fond"| OSM[("Overpass<br/>OpenStreetMap")]
     B --> G["geopf.get_avec_reprise<br/>3 essais"]
     G --> IGN[("Géoplateforme IGN<br/>WFS · WMS")]
-    B --> OSM[("Overpass<br/>OpenStreetMap")]
     B --> S["assembler()"]
     S --> T["toits.py, pans.py"]
     S --> H["houppiers.py"]
-    S --> E["eau.py, monuments.py"]
+    S --> E["eau.py"]
     S -->|"JSON gzippé,<br/>écrit d'un bloc"| D
 ```
 
@@ -87,8 +88,9 @@ Le trajet d'une demande, dans l'ordre :
    la même scène. Si elle est déjà sur disque, elle est servie telle quelle.
 3. Sinon, un verrou par point garantit qu'une seule construction a lieu, même
    si plusieurs visiteurs demandent le même lieu en même temps. `construire()`
-   lit alors quinze sources, l'une après l'autre, et annonce chaque étape pour
-   la barre d'avancement de la page.
+   lit alors quatorze sources de l'IGN, l'une après l'autre, et annonce chaque
+   étape pour la barre d'avancement de la page. Pendant ce temps, une tâche de
+   fond interroge Overpass pour les monuments OSM.
 4. `assembler()` fait les deux calculs longs : les toitures (`toits.py`, et
    `pans.py` pour les toits que le résumé manque), puis les arbres
    (`houppiers.py`). La scène est compressée et écrite sur disque de façon
@@ -97,6 +99,11 @@ Le trajet d'une demande, dans l'ordre :
 5. La page reçoit un seul JSON et construit tout de son côté : bâtiments et
    toits, relief et son anneau, végétation, eau, routes, lignes, soleil et
    ombres.
+6. Elle demande ensuite `/api/monuments`. La couche OSM, calculée sur la
+   réponse de la tâche de fond et les bâtiments de la scène, est mise en cache
+   à côté d'elle ; à son arrivée, la page reconstruit les bâtiments. Si
+   Overpass ne répond pas, la page réessaie toutes les 30 s, et la scène reste
+   affichée sans ses monuments.
 
 L'emprise d'une scène est un carré de ±0,0016° autour du point : environ
 ±178 m du nord au sud, et ±115 à 130 m d'est en ouest selon la latitude. Un
@@ -180,7 +187,11 @@ niveau :
 | `houppiers`, `masses` | Arbres segmentés, et masses de sursol indéterminées |
 | `vegetation` | Métadonnées : source, couverture, seuils |
 | `relief`, `anneau` | Grilles RGE ALTI quantifiées ; `null` hors couverture |
-| `eau`, `lignes`, `monuments` | Couches découpées sur l'emprise ; `monuments` vaut `null` quand l'emprise n'a aucune partie OSM, le cas le plus courant |
+| `eau`, `lignes` | Couches découpées sur l'emprise |
+
+Les monuments OSM n'en font pas partie : `/api/monuments` les sert à part,
+`{parties, remplaces}`, ou `null` quand l'emprise n'a aucune partie, le cas le
+plus courant.
 
 Le profil d'un toit (`toits.toits[cleabs]`) porte `gouttiere`, `faitage`,
 `denivele`, `fiable`, `axe_deg`, éventuellement `corps` (un toit par corps pour
@@ -199,7 +210,7 @@ LiDAR), et au plus l'une des deux formes mesurées :
 
 **Toute modification du format impose d'incrémenter `SCENE_VERSION`** dans
 `scene.py`, avec une ligne de commentaire qui dit ce qui a changé. Le numéro
-fait partie du chemin du cache (`cache/v8/…`) : l'incrémenter invalide toutes
+fait partie du chemin du cache (`cache/v9/…`) : l'incrémenter invalide toutes
 les scènes d'un coup.
 
 ## Les invariants : ce qu'il ne faut jamais défaire
@@ -348,9 +359,11 @@ pytest tests/test_pans.py -q
 La suite ne touche **jamais** le réseau. Les sources sont remplacées de trois
 façons :
 
-- **Construction injectée.** `creer_app(dossier, construire=faux)` et
-  `Cache.obtenir(lat, lon, construire=faux)` acceptent une fausse construction.
-  Sa signature est `(lat, lon, avancer=None)`.
+- **Construction injectée.** `creer_app(dossier, construire=faux,
+  lire_monuments=faux)` et `Cache(dossier, lire_monuments=faux)` acceptent une
+  fausse construction et une fausse lecture d'Overpass. La signature de la
+  construction est `(lat, lon, avancer=None)`, celle de la lecture
+  `(ouest, sud, est, nord)`.
 - **Grilles synthétiques.** Les tests de toitures fabriquent des grilles MNH à
   partir d'une fonction de hauteur (voir `_grille` dans `test_pans.py` ou
   `_grille_surface` dans `test_toits.py`) : un toit à deux pans, une marche, un
@@ -384,8 +397,9 @@ Les scripts de prototype figent en en-tête les résultats obtenus lors de leur
 - **Le cache** est dans `VUE3D_CACHE`, rangé en
   `v{SCENE_VERSION}/{lat}_{lon}/scene.json.gz` et `ortho.jpg`. Supprimez le
   dossier d'un lieu pour le reconstruire seul.
-- **Lire une scène** (8 est la `SCENE_VERSION` actuelle) :
-  `gunzip -c cache/v8/43.9116_5.2003/scene.json.gz | python -m json.tool | less`.
+- **Lire une scène** (9 est la `SCENE_VERSION` actuelle) :
+  `gunzip -c cache/v9/43.9116_5.2003/scene.json.gz | python -m json.tool | less`.
+  La couche OSM est à côté, dans `monuments.json.gz`.
 - **Suivre une construction** : `curl 'localhost:8080/api/avancement?lat=…&lon=…'`
   renvoie l'étape en cours. `VUE3D_LOG=DEBUG` rend les journaux du serveur plus
   bavards.
@@ -430,11 +444,11 @@ Des chantiers mesurés, prêts à être repris :
   35 s en tout, dont 12 s pour les houppiers, 8 s pour les toitures et 4 s pour
   les monuments OSM. Les houppiers sont la première piste.
 - **Monuments OSM hors des lieux d'exemple.** Ailleurs, Overpass reste
-  interrogé en direct : de 0,6 s à plus de 100 s, et un échec de ses trois
-  instances fait échouer toute la scène. Deux voies mesurées : le lancer en
-  parallèle des lectures IGN, dont il est indépendant, ou embarquer un extrait
-  France entier (134 446 `building:part` au 27 septembre 2026, 10 à 20 Mo
-  compressé), publié en fichier de release plutôt que dans l'historique git.
+  interrogé en direct. La scène ne l'attend plus et n'échoue plus avec lui,
+  mais un monument peut apparaître avec retard. Un extrait France entier
+  (134 446 `building:part` au 27 septembre 2026, 10 à 20 Mo compressé),
+  publié en fichier de release plutôt que dans l'historique git, supprimerait
+  cette attente.
 - **Bâtiments sous les arbres.** La règle est sévère dans les tissus denses et
   arborés, où l'orthophoto décale les feuillages sur les emprises voisines.
 - **Couverture LiDAR HD.** Environ 77 % des bâtiments tirés au hasard sont

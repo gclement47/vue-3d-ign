@@ -17,7 +17,14 @@ def client(tmp_path):
             raise SceneIncomplete("orthophoto illisible : Read timed out")
         return gzip.compress(json.dumps(scene).encode()), b"\xff\xd8jpeg"
 
-    appli = module_app.creer_app(str(tmp_path), construire=construire)
+    def lire_monuments(west, south, east, north):
+        # Au sud de 46° : Overpass en panne.
+        if south < 46:
+            raise ConnectionError("Overpass injoignable : 504")
+        return {"elements": []}
+
+    appli = module_app.creer_app(str(tmp_path), construire=construire,
+                                 lire_monuments=lire_monuments)
     return appli.test_client()
 
 
@@ -63,6 +70,20 @@ def test_l_avancement_dit_si_la_scene_est_prete(client):
     assert r.headers["Cache-Control"] == "no-store"
     assert client.get("/api/avancement").status_code == 400
     assert client.get("/api/avancement?lat=40&lon=2").status_code == 422
+
+
+def test_la_couche_osm_est_servie_a_part(client):
+    """Aucune partie sur l'emprise : la couche vaut null, et se met en cache."""
+    r = client.get("/api/monuments?lat=48.8049&lon=2.1204")
+    assert r.status_code == 200 and r.headers["Content-Encoding"] == "gzip"
+    assert json.loads(gzip.decompress(r.data)) is None
+
+
+def test_une_panne_osm_rend_503_sans_toucher_la_scene(client):
+    """La scène reste servie ; seule la couche OSM attend un nouvel essai."""
+    assert client.get("/api/scene?lat=45.5&lon=2").status_code == 200
+    r = client.get("/api/monuments?lat=45.5&lon=2")
+    assert r.status_code == 503 and "OpenStreetMap" in r.get_json()["erreur"]
 
 
 def test_sante(client):

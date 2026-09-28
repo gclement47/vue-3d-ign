@@ -90,7 +90,7 @@ def test_construire_annonce_chacune_de_ses_etapes(monkeypatch):
             "lire_couche": {"features": []}, "fetch_mnh_grid": grille,
             "fetch_exg_grid": None, "fetch_sol_grid": None, "fetch_relief": None,
             "fetch_relief_anneau": None, "lignes_pour_emprise": None,
-            "fetch_monuments": None, "fetch_ortho_jpeg": (b"jpeg", None, None),
+            "fetch_ortho_jpeg": (b"jpeg", None, None),
             "toits_pour_emprise": {}, "houppiers_pour_emprise": {},
             "eau_pour_emprise": None}.items():
         monkeypatch.setattr(scene, nom, lambda *a, _v=valeur, **k: _v)
@@ -98,6 +98,88 @@ def test_construire_annonce_chacune_de_ses_etapes(monkeypatch):
     scene.construire(48.8049, 2.1204, avancer=etapes.append)
     assert len(etapes) == scene.ETAPES_SCENE
     assert etapes[0] == "bâtiments" and etapes[-2:] == ["toitures", "houppiers"]
+
+
+def _scene_avec_un_batiment(lat, lon, avancer=None):
+    """Scène minimale : un bâtiment BD TOPO de 20 m autour du point."""
+    import gzip
+    import json
+    d = 0.0001
+    batiment = {"type": "Feature", "properties": {"cleabs": "B1", "hauteur": 12},
+                "geometry": {"type": "Polygon", "coordinates": [[
+                    [lon - d, lat - d], [lon + d, lat - d], [lon + d, lat + d],
+                    [lon - d, lat + d], [lon - d, lat - d]]]}}
+    scene_ = {"batiments": {"type": "FeatureCollection", "features": [batiment]}}
+    return gzip.compress(json.dumps(scene_).encode()), b"jpeg"
+
+
+def _partie_osm(lat, lon, hauteur="30"):
+    d = 0.0001
+    anneau = [(lon - d, lat - d), (lon + d, lat - d), (lon + d, lat + d),
+              (lon - d, lat + d), (lon - d, lat - d)]
+    return {"elements": [{"type": "way", "tags": {"building:part": "yes", "height": hauteur},
+                          "geometry": [{"lon": x, "lat": y} for x, y in anneau]}]}
+
+
+def test_la_couche_osm_se_construit_a_part_et_se_met_en_cache(tmp_path):
+    """Elle lit les bâtiments de la scène, et une seule fois Overpass."""
+    import gzip
+    import json
+    appels = []
+
+    def lire(*bbox):
+        appels.append(bbox)
+        return _partie_osm(48.8049, 2.1204)
+
+    cache = Cache(str(tmp_path), lire_monuments=lire)
+    d1 = cache.obtenir_monuments(48.8049, 2.1204, construire=_scene_avec_un_batiment)
+    d2 = cache.obtenir_monuments(48.8049, 2.1204, construire=_scene_avec_un_batiment)
+    assert d1 == d2 and len(appels) == 1
+    couche = json.loads(gzip.decompress(open(os.path.join(d1, scene.NOM_MONUMENTS), "rb").read()))
+    assert couche["remplaces"] == ["B1"] and couche["parties"][0]["h"] == 30
+
+
+def test_une_panne_osm_ne_met_rien_en_cache_et_epargne_la_scene(tmp_path):
+    """Overpass en panne : la scène est là, la couche non, et la demande
+    suivante réessaie."""
+    en_panne = [True]
+
+    def lire(*bbox):
+        if en_panne[0]:
+            raise ConnectionError("Overpass injoignable : 504")
+        return {"elements": []}
+
+    cache = Cache(str(tmp_path), lire_monuments=lire)
+    with pytest.raises(scene.MonumentsIndisponibles):
+        cache.obtenir_monuments(48.8049, 2.1204, construire=_scene_avec_un_batiment)
+    assert cache.present(48.8049, 2.1204)
+    assert not os.path.exists(cache.chemin(48.8049, 2.1204, scene.NOM_MONUMENTS))
+    en_panne[0] = False
+    cache.obtenir_monuments(48.8049, 2.1204, construire=_scene_avec_un_batiment)
+    assert os.path.exists(cache.chemin(48.8049, 2.1204, scene.NOM_MONUMENTS))
+
+
+def test_overpass_repond_pendant_que_la_scene_se_construit(tmp_path):
+    """La lecture anticipée tourne en même temps que la construction, et la
+    couche OSM reprend sa réponse sans relire Overpass."""
+    appels = []
+    lu = threading.Event()
+
+    def lire(*bbox):
+        appels.append(bbox)
+        lu.set()
+        return {"elements": []}
+
+    pendant = []
+
+    def construire(lat, lon, avancer=None):
+        pendant.append(lu.wait(timeout=5))
+        return _scene_avec_un_batiment(lat, lon)
+
+    cache = Cache(str(tmp_path), lire_monuments=lire)
+    cache.prelire_monuments(48.8049, 2.1204)
+    cache.obtenir_monuments(48.8049, 2.1204, construire=construire)
+    assert pendant == [True] and len(appels) == 1
 
 
 def test_une_scene_incomplete_n_est_pas_mise_en_cache(tmp_path):
@@ -146,10 +228,10 @@ def test_assembler_n_embarque_pas_les_grilles():
     grille.update({"couvert": True, "source": "lidar_hd", "resolution_m": 0.5})
     art = scene.assembler(*grille["bbox"], {"features": []}, {"features": []}, None,
                           {"features": []}, grille, np.full(H.shape, 20, dtype=np.int8), None)
+    # Les monuments OSM n'y sont pas : couche à part (Cache.obtenir_monuments).
     assert set(art) == {"version", "bbox", "batiments", "toits", "routes",
                         "houppiers", "masses", "vegetation", "relief", "anneau",
-                        "eau", "lignes", "monuments"}
-    assert art["monuments"] is None
+                        "eau", "lignes"}
     assert len(art["houppiers"]) == 1
     charge = json.dumps(art)
     assert '"values"' not in charge and '"exg"' not in charge
