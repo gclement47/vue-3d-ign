@@ -37,13 +37,20 @@ Deux règles, mesurées sur l'abbaye du Mont-Saint-Michel :
   flèche, qui ne recouvrent rien.
 """
 
+import functools
+import gzip
+import json
+import logging
 import math
+import os
 import time
 
 import numpy as np
 import requests
 import shapely
 from shapely.geometry import Polygon, shape
+
+journal = logging.getLogger(__name__)
 
 # Instances publiques d'Overpass, essayées dans l'ordre : l'instance
 # principale a rendu un 504 et une page d'erreur HTML pendant le développement,
@@ -56,6 +63,14 @@ OVERPASS_URLS = [
 OVERPASS_TOURS = 2
 OVERPASS_ATTENTE_S = 3
 OVERPASS_TIMEOUT_S = 90
+# Réponses Overpass des lieux d'exemple du README, embarquées dans le dépôt
+# (outils/extraire_monuments_exemples.py, licence ODbL). Mesuré le 2026-09-28
+# sur les trois instances : de 0,6 s à plus de 100 s pour la même requête,
+# avec des 504, et autant pour une emprise sans aucune partie. Les exemples,
+# première impression du projet, n'attendent donc pas Overpass et n'échouent
+# jamais à cause de lui.
+EXTRAIT_EXEMPLES = os.path.join(os.path.dirname(__file__), "donnees",
+                                "monuments_exemples.json.gz")
 
 # Formes de toit OSM rendues par la vue. Les formes proches sont rabattues sur
 # elles ; les autres (dome, skillion…) restent un sommet plat, comme une partie
@@ -89,14 +104,38 @@ def _requete(west, south, east, north):
     )
 
 
-def fetch_monuments(west, south, east, north):
+def cle_emprise(west, south, east, north):
+    """Clé d'une emprise dans l'extrait embarqué : au micro-degré."""
+    return ",".join(f"{v:.6f}" for v in (west, south, east, north))
+
+
+@functools.lru_cache(maxsize=1)
+def _extrait():
+    """L'extrait embarqué, lu une fois ; vide s'il n'est pas là."""
+    try:
+        with gzip.open(EXTRAIT_EXEMPLES, "rt", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {"emprises": {}}
+
+
+def fetch_monuments(west, south, east, north, extrait=True):
     """Réponse Overpass brute des `building:part` de l'emprise.
+
+    Pour un lieu d'exemple du README, la réponse est lue dans l'extrait
+    embarqué (extrait=False l'ignore : c'est ainsi qu'on le rafraîchit).
 
     Raises:
         requests.RequestException si toutes les instances ont échoué : la
         scène ne doit pas se figer sans ses monuments (elle est complète ou
         n'existe pas), l'appelant réessaiera.
     """
+    if extrait:
+        local = _extrait()["emprises"].get(cle_emprise(west, south, east, north))
+        if local is not None:
+            journal.info("Monuments OSM : extrait embarqué du %s pour %s",
+                         _extrait().get("date"), local["lieu"])
+            return {"elements": local["elements"]}
     dernier = None
     for tour in range(OVERPASS_TOURS):
         for url in OVERPASS_URLS:

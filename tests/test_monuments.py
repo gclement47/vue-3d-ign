@@ -124,3 +124,53 @@ def test_le_batiment_couvert_est_remplace_le_voisin_non():
     bats = {"features": [_bat("SOUS", sous, hauteur=10), _bat("LOIN", loin, hauteur=10)]}
     m = monuments_pour_emprise(*EMPRISE, brut, bats)
     assert m["remplaces"] == ["SOUS"]
+
+
+# --- Extrait embarqué des lieux d'exemple ---------------------------------
+
+def _lieux_du_readme():
+    import re
+    from pathlib import Path
+    from vue3d.scene import point_normalise
+    texte = (Path(__file__).resolve().parent.parent / "README.md").read_text(encoding="utf-8")
+    return {point_normalise(float(a), float(b))
+            for a, b in re.findall(r"localhost:8080/\?lat=(-?[\d.]+)&lon=(-?[\d.]+)", texte)}
+
+
+def test_chaque_lieu_d_exemple_du_readme_est_dans_l_extrait():
+    """Un exemple ajouté au README sans relancer l'outil se voit ici."""
+    from vue3d.monuments import _extrait, cle_emprise
+    from vue3d.scene import emprise
+    lieux = _lieux_du_readme()
+    assert len(lieux) >= 10
+    manquants = sorted(l for l in lieux if cle_emprise(*emprise(*l)) not in _extrait()["emprises"])
+    assert not manquants, f"relancer outils/extraire_monuments_exemples.py : {manquants}"
+
+
+def test_un_lieu_d_exemple_n_attend_pas_overpass(monkeypatch):
+    """Le Mont-Saint-Michel a ses parties sans une seule requête."""
+    from vue3d import monuments
+    from vue3d.scene import emprise, point_normalise
+
+    def interdit(*a, **k):
+        raise AssertionError("Overpass interrogé pour un lieu d'exemple")
+
+    monkeypatch.setattr(monuments.requests, "post", interdit)
+    bbox = emprise(*point_normalise(48.6360, -1.5114))
+    m = monuments.monuments_pour_emprise(*bbox, monuments.fetch_monuments(*bbox), {"features": []})
+    assert m and m["parties"]
+
+
+def test_ailleurs_overpass_reste_interroge(monkeypatch):
+    from vue3d import monuments
+    appels = []
+
+    class Reponse:
+        ok, status_code = True, 200
+
+        def json(self):
+            return {"elements": []}
+
+    monkeypatch.setattr(monuments.requests, "post", lambda *a, **k: appels.append(a) or Reponse())
+    assert monuments.fetch_monuments(2.0, 47.0, 2.0032, 47.0032) == {"elements": []}
+    assert len(appels) == 1

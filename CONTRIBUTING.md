@@ -118,7 +118,7 @@ anneau de relief grossier s'étend au-delà, sur 2 km de côté.
 | `relief.py` | Relief RGE ALTI et anneau | Quantifié au décimètre ; le service rend −99999 hors couverture |
 | `eau.py` | Étendues et cours d'eau | Découpés sur l'emprise ; les axes « fictifs » des rivières larges sont écartés |
 | `lignes.py` | Lignes à haute tension | Hauteur des pylônes BD TOPO, à défaut médiane par tension |
-| `monuments.py` | Parties de monuments OSM | Seule source hors IGN ; règle de remplacement aux deux tiers, enveloppes |
+| `monuments.py` | Parties de monuments OSM | Seule source hors IGN, et la plus lente ; extrait embarqué pour les lieux d'exemple ; règle de remplacement aux deux tiers, enveloppes |
 | `static/index.html` | La page entière | HTML, CSS et JavaScript dans un seul fichier, three.js r160 |
 
 Chaque module commence par une docstring qui dit **pourquoi** il est fait
@@ -321,6 +321,16 @@ le contenu des scènes, incrémentez `SCENE_VERSION`.
   d'`outils/prototype_brep.py` montre les volumes du prototype, pas ceux de
   `pans.py` : elle sert à comparer, pas à valider.
 
+### Ajouter un lieu d'exemple
+
+Ajoutez la ligne au tableau « Lieux à essayer » du README, puis relancez
+`python outils/extraire_monuments_exemples.py`. L'outil relit les liens du
+README et embarque la réponse Overpass de chaque lieu dans
+`vue3d/donnees/monuments_exemples.json.gz` : la scène d'un exemple n'attend
+jamais OpenStreetMap, dont les réponses vont de 0,6 s à plus de 100 s. Un
+test échoue tant que l'extrait ne couvre pas tous les liens du README. Lancé
+sans nouvel exemple, l'outil rafraîchit l'extrait et sa date.
+
 ### Modifier la page
 
 Pas de build : rechargez la page. Pour une fonction géométrique, extrayez-la et
@@ -363,6 +373,7 @@ direct. Ils écrivent leurs sorties dans `cache/mesures/`, ignoré par git.
 | `prototype_plans.py` | Couverture de la segmentation en plans selon les tolérances |
 | `prototype_brep.py` | Étanchéité des volumes, avec export OBJ et visionneuse 3D |
 | `mesure_redressement.py` | Part du terrain dans les défauts des surfaces de toit |
+| `extraire_monuments_exemples.py` | Pas une mesure : fabrique l'extrait OSM embarqué des lieux d'exemple |
 
 Les scripts de prototype figent en en-tête les résultats obtenus lors de leur
 écriture : relancez-les pour comparer, sans vous étonner d'écarts dus aux mises
@@ -418,6 +429,12 @@ Des chantiers mesurés, prêts à être repris :
 - **Temps de construction.** Mesuré à Rocamadour par le suivi d'avancement :
   35 s en tout, dont 12 s pour les houppiers, 8 s pour les toitures et 4 s pour
   les monuments OSM. Les houppiers sont la première piste.
+- **Monuments OSM hors des lieux d'exemple.** Ailleurs, Overpass reste
+  interrogé en direct : de 0,6 s à plus de 100 s, et un échec de ses trois
+  instances fait échouer toute la scène. Deux voies mesurées : le lancer en
+  parallèle des lectures IGN, dont il est indépendant, ou embarquer un extrait
+  France entier (134 446 `building:part` au 27 septembre 2026, 10 à 20 Mo
+  compressé), publié en fichier de release plutôt que dans l'historique git.
 - **Bâtiments sous les arbres.** La règle est sévère dans les tissus denses et
   arborés, où l'orthophoto décale les feuillages sur les emprises voisines.
 - **Couverture LiDAR HD.** Environ 77 % des bâtiments tirés au hasard sont

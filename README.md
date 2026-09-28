@@ -247,4 +247,6 @@ node outils/essai-navigateur.mjs "http://localhost:8080/?lat=43.9116&lon=5.2003"
 
 Code sous licence [MIT](LICENSE). Les données affichées appartiennent à l'IGN et
 sont diffusées sous Licence Ouverte Etalab 2.0 ; les parties de monuments
-viennent d'OpenStreetMap (© contributeurs OSM, ODbL).
+viennent d'OpenStreetMap (© contributeurs OSM, ODbL). Le dépôt embarque un
+extrait OpenStreetMap pour les lieux d'exemple ci-dessus, sous ODbL et non sous
+MIT : voir [vue3d/donnees/LICENCE.md](vue3d/donnees/LICENCE.md).
