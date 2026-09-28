@@ -70,8 +70,8 @@ Chaque premier chargement construit la scène, en 20 à 40 secondes.
   là où il manque le LiDAR de plus de 0,7 m — moitié surélevée, faîtage
   décentré, îlot autour d'une cour — par des **pans** : quelques plans ajustés
   au LiDAR, faîtages nets, fermés par leurs murs. Un toit qui n'est pas fait de
-  plans garde la surface même du LiDAR, plus granuleuse. Le bouton est éteint
-  au départ.
+  plans garde la surface même du LiDAR, plus granuleuse. Le bouton est allumé
+  au départ ; éteint, tous les toits reprennent leur forme résumée.
 - **Le bâtiment visé**, qui contient le point ou, à défaut, le plus proche à
   moins de 25 m, est en orange et sa fiche s'ouvre d'elle-même : BD TOPO,
   mesures LiDAR, distance au point, forme du toit dessiné. Un clic sur un autre

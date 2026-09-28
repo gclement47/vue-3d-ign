@@ -107,7 +107,7 @@
             <h2>Affichage</h2>
             <div class="toggles">
                 <button class="toggle on" id="t-roof">Toits en pente</button>
-                <button class="toggle" id="t-mesure" title="Surface du LiDAR là où le toit résumé s'en écarte de plus de 0,7 m">Toits mesurés</button>
+                <button class="toggle on" id="t-mesure" title="Pans mesurés au LiDAR là où le toit résumé s'en écarte de plus de 0,7 m">Toits mesurés</button>
                 <button class="toggle on" id="t-monuments" hidden title="Parties de bâtiments modélisées dans OpenStreetMap (building:part)">Monuments OSM</button>
                 <button class="toggle on" id="t-orbit">Orbite</button>
                 <button class="toggle on" id="t-fond">Photo aérienne</button>
@@ -3466,9 +3466,11 @@ btnRoof.addEventListener('click', () => {
     construire(features, toitsEnPente);
 });
 
-// Éteint au départ : la surface est fidèle mais granuleuse, le toit résumé
-// plus lisible. Allumé, il ne touche que les toits que le résumé manque.
-let toitsMesures = false;
+// Allumé au départ depuis les toits en pans : ils sont aussi nets que le toit
+// résumé et plus justes, là où il s'écarte du LiDAR. Il ne touche que ces
+// toits-là ; seule la surface de repli, sur un toit qui n'est pas fait de
+// plans, garde le grain du LiDAR.
+let toitsMesures = true;
 const btnMesure = document.getElementById('t-mesure');
 btnMesure.addEventListener('click', () => {
     toitsMesures = !toitsMesures;
