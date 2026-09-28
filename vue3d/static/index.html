@@ -241,6 +241,16 @@ const lireCoord = n => { const v = Number(String(PARAMS.get(n) || '').replace(',
 const LAT0 = lireCoord('lat') ?? POINT_DEFAUT.lat;
 const LON0 = lireCoord('lon') ?? POINT_DEFAUT.lon;
 const CENTER = [LON0, LAT0];
+// Page rechargée par « Ma position » pour se recentrer (moi=1) : le suivi
+// reprend de lui-même, sans nouveau recentrage automatique — pas de boucle si
+// un relevé tombe encore hors de la scène. Le drapeau est retiré de l'URL :
+// un lien partagé ne doit pas géolocaliser celui qui l'ouvre.
+const RELANCE_MOI = PARAMS.get('moi') === '1';
+if (RELANCE_MOI) {
+    const u = new URL(location.href);
+    u.searchParams.delete('moi');
+    history.replaceState(null, '', u.pathname + u.search + u.hash);
+}
 const REQUETE = `lat=${LAT0}&lon=${LON0}`;
 const URL_VUE3D = `api/scene?${REQUETE}`;
 const URL_VUE3D_ORTHO = `api/ortho?${REQUETE}`;
@@ -1454,9 +1464,21 @@ chargerScene()
         document.getElementById('sec-veg').hidden = false;
     });
 
-// Au-delà de cette distance du point, « Ma position » propose de recentrer :
-// la scène ne couvre que quelques centaines de mètres autour de lui.
-const RAYON_CADRAGE = 500;
+// Emprise chargée autour du point : celle de la scène une fois arrivée, sinon
+// la règle du serveur (scene.SCENE_DELTA, en degrés dans les deux sens :
+// ±178 m nord-sud, ±115 à 130 m est-ouest selon la latitude). Hors d'elle,
+// ni bâtiments, ni orthophoto, ni végétation. « Ma position » proposait de
+// recentrer au-delà de 500 m seulement : entre 130 et 500 m du point, le
+// repère flottait sur le relief nu sans que rien ne le dise.
+const DEMI_EMPRISE_DEG = 0.0016;
+
+/** Distance en mètres d'un point à l'emprise chargée ; 0 à l'intérieur. */
+function distanceAEmprise(lon, lat) {
+    const [o, s, e, n] = (ARTEFACT && ARTEFACT.bbox) || [LON0 - DEMI_EMPRISE_DEG, LAT0 - DEMI_EMPRISE_DEG,
+                                                         LON0 + DEMI_EMPRISE_DEG, LAT0 + DEMI_EMPRISE_DEG];
+    return Math.hypot(Math.max(o - lon, 0, lon - e) * M_PAR_DEGRE_LON,
+                      Math.max(s - lat, 0, lat - n) * M_PAR_DEGRE_LAT);
+}
 
 function cadrer() {
     const centre = new THREE.Vector3(0, ySol(CENTER[0], CENTER[1]), 0);
@@ -2707,16 +2729,13 @@ function majPosition(coords) {
     document.getElementById('m-dist').textContent = dist >= 1000
         ? (dist / 1000).toFixed(1) + ' km' : Math.round(dist) + ' m';
     const note = document.getElementById('m-note');
-    if (dist > RAYON_CADRAGE) {
+    if (distanceAEmprise(moi.lon, moi.lat) > 0) {
         // Toutes les couches dérivent du centre calculé côté serveur : le seul
         // moyen de voir les environs est de recharger la page recentrée ici.
-        const u = new URL(location.href);
-        u.searchParams.set('lat', moi.lat.toFixed(6));
-        u.searchParams.set('lon', moi.lon.toFixed(6));
-        note.innerHTML = "Vous êtes loin du point : bâtiments, orthophoto et "
-            + "végétation ne sont chargés qu'autour de celui-ci, le repère est posé "
+        note.innerHTML = "Vous êtes hors de la scène chargée : bâtiments, orthophoto "
+            + "et végétation ne sont chargés qu'autour du point, le repère est posé "
             + "sur un sol vide.<br>"
-            + '<a class="lien-ext" href="' + u.pathname + u.search + '">'
+            + '<a class="lien-ext" href="' + urlRecentree() + '">'
             + 'Recentrer la scène ici ↗</a>';
     } else if (moi.precision > 30) {
         note.textContent = "Position peu précise (" + Math.round(moi.precision)
@@ -2725,6 +2744,15 @@ function majPosition(coords) {
     } else {
         note.textContent = "Position suivie en continu. Éteindre le bouton pour arrêter.";
     }
+}
+
+/** La page recentrée sur la position, avec le suivi à relancer (moi=1). */
+function urlRecentree() {
+    const u = new URL(location.href);
+    u.searchParams.set('lat', moi.lat.toFixed(6));
+    u.searchParams.set('lon', moi.lon.toFixed(6));
+    u.searchParams.set('moi', '1');
+    return u.pathname + u.search;
 }
 
 /** Cadre la caméra sur le repère, avec le même recul que le cadrage initial. */
@@ -2746,17 +2774,20 @@ const btnMoi = document.getElementById('t-moi');
 let suiviPosition = null;   // identifiant du watchPosition en cours
 
 btnMoi.addEventListener('click', () => {
-    const note = document.getElementById('m-note');
-    document.getElementById('sec-moi').hidden = false;
-
-    if (suiviPosition !== null) {
-        navigator.geolocation.clearWatch(suiviPosition);
-        suiviPosition = null;
-        groupePosition.visible = false;
-        btnMoi.classList.remove('on');
-        note.textContent = "Suivi arrêté.";
+    if (suiviPosition === null) {
+        demarrerSuivi();
         return;
     }
+    navigator.geolocation.clearWatch(suiviPosition);
+    suiviPosition = null;
+    groupePosition.visible = false;
+    btnMoi.classList.remove('on');
+    document.getElementById('m-note').textContent = "Suivi arrêté.";
+});
+
+function demarrerSuivi() {
+    const note = document.getElementById('m-note');
+    document.getElementById('sec-moi').hidden = false;
     if (!navigator.geolocation) {
         note.textContent = "Ce navigateur ne propose pas de géolocalisation.";
         return;
@@ -2777,6 +2808,15 @@ btnMoi.addEventListener('click', () => {
             groupePosition.visible = true;
             if (premiere) {
                 premiere = false;
+                // Premier relevé hors de la scène, cercle de précision compris :
+                // la page se recentre sur soi, une seule fois. Pas à chaque
+                // relevé — on bouge en marchant, et chaque recentrage relance
+                // une construction de 20 à 40 s.
+                if (!RELANCE_MOI && distanceAEmprise(moi.lon, moi.lat) > (moi.precision || 0)) {
+                    note.textContent = "Hors de la scène : recentrage sur votre position…";
+                    location.assign(urlRecentree());
+                    return;
+                }
                 cadrerSurMoi();
                 btnMoi.disabled = false;
                 btnMoi.classList.add('on');
@@ -2793,7 +2833,11 @@ btnMoi.addEventListener('click', () => {
         // rabat de lui-même sur le Wi-Fi. maximumAge évite de payer un premier
         // fix complet si une position toute fraîche est déjà connue.
         { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 });
-});
+}
+
+// Page rechargée par un recentrage : le suivi reprend une fois la scène
+// arrivée — son cadrage tombe alors sur la position, centre de la page.
+if (RELANCE_MOI) chargementArtefact.then(demarrerSuivi);
 
 // --- Textures procédurales ------------------------------------------------
 // Générées en DataTexture et non sur un canvas : le tableau de pixels se
