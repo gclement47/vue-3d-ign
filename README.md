@@ -225,6 +225,9 @@ Codes d'erreur : 400 sans coordonnées valides, 422 hors de France métropolitai
 
 ## Développer
 
+Pour contribuer — architecture, format de la scène, invariants, méthode de
+mesure, recettes et glossaire — voir le [guide du contributeur](CONTRIBUTING.md).
+
 ```bash
 python3.12 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt pytest
