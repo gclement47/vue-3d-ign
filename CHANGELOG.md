@@ -11,6 +11,30 @@ Les plus récents en premier. Les chiffres cités sont ceux mesurés au moment d
 changement, sur des lieux publics ; le détail et la méthode sont dans les
 messages de commit et dans les commentaires des modules.
 
+## Scène v13 — 30 septembre 2026
+
+### Corrigé
+
+- **Le château de Chambord n'est plus réduit à ses terrasses.** Son donjon et
+  ses tours, un tiers de l'emprise, étaient pris pour « un arbre au-dessus du
+  toit » et écartés. Là où l'orthophoto ne voit pas de vert, ce niveau haut
+  est le bâtiment : il reçoit sa forme mesurée au LiDAR. 26 bâtiments sur
+  1 516 y gagnent, dont un immeuble d'Annecy de 22,5 m dessiné à 3,7 m.
+- **Un toit résumé ne dépasse plus de son bâtiment.** Posé sur sa boîte
+  entière, il débordait de 31 % de l'emprise en médiane (391 toits, huit
+  lieux) : vu du ciel, un rectangle de photo aérienne plus grand que la
+  maison. Il est découpé sur l'emprise, pignons compris — une tour ronde
+  d'OpenStreetMap porte un toit rond.
+- **Les toits plats portent la photo aérienne**, comme ce que les corps de
+  toit laissent à découvert, au lieu de la couleur des murs.
+- Les marches d'une surface mesurée prennent la teinte du toit, plus celle
+  des murs : les tours coniques ne se mouchettent plus d'orange.
+
+### Ajouté
+
+- `outils/verifier-geometrie.mjs` : exécute sous Node les fonctions
+  géométriques de la page et vérifie orientation, fermeture et volumes.
+
 ## Scène v12 — 30 septembre 2026
 
 ### Corrigé

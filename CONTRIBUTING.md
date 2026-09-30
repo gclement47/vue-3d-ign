@@ -127,7 +127,7 @@ anneau de relief grossier s'étend au-delà, sur 2 km de côté.
 | `couches.py` | Lecture des couches WFS | Le serveur renvoie parfois une erreur Java avec un code 200 : c'est le contenu qui tranche |
 | `mnh.py` | Grille des hauteurs (MNH) et terrain | GetMap au format BIL float32 ; repli MNS − MNT hors LiDAR HD ; `fetch_sol_grid` pour le terrain sous les toits |
 | `ortho.py` | Indice de verdure, mosaïque d'orthophoto | Grille ExG alignée cellule pour cellule sur le MNH |
-| `toits.py` | Profil de chaque toit | Gouttière, faîtage, corps de toit, bâtiments sous les arbres, choix entre toit résumé, pans et surface |
+| `toits.py` | Profil de chaque toit | Gouttière, faîtage, corps de toit, bâtiments sous les arbres ou à deux niveaux, choix entre toit résumé, pans et surface |
 | `pans.py` | Toits en pans | Plans ajustés au MNH, volume fermé vérifié, refusé sinon |
 | `houppiers.py` | Arbres, un par un | Bassins de la grille lissée descendus depuis les sommets ; profil radial de chaque arbre ; hors forêt, rien au-dessus de 40 m |
 | `constructions.py` | Réservoirs et constructions ponctuelles | Hauteur BD TOPO, à défaut LiDAR ; rend aussi le masque qui les retire du sursol des houppiers, jamais embarqué |
@@ -171,6 +171,9 @@ trouver :
 - `rebaserBatiments()` pose les bâtiments sur le relief.
 - `geometriesSurface` et `geometriesPans` fabriquent les deux formes de toit
   mesurées.
+- `geometrieToitDecoupe` fabrique le toit résumé — deux pans, pyramide, corps
+  de toit — découpé sur l'emprise, pignons compris ; `poserDessus` donne la
+  photo aérienne à un toit plat.
 - `cadrer()` place la caméra sur le point.
 
 Deux conventions de repère à connaître avant de toucher à la géométrie. En
@@ -219,7 +222,9 @@ la changer ne reconstruit aucune scène.
 Le profil d'un toit (`toits.toits[cleabs]`) porte `gouttiere`, `faitage`,
 `denivele`, `fiable`, `axe_deg`, éventuellement `corps` (un toit par corps pour
 les maisons en ailes), `hauteur_inconnue` et `sous_couvert` pour les bâtiments
-sous les arbres, `ecart_resume` (écart en mètres entre le toit résumé et le
+sous les arbres, `mode_bas` pour un toit lu sous un arbre qui le couvre en
+partie, `deux_niveaux` quand ce niveau haut n'est pas un arbre mais le
+bâtiment, `ecart_resume` (écart en mètres entre le toit résumé et le
 LiDAR), et au plus l'une des deux formes mesurées :
 
 - **`pans`** : `sommets` en triplets d'entiers (dixièmes de maille depuis la
@@ -234,7 +239,7 @@ LiDAR), et au plus l'une des deux formes mesurées :
 **Toute modification du format impose d'incrémenter `SCENE_VERSION`** dans
 `scene.py`, avec une ligne de commentaire qui dit ce qui a changé, et une
 entrée dans le [journal des changements](CHANGELOG.md). Le numéro
-fait partie du chemin du cache (`cache/v12/…`) : l'incrémenter invalide toutes
+fait partie du chemin du cache (`cache/v13/…`) : l'incrémenter invalide toutes
 les scènes d'un coup.
 
 ## Les invariants : ce qu'il ne faut jamais défaire
@@ -391,7 +396,8 @@ sans nouvel exemple, l'outil rafraîchit l'extrait et sa date.
 ### Modifier la page
 
 Pas de build : rechargez la page. Pour une fonction géométrique, extrayez-la et
-exécutez-la sous Node avant de regarder le rendu. Finissez toujours par
+exécutez-la sous Node avant de regarder le rendu : `outils/verifier-geometrie.mjs`
+le fait pour le toit découpé et les ouvrages, ajoutez-y la vôtre. Finissez toujours par
 `outils/essai-navigateur.mjs`, qui échoue à la moindre erreur JavaScript ou
 requête en échec.
 
@@ -431,6 +437,7 @@ direct. Ils écrivent leurs sorties dans `cache/mesures/`, ignoré par git.
 | Outil | Ce qu'il mesure |
 |---|---|
 | `essai-navigateur.mjs` | Charge un lieu dans Chrome, clique le bâtiment visé, change de saison, relève toute erreur |
+| `verifier-geometrie.mjs` | Pas une mesure : exécute sous Node les fonctions géométriques de la page (toit découpé, murs, tabliers) et vérifie orientation, fermeture et volumes ; demande `npm install three@0.160.0` |
 | `mesure_pans.py` | Toits en pans sur des lieux réels, par le vrai chemin de la scène |
 | `mesure_constructions.py` | Réservoirs, constructions ponctuelles et ouvrages sur des lieux réels : hauteurs, effet du masque sur les houppiers, masses expliquées |
 | `prototype_plans.py` | Couverture de la segmentation en plans selon les tolérances |
@@ -447,8 +454,8 @@ Les scripts de prototype figent en en-tête les résultats obtenus lors de leur
 - **Le cache** est dans `VUE3D_CACHE`, rangé en
   `v{SCENE_VERSION}/{lat}_{lon}/scene.json.gz` et `ortho.jpg`. Supprimez le
   dossier d'un lieu pour le reconstruire seul.
-- **Lire une scène** (12 est la `SCENE_VERSION` actuelle) :
-  `gunzip -c cache/v12/43.9116_5.2003/scene.json.gz | python -m json.tool | less`.
+- **Lire une scène** (13 est la `SCENE_VERSION` actuelle) :
+  `gunzip -c cache/v13/43.9116_5.2003/scene.json.gz | python -m json.tool | less`.
   Les couches à part sont à côté : `monuments.json.gz`, `ouvrages-v1.json.gz`.
   Supprimer l'un de ces fichiers refait la seule couche.
 - **Suivre une construction** : `curl 'localhost:8080/api/avancement?lat=…&lon=…'`

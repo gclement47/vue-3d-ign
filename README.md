@@ -74,7 +74,7 @@ des scènes construites en septembre 2026 ; ils suivent les mises à jour de l'I
 | [Cité de Carcassonne](http://localhost:8080/?lat=43.2065&lon=2.3640) | 30 murs de rempart, de 3 à 25 m, et 291 bâtiments serrés sur 44 m de relief |
 | [Notre-Dame de Paris](http://localhost:8080/?lat=48.8530&lon=2.3499) | L'île de la Cité et 807 arbres des quais et des squares, la cathédrale reprise à OpenStreetMap ; ni arbre dans la Seine, ni grue de chantier prise pour un arbre de 88 m |
 | [Cathédrale de Strasbourg](http://localhost:8080/?lat=48.5819&lon=7.7510) | Tissu médiéval en plaine : toits LiDAR à plusieurs corps, et la cathédrale reprise à OpenStreetMap |
-| [Château de Chambord](http://localhost:8080/?lat=47.6162&lon=1.5171) | Le château isolé dans son domaine boisé : 475 houppiers |
+| [Château de Chambord](http://localhost:8080/?lat=47.6162&lon=1.5171) | Le château isolé dans son domaine boisé : donjon et tours mesurés au LiDAR au-dessus des terrasses, enceinte sous sa photo aérienne, 475 houppiers |
 | [Pont du Gard](http://localhost:8080/?lat=43.9475&lon=4.5350) | Deux ponts réduits à leur tablier, faute d'arches dans la BD TOPO : l'aqueduc à 48 m du Gardon, le pont routier à 21 m |
 | [Raffinerie de Feyzin, parc de stockage](http://localhost:8080/?lat=45.6734&lon=4.8409) | 30 citernes à leur hauteur BD TOPO, dont 14 que le LiDAR ne voit pas ; hors du sursol, elles ne se couvrent plus de faux arbres (82 houppiers et masses, contre 545) |
 
@@ -93,7 +93,9 @@ Chaque premier chargement construit la scène, en 20 à 40 secondes.
   au départ ; éteint, tous les toits reprennent leur forme résumée. Les cours
   intérieures restent ouvertes, et un bâtiment plus grand que la scène — le
   château de Versailles, 410 m de long — est coupé à son bord et mesuré comme
-  les autres ; sa fiche le dit.
+  les autres ; sa fiche le dit. Un toit ne dépasse jamais de son bâtiment, et
+  un toit plat porte la photo aérienne : vue du ciel, la scène se lit comme
+  l'orthophoto.
 - **Le bâtiment visé**, qui contient le point ou, à défaut, le plus proche à
   moins de 25 m, est en orange et sa fiche s'ouvre d'elle-même : BD TOPO,
   mesures LiDAR, distance au point, forme du toit dessiné. Un clic sur un autre
@@ -202,9 +204,23 @@ principales :
   de l'emprise érodée, plutôt que le minimum et le maximum : un arbre qui
   surplombe gonfle le maximum (16 m lus sur une maison de 4 m). La mesure est
   rejetée si le haut du profil n'est pas un toit, et une toiture à moitié sous
-  un arbre est relue dans le mode bas de son profil. Les altitudes de toit BD
+  un arbre est relue dans le mode bas de son profil. Mais là où l'orthophoto
+  ne voit pas de vert, ce « mode haut » n'est pas un arbre : c'est le bâtiment,
+  sur deux niveaux — le donjon et les tours de Chambord au-dessus de ses
+  terrasses, un immeuble au-dessus de sa cour. Il reçoit alors sa forme
+  mesurée : 26 bâtiments sur les 50 concernés, parmi 1 516 sur dix lieux. Les altitudes de toit BD
   TOPO manquent sur près d'un tiers des bâtiments d'un site mesuré, et sont
   bruitées dans les deux sens ailleurs.
+- **Un toit résumé reste sur son bâtiment.** Deux pans ou une pyramide se
+  posent sur une boîte orientée selon le faîtage ; or la boîte d'une maison en
+  L, d'un faîtage mesuré en biais ou d'une aile courbe déborde de l'emprise.
+  Sur 391 toits résumés de huit lieux, le débord vaut 31 % de l'emprise en
+  médiane, plus que l'emprise elle-même une fois sur dix : vu du ciel, un
+  rectangle de photo aérienne plus grand que la maison, pelouse comprise. Le
+  toit est donc découpé sur l'emprise, pignons compris, et ce que les corps
+  de toit laissent à découvert — comme tout toit plat — reçoit la photo
+  aérienne au lieu de la couleur des murs. Géométrie vérifiée en exécutant le
+  code de la page : `node outils/verifier-geometrie.mjs`.
 - **Bâtiments sous les arbres.** Le LiDAR y lit la canopée : une annexe de
   12 m² sous les feuillages lisait un toit plat à 12 m qui passait tous les tests
   de forme. L'orthophoto tranche : au-delà d'un tiers de l'emprise verte, la
