@@ -129,10 +129,10 @@ anneau de relief grossier s'étend au-delà, sur 2 km de côté.
 | `ortho.py` | Indice de verdure, mosaïque d'orthophoto | Grille ExG alignée cellule pour cellule sur le MNH |
 | `toits.py` | Profil de chaque toit | Gouttière, faîtage, corps de toit, bâtiments sous les arbres, choix entre toit résumé, pans et surface |
 | `pans.py` | Toits en pans | Plans ajustés au MNH, volume fermé vérifié, refusé sinon |
-| `houppiers.py` | Arbres, un par un | Bassins de la grille lissée descendus depuis les sommets ; profil radial de chaque arbre |
+| `houppiers.py` | Arbres, un par un | Bassins de la grille lissée descendus depuis les sommets ; profil radial de chaque arbre ; hors forêt, rien au-dessus de 40 m |
 | `constructions.py` | Réservoirs et constructions ponctuelles | Hauteur BD TOPO, à défaut LiDAR ; rend aussi le masque qui les retire du sursol des houppiers, jamais embarqué |
 | `relief.py` | Relief RGE ALTI et anneau | Quantifié au décimètre ; le service rend −99999 hors couverture ; `echantillonneur` le relit côté serveur comme la page |
-| `eau.py` | Étendues et cours d'eau | Découpés sur l'emprise ; les axes « fictifs » des rivières larges sont écartés |
+| `eau.py` | Étendues et cours d'eau | Découpés sur l'emprise ; les axes « fictifs » des rivières larges sont écartés ; `masque_eau` retire l'eau du sursol des houppiers |
 | `lignes.py` | Lignes à haute tension | Hauteur des pylônes BD TOPO, à défaut médiane par tension |
 | `monuments.py` | Parties de monuments OSM | Seule source hors IGN, et la plus lente ; extrait embarqué pour les lieux d'exemple ; règle de remplacement aux deux tiers, enveloppes |
 | `ouvrages.py` | Murs, ponts, voies ferrées, terrains de sport | Couche à part, versionnée par `OUVRAGES_VERSION` ; hauteur d'un mur ou d'un pont = altitude de ses sommets − relief de la scène |
@@ -232,8 +232,9 @@ LiDAR), et au plus l'une des deux formes mesurées :
   hauteurs elles-mêmes).
 
 **Toute modification du format impose d'incrémenter `SCENE_VERSION`** dans
-`scene.py`, avec une ligne de commentaire qui dit ce qui a changé. Le numéro
-fait partie du chemin du cache (`cache/v11/…`) : l'incrémenter invalide toutes
+`scene.py`, avec une ligne de commentaire qui dit ce qui a changé, et une
+entrée dans le [journal des changements](CHANGELOG.md). Le numéro
+fait partie du chemin du cache (`cache/v12/…`) : l'incrémenter invalide toutes
 les scènes d'un coup.
 
 ## Les invariants : ce qu'il ne faut jamais défaire
@@ -446,8 +447,8 @@ Les scripts de prototype figent en en-tête les résultats obtenus lors de leur
 - **Le cache** est dans `VUE3D_CACHE`, rangé en
   `v{SCENE_VERSION}/{lat}_{lon}/scene.json.gz` et `ortho.jpg`. Supprimez le
   dossier d'un lieu pour le reconstruire seul.
-- **Lire une scène** (11 est la `SCENE_VERSION` actuelle) :
-  `gunzip -c cache/v11/43.9116_5.2003/scene.json.gz | python -m json.tool | less`.
+- **Lire une scène** (12 est la `SCENE_VERSION` actuelle) :
+  `gunzip -c cache/v12/43.9116_5.2003/scene.json.gz | python -m json.tool | less`.
   Les couches à part sont à côté : `monuments.json.gz`, `ouvrages-v1.json.gz`.
   Supprimer l'un de ces fichiers refait la seule couche.
 - **Suivre une construction** : `curl 'localhost:8080/api/avancement?lat=…&lon=…'`
@@ -476,6 +477,9 @@ Pièges déjà rencontrés, à reconnaître vite :
   explique le pourquoi et donne les mesures. Types en usage : `feat`, `fix`,
   `docs`, `chore` ; portées : `toits`, `page`, `app`, `scene`, `outils`… Pas de
   trailer `Co-Authored-By`.
+- **Journal des changements** : tout changement de `SCENE_VERSION`, et tout
+  changement que voit l'utilisateur, s'inscrit dans `CHANGELOG.md`, sous la
+  version de scène en cours.
 - **Avant de conclure** : toute la suite `pytest`, et l'essai navigateur si la
   page a changé.
 
@@ -513,6 +517,12 @@ Des chantiers mesurés, prêts à être repris :
   sursol, il reste 2 660 houppiers et masses sur quatre parcs de stockage,
   pour l'essentiel des portiques et des tuyaux ; la couche `canalisation` de
   la BD TOPO (327 tronçons autour de douze lieux) n'en donne que l'axe.
+- **Arbres des falaises.** En forêt, où le sursol n'est pas plafonné, le MNH
+  compte la hauteur d'un arbre accroché à une paroi depuis le pied de
+  celle-ci : 7 houppiers de 42 à 60 m à Rocamadour, sur des chênes du causse.
+  Un plafond par essence, ou la pente du terrain sous le houppier, restent à
+  mesurer. Hors forêt, les cellules juste sous le plafond laissent des
+  houppiers de 35 à 40 m au pied des tours (10 à Notre-Dame).
 - **Bâtiments sous les arbres.** La règle est sévère dans les tissus denses et
   arborés, où l'orthophoto décale les feuillages sur les emprises voisines.
 - **Couverture LiDAR HD.** Environ 77 % des bâtiments tirés au hasard sont

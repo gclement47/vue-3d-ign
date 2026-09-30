@@ -93,4 +93,6 @@ fichier statique qui lit le point dans son URL.
 - Les commentaires expliquent le **pourquoi**, mesure à l'appui, pas le quoi.
 - Messages de commit au format `type(portée): résumé`, corps explicatif ; pas de
   trailer `Co-Authored-By`.
+- Tout changement de `SCENE_VERSION`, ou visible de l'utilisateur, s'inscrit
+  dans [CHANGELOG.md](CHANGELOG.md).
 - Toujours lancer toute la suite `pytest` avant de conclure.

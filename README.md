@@ -72,9 +72,9 @@ des scènes construites en septembre 2026 ; ils suivent les mises à jour de l'I
 | [Abbaye du Mont-Saint-Michel](http://localhost:8080/?lat=48.6360&lon=-1.5114) | Le rocher et sa baie. Hors LiDAR HD : l'abbaye est reprise au modèle 3D d'OpenStreetMap, flèche comprise |
 | [Saint-Malo, cathédrale](http://localhost:8080/?lat=48.6495&lon=-2.0256) | Ville close dense (249 toits mesurés) ; la mer laisse un tiers de l'anneau vide |
 | [Cité de Carcassonne](http://localhost:8080/?lat=43.2065&lon=2.3640) | 30 murs de rempart, de 3 à 25 m, et 291 bâtiments serrés sur 44 m de relief |
-| [Notre-Dame de Paris](http://localhost:8080/?lat=48.8530&lon=2.3499) | L'île de la Cité, et 1 172 arbres des quais et des squares |
+| [Notre-Dame de Paris](http://localhost:8080/?lat=48.8530&lon=2.3499) | L'île de la Cité et 807 arbres des quais et des squares, la cathédrale reprise à OpenStreetMap ; ni arbre dans la Seine, ni grue de chantier prise pour un arbre de 88 m |
 | [Cathédrale de Strasbourg](http://localhost:8080/?lat=48.5819&lon=7.7510) | Tissu médiéval en plaine : toits LiDAR à plusieurs corps, et la cathédrale reprise à OpenStreetMap |
-| [Château de Chambord](http://localhost:8080/?lat=47.6162&lon=1.5171) | Le château isolé dans son domaine boisé : 477 houppiers |
+| [Château de Chambord](http://localhost:8080/?lat=47.6162&lon=1.5171) | Le château isolé dans son domaine boisé : 475 houppiers |
 | [Pont du Gard](http://localhost:8080/?lat=43.9475&lon=4.5350) | Deux ponts réduits à leur tablier, faute d'arches dans la BD TOPO : l'aqueduc à 48 m du Gardon, le pont routier à 21 m |
 | [Raffinerie de Feyzin, parc de stockage](http://localhost:8080/?lat=45.6734&lon=4.8409) | 30 citernes à leur hauteur BD TOPO, dont 14 que le LiDAR ne voit pas ; hors du sursol, elles ne se couvrent plus de faux arbres (82 houppiers et masses, contre 545) |
 
@@ -114,7 +114,8 @@ Chaque premier chargement construit la scène, en 20 à 40 secondes.
   d'éclairage. La hauteur est celle de la BD TOPO, à défaut celle que le LiDAR
   mesure ; l'infobulle dit laquelle. Une construction dont ni l'une ni l'autre
   ne donne la hauteur n'est pas dessinée, et un réservoir sans hauteur reste
-  pâle, comme un bâtiment sous les arbres.
+  pâle, comme un bâtiment sous les arbres. Le bouton **Réservoirs, mâts**
+  débraye la couche ; il n'apparaît que si la scène en contient.
 - **Les murs, les ponts, les voies ferrées et les terrains de sport** : les
   remparts de Carcassonne à la hauteur de leurs courtines, les tabliers des
   ponts à leur altitude, les voies ferrées et tramways en rubans de ballast,
@@ -131,7 +132,8 @@ Chaque premier chargement construit la scène, en 20 à 40 secondes.
 - **Les arbres, un par un.** La végétation est segmentée houppier par houppier
   sur le modèle de hauteur à 0,5 m. Chaque arbre garde sa hauteur, son emprise,
   son allongement et son profil mesurés : un pin parasol a un sommet plat, un
-  cyprès une pointe.
+  cyprès une pointe. Rien ne pousse sur l'eau, ni ne dépasse 40 m hors des
+  forêts : ce que le modèle de hauteur y montre n'est pas un arbre.
 - **Le relief**, drapé de la photo aérienne ou du Plan IGN, avec une
   exagération réglable. Autour de la scène, un anneau de relief plus grossier
   s'étend sur 2 km de côté et se perd dans la brume : les coteaux voisins
@@ -214,6 +216,16 @@ principales :
   descendus depuis leurs sommets. Leur emprise au sol est une ellipse d'aire et
   d'allongement mesurés, inscrite à 80 % dans son segment pour laisser voir les
   trouées.
+- **Ni dans l'eau, ni au-dessus de 40 m.** Le modèle de hauteur garde tout ce
+  qui passe au-dessus du sol, et l'orthophoto ne dit que la couleur de ce sol.
+  À Notre-Dame de Paris, les flèches des grues du chantier sortaient en
+  houppiers de 52 à 88 m, plus hauts que les tours : hors des forêts BD TOPO,
+  où les vrais arbres montent à 43 m (sapins des Vosges), rien n'est dessiné
+  au-dessus de 40 m. Et le laser ne revient pas de l'eau : entre deux quais,
+  le modèle lit leur hauteur en pleine rivière, et 438 des 1 175 houppiers de
+  la scène étaient plantés dans la Seine, verte à l'orthophoto. Les étendues
+  d'eau permanentes sortent donc du sursol, à 3 m de la rive pour garder le
+  feuillage qui la surplombe.
 - **Port des arbres.** L'essence BD Forêt ne décrit qu'un massif : quand elle
   dit « mixte », c'est le profil mesuré de l'arbre qui choisit son port — un
   sommet qui se maintient loin du centre est un pin, une cime effilée un
@@ -284,6 +296,11 @@ principales :
   parties sans hauteur (La Merveille, Le Châtelet) reçoivent celle de la BD
   TOPO, et l'infobulle le dit. La couche vient d'Overpass, le seul service
   hors IGN du projet.
+- **Au pied des falaises, des arbres trop hauts.** En forêt, la hauteur d'un
+  arbre accroché à une paroi se compte depuis le pied de celle-ci : 7 houppiers
+  de 42 à 60 m à Rocamadour. Hors forêt, le plafond de 40 m efface aussi ce
+  qui dépasse d'un bâtiment hors de son emprise, comme le toit du Stade de
+  France.
 - **La règle « sous les arbres » est sévère** dans les tissus denses et arborés,
   où l'orthophoto, qui n'est pas une vraie orthophoto, décale les feuillages
   sur les emprises voisines.
@@ -307,6 +324,8 @@ Codes d'erreur : 400 sans coordonnées valides, 422 hors de France métropolitai
 
 Pour contribuer — architecture, format de la scène, invariants, méthode de
 mesure, recettes et glossaire — voir le [guide du contributeur](CONTRIBUTING.md).
+Ce qui a changé d'une version de la scène à l'autre est dans le
+[journal des changements](CHANGELOG.md).
 
 ```bash
 python3.12 -m venv .venv && . .venv/bin/activate
