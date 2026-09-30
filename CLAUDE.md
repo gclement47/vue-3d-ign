@@ -13,6 +13,8 @@ pip install -r requirements.txt pytest          # dépendances
 pytest                                           # tests Python (réseau jamais appelé)
 VUE3D_CACHE=./cache flask --app vue3d.app run --port 8080   # serveur local
 docker compose up -d --build                     # conteneur, port 8080 (VUE3D_PORT)
+VUE3D_VEHICULES=rtmdet docker compose up -d --build   # avec la couche des véhicules (aucun | rtmdet | yolo | tous)
+node outils/verifier-geometrie.mjs               # géométrie de la page, exécutée sous Node
 npm install puppeteer-core && node outils/essai-navigateur.mjs "http://localhost:8080/?lat=43.9116&lon=5.2003"
 ```
 
@@ -20,7 +22,7 @@ npm install puppeteer-core && node outils/essai-navigateur.mjs "http://localhost
 
 ```
 vue3d/
-  app.py        Flask : /, /api/scene, /api/ortho, /api/monuments, /api/ouvrages, /api/avancement, /api/sante
+  app.py        Flask : /, /api/scene, /api/ortho, /api/monuments, /api/ouvrages, /api/vehicules, /api/avancement, /api/sante
   scene.py      assemblage d'une scène, cache disque par point arrondi
   couches.py    lecture WFS (bâtiments, végétation, BD Forêt, routes)
   batiments.py  bâtiments découpés sur l'emprise, en retrait du bord
@@ -35,12 +37,20 @@ vue3d/
   lignes.py     lignes à haute tension et hauteur de leurs supports
   monuments.py  parties de monuments OSM (building:part), seule source hors IGN
   ouvrages.py   murs, ponts, voies ferrées, terrains de sport : couche à part, chargée après la scène
+  vehicules.py  véhicules lus sur l'orthophoto par un réseau ONNX : couche à part, optionnelle (VUE3D_VEHICULES)
   geopf.py      GET avec reprise sur la Géoplateforme
   static/index.html   la page entière : HTML, CSS et JavaScript (three.js r160)
 ```
 
 Pas de base de données, pas de clé d'API, pas de build front : la page est un
 fichier statique qui lit le point dans son URL.
+
+La couche des véhicules est la seule dépendance optionnelle : sans
+`VUE3D_VEHICULES`, ni onnxruntime ni réseau ne sont chargés, et les tests ne
+les demandent jamais. Les poids (RTMDet-R, Apache-2.0 ; YOLO11-OBB, AGPL-3.0 ;
+tous deux entraînés sur DOTA, usage académique) ne doivent **jamais** entrer
+dans le dépôt : ils sont exportés par `outils/exporter_vehicules.py` dans
+l'étage `export` du Dockerfile.
 
 ## Invariants — à ne pas défaire
 

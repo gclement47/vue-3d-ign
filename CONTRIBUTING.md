@@ -136,6 +136,7 @@ anneau de relief grossier s'étend au-delà, sur 2 km de côté.
 | `lignes.py` | Lignes à haute tension | Hauteur des pylônes BD TOPO, à défaut médiane par tension |
 | `monuments.py` | Parties de monuments OSM | Seule source hors IGN, et la plus lente ; extrait embarqué pour les lieux d'exemple ; règle de remplacement aux deux tiers, enveloppes |
 | `ouvrages.py` | Murs, ponts, voies ferrées, terrains de sport | Couche à part, versionnée par `OUVRAGES_VERSION` ; hauteur d'un mur ou d'un pont = altitude de ses sommets − relief de la scène |
+| `vehicules.py` | Véhicules lus sur l'orthophoto | Couche à part et **optionnelle** (`VUE3D_VEHICULES`) : un réseau ONNX à boîtes orientées sur l'orthophoto à 0,2 m ; fichier de cache au nom du détecteur ; sans la variable, ni onnxruntime ni réseau ne sont chargés |
 | `static/index.html` | La page entière | HTML, CSS et JavaScript dans un seul fichier, three.js r160 |
 
 Chaque module commence par une docstring qui dit **pourquoi** il est fait
@@ -363,6 +364,16 @@ une :
 4. Dans la page, le chargement après la scène, avec reprise et indicateur
    (`etatCouche`), sur le modèle de `chargerOuvrages`.
 
+La couche des véhicules suit ce chemin avec deux particularités. Elle est
+optionnelle : son lecteur vient de `vehicules.lecteur()`, qui rend `None` sans
+`VUE3D_VEHICULES`, et la route répond alors `{"mode": "aucun"}` plutôt qu'une
+erreur. Et sa « lecture » est un calcul — l'orthophoto à 0,2 m, puis la
+détection — lancé en tâche de fond sur un seul fil pendant que la scène se
+construit. Les poids des réseaux ne sont pas dans le dépôt et ne doivent pas y
+entrer : ceux de YOLO sont sous AGPL-3.0, et les deux réseaux sont entraînés
+sur DOTA (usage académique). `outils/exporter_vehicules.py` les convertit en
+ONNX dans l'étage `export` du Dockerfile.
+
 ### Changer un seuil
 
 Relancez l'outil de mesure concerné (voir [Outils de mesure](#outils-de-mesure))
@@ -418,7 +429,10 @@ façons :
   la construction est `(lat, lon, avancer=None)`, celle des lectures
   `(ouest, sud, est, nord)`. Une application de test qui sert `/api/scene`
   doit injecter les deux lectures : la demande de la scène les lance en tâche
-  de fond.
+  de fond. `lire_vehicules=faux` active la couche des véhicules ; la fausse
+  lecture porte un attribut `mode` et rend des boîtes en pixels. Aucun test ne
+  charge de réseau : `test_vehicules.py` passe à `detecter` une doublure de
+  session d'inférence.
 - **Grilles synthétiques.** Les tests de toitures fabriquent des grilles MNH à
   partir d'une fonction de hauteur (voir `_grille` dans `test_pans.py` ou
   `_grille_surface` dans `test_toits.py`) : un toit à deux pans, une marche, un
@@ -437,9 +451,11 @@ direct. Ils écrivent leurs sorties dans `cache/mesures/`, ignoré par git.
 | Outil | Ce qu'il mesure |
 |---|---|
 | `essai-navigateur.mjs` | Charge un lieu dans Chrome, clique le bâtiment visé, change de saison, relève toute erreur |
-| `verifier-geometrie.mjs` | Pas une mesure : exécute sous Node les fonctions géométriques de la page (toit découpé, murs, tabliers) et vérifie orientation, fermeture et volumes ; demande `npm install three@0.160.0` |
+| `verifier-geometrie.mjs` | Pas une mesure : exécute sous Node les fonctions géométriques de la page (toit découpé, murs, tabliers, véhicules) et vérifie orientation, fermeture et volumes ; demande `npm install three@0.160.0` |
 | `mesure_pans.py` | Toits en pans sur des lieux réels, par le vrai chemin de la scène |
 | `mesure_constructions.py` | Réservoirs, constructions ponctuelles et ouvrages sur des lieux réels : hauteurs, effet du masque sur les houppiers, masses expliquées |
+| `mesure_vehicules.py` | Véhicules sur des lieux réels, par le vrai chemin de la couche : comptes selon le seuil, la tuile et son recouvrement, gabarits, accord entre les deux détecteurs, images annotées ; demande les réseaux exportés et `requirements-vehicules.txt` |
+| `exporter_vehicules.py` | Pas une mesure : télécharge les poids de RTMDet-R ou de YOLO11-OBB et les convertit en ONNX ; tourne dans l'étage `export` du Dockerfile |
 | `prototype_plans.py` | Couverture de la segmentation en plans selon les tolérances |
 | `prototype_brep.py` | Étanchéité des volumes, avec export OBJ et visionneuse 3D |
 | `mesure_redressement.py` | Part du terrain dans les défauts des surfaces de toit |

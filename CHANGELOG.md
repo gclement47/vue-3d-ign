@@ -32,8 +32,23 @@ messages de commit et dans les commentaires des modules.
 
 ### Ajouté
 
+- **Les véhicules de l'orthophoto, en option.** Lancé avec
+  `VUE3D_VEHICULES=rtmdet`, `yolo` ou `tous`, le service lit les véhicules
+  sur l'orthophoto à 0,2 m avec un réseau à boîtes orientées, et la vue les
+  pose en volume, à leur couleur, sur la pente. Une couche à part
+  (`/api/vehicules`), calculée après la scène et gardée dans un fichier au nom
+  du détecteur ; la scène ne change pas, son cache non plus. Par défaut
+  (`aucun`), rien ne change : ni dépendance, ni poids, même image. Mesuré sur
+  Gordes et Carcassonne : 91 et 178 véhicules pour `rtmdet` en 3 à 6 s, 146
+  et 140 pour `yolo` en 14 à 35 s, 169 et 188 pour les deux ensemble. Le
+  LiDAR, lui, ne voit pas les véhicules (0,0 m sur un parking plein), et
+  l'analyse d'image classique en retrouvait 8 sur 61.
+- `outils/exporter_vehicules.py` convertit les réseaux en ONNX à la
+  construction de l'image — leurs poids ne sont pas dans le dépôt —, et
+  `outils/mesure_vehicules.py` rejoue la mesure sur des lieux réels.
 - `outils/verifier-geometrie.mjs` : exécute sous Node les fonctions
-  géométriques de la page et vérifie orientation, fermeture et volumes.
+  géométriques de la page et vérifie orientation, fermeture et volumes ; il
+  couvre aussi les volumes des véhicules et leur pose sur une pente.
 
 ## Scène v12 — 30 septembre 2026
 

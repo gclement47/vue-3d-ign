@@ -45,12 +45,59 @@ docker compose up -d --build
 `-v` supprime le volume `scenes` : chaque lieu sera reconstruit à sa première
 ouverture.
 
+### Les véhicules, en option
+
+L'orthophoto montre des véhicules ; un réseau de neurones peut les y lire, et
+la vue les pose en volume. C'est une option de construction de l'image,
+désactivée par défaut :
+
+```bash
+VUE3D_VEHICULES=rtmdet docker compose up -d --build
+```
+
+| `VUE3D_VEHICULES` | Détecteur | Gordes | Carcassonne | Calcul par lieu |
+|---|---|---|---|---|
+| `aucun` (défaut) | — | — | — | — |
+| `rtmdet` | RTMDet-R s (MMRotate, Apache-2.0) | 91 véhicules, 22 des 61 d'un parking serré | 178 | 3 à 6 s |
+| `yolo` | YOLO11s-OBB (Ultralytics, **AGPL-3.0**) | 146, 48 des 61 | 140 | 14 à 35 s |
+| `tous` | l'union des deux | 169, 49 des 61 | 188 | 17 à 41 s |
+
+Temps mesurés sur un Mac à dix cœurs, hors conteneur puis dans le conteneur ;
+ils s'ajoutent après l'affichage de la scène, qui n'attend pas les véhicules.
+Aucun des deux réseaux ne suffit partout : `rtmdet` lit mal un parking serré,
+`yolo` est meilleur là et moins bon ailleurs.
+
+À savoir avant de choisir :
+
+- **Les poids ne sont pas dans le dépôt.** La construction de l'image les
+  télécharge chez leurs auteurs et les convertit (une à deux minutes ;
+  165 Mo de plus pour un détecteur, 240 Mo pour les deux). Ceux de YOLO sont sous AGPL-3.0 : c'est vous qui les
+  embarquez en choisissant `yolo` ou `tous`. Et les deux réseaux sont
+  entraînés sur [DOTA](https://captain-whu.github.io/DOTA/dataset.html), dont
+  les images sont réservées à un usage académique.
+- **Changer d'option reconstruit l'image** (une par détecteur) et recalcule la
+  couche des véhicules de chaque lieu ; les scènes, elles, restent en cache.
+  Pour garder le choix d'un lancement à l'autre, l'inscrire dans un fichier
+  `.env` à côté de `docker-compose.yml`.
+- **Ce sont les véhicules du jour de la prise de vue**, et seulement ceux que
+  le réseau a reconnus : voir [Limites](#limites).
+
 Sans Docker, **avec Python 3.12**, celui de l'image Docker :
 
 ```bash
 python3.12 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
 VUE3D_CACHE=./cache flask --app vue3d.app run --port 8080
+```
+
+Les véhicules, sans Docker : exporter les réseaux une fois, dans un
+environnement à part (les commandes d'installation sont dans le `Dockerfile`,
+étage `export`), puis lancer le serveur avec le moteur d'inférence.
+
+```bash
+python outils/exporter_vehicules.py rtmdet modeles/     # dans l'environnement d'export
+pip install -r requirements-vehicules.txt               # dans .venv
+VUE3D_VEHICULES=rtmdet VUE3D_MODELES=./modeles VUE3D_CACHE=./cache flask --app vue3d.app run --port 8080
 ```
 
 Pas Python 3.14 : avec les mêmes versions de numpy et shapely, la segmentation
@@ -140,6 +187,11 @@ Chaque premier chargement construit la scène, en 20 à 40 secondes.
   exagération réglable. Autour de la scène, un anneau de relief plus grossier
   s'étend sur 2 km de côté et se perd dans la brume : les coteaux voisins
   cadrent le lieu et portent leur ombre quand le soleil rase.
+- **Les véhicules**, si le service a été lancé avec un détecteur : ceux que
+  l'orthophoto montre, à leur place et dans leur couleur du jour de la prise
+  de vue, posés sur la pente. Longueur, largeur et orientation sont lues sur
+  la photo ; la hauteur et la forme sont de convention, en trois gabarits
+  (voiture, fourgon, autocar).
 - **Le soleil**, à l'heure et au jour choisis : un curseur pour l'heure, un
   autre pour la saison, avec des crans aux solstices et à l'équinoxe. Les ombres
   portées suivent. Le panneau chiffre le **masque solaire au sud**, l'élévation
@@ -169,6 +221,12 @@ Toutes servies sans clé par la Géoplateforme de l'IGN, sous
 | OpenStreetMap, `building:part` | API Overpass, © contributeurs OSM, [ODbL](https://www.openstreetmap.org/copyright) | Les monuments en vraie 3D, là où le LiDAR manque |
 
 three.js est chargé depuis jsDelivr. Le lien Street View ouvre Google Maps.
+
+La couche optionnelle des véhicules n'ajoute pas de source : elle relit
+l'orthophoto, à 0,2 m par pixel, avec un réseau de neurones — RTMDet-R
+([MMRotate](https://github.com/open-mmlab/mmrotate)) ou YOLO11-OBB
+([Ultralytics](https://github.com/ultralytics/ultralytics)), au choix de qui
+déploie.
 
 ## La méthode, en bref
 
@@ -312,6 +370,14 @@ principales :
   parties sans hauteur (La Merveille, Le Châtelet) reçoivent celle de la BD
   TOPO, et l'infobulle le dit. La couche vient d'Overpass, le seul service
   hors IGN du projet.
+- **Les véhicules sont un instantané, et une lecture incomplète.** Ils sont là
+  où ils étaient le jour de la prise de vue, qui n'est pas celui du LiDAR. Le
+  réseau en manque — un sur cinq dans un parking serré pour le meilleur des
+  deux, davantage à l'ombre et sous les arbres — et ce qui manque reste à plat
+  sur la photo. Il en invente peu : sur deux lieux, une seule boîte sur un
+  toit, que l'emprise du bâtiment écarte, et deux boîtes longues fausses (un
+  muret, trois voitures en file) que la limite de 7 m de `rtmdet` écarte. L'avant et l'arrière ne sont pas distingués, et il
+  n'y a pas de vérité terrain annotée : les comptes ont été jugés à l'œil.
 - **Au pied des falaises, des arbres trop hauts.** En forêt, la hauteur d'un
   arbre accroché à une paroi se compte depuis le pied de celle-ci : 7 houppiers
   de 42 à 60 m à Rocamadour. Hors forêt, le plafond de 40 m efface aussi ce
@@ -330,6 +396,7 @@ principales :
 | `GET /api/ortho?lat=…&lon=…` | L'orthophoto de la scène, en JPEG |
 | `GET /api/monuments?lat=…&lon=…` | La couche des monuments OSM, en JSON gzippé (`null` sans partie), que la page demande une fois la scène affichée |
 | `GET /api/ouvrages?lat=…&lon=…` | La couche des murs, ponts, voies ferrées et terrains de sport, en JSON gzippé (`null` sans ouvrage), demandée elle aussi après la scène |
+| `GET /api/vehicules?lat=…&lon=…` | La couche des véhicules, en JSON gzippé, demandée après la scène ; `{"mode": "aucun", "vehicules": []}` si le service n'a pas de détecteur |
 | `GET /api/avancement?lat=…&lon=…` | L'étape de la construction en cours (18 au total), que la page affiche pendant l'attente |
 | `GET /api/sante` | `{"ok": true}` |
 
@@ -365,3 +432,9 @@ sont diffusées sous Licence Ouverte Etalab 2.0 ; les parties de monuments
 viennent d'OpenStreetMap (© contributeurs OSM, ODbL). Le dépôt embarque un
 extrait OpenStreetMap pour les lieux d'exemple ci-dessus, sous ODbL et non sous
 MIT : voir [vue3d/donnees/LICENCE.md](vue3d/donnees/LICENCE.md).
+
+Les réseaux de la couche optionnelle des véhicules ne sont ni dans le dépôt ni
+dans l'image par défaut. Construire l'image avec `VUE3D_VEHICULES` les y
+télécharge, sous leurs licences : Apache-2.0 pour RTMDet-R, **AGPL-3.0** pour
+YOLO11-OBB, et pour les deux les conditions du jeu de données DOTA, réservé à
+un usage académique.
