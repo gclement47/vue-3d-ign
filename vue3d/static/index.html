@@ -133,6 +133,7 @@
                 <button class="toggle on" id="t-lignes">Lignes HT</button>
                 <button class="toggle on" id="t-constructions" hidden title="Réservoirs, torchères, cheminées, antennes et mâts de la BD TOPO">Réservoirs, mâts</button>
                 <button class="toggle on" id="t-ouvrages" hidden title="Murs, ponts, voies ferrées et terrains de sport de la BD TOPO">Murs, ponts, rails</button>
+                <button class="toggle on" id="t-vehicules" hidden title="Véhicules vus sur l'orthophoto, le jour de la prise de vue">Véhicules</button>
                 <button class="toggle" id="t-moi">Ma position</button>
             </div>
             <div class="row">
@@ -225,6 +226,7 @@
             <div id="hint">Glisser pour pivoter · molette pour zoomer · survol pour mesurer · clic sur un bâtiment pour sa fiche</div>
             <div id="etat-monuments" class="etat-couche" role="status" hidden><i class="roue"></i><span></span></div>
             <div id="etat-ouvrages" class="etat-couche" role="status" hidden><i class="roue"></i><span></span></div>
+            <div id="etat-vehicules" class="etat-couche" role="status" hidden><i class="roue"></i><span></span></div>
         </div>
         <div id="attente" hidden></div>
         <div id="boussole" title="Orientation">
@@ -1048,6 +1050,7 @@ function majCiblesSurvol() {
     if (groupeLignes && groupeLignes.visible) ciblesSurvol.push(...pylonesSurvol);
     if (groupeConstructions && groupeConstructions.visible) ciblesSurvol.push(...constructionsSurvol);
     if (groupeOuvrages && groupeOuvrages.visible) ciblesSurvol.push(...ouvragesSurvol);
+    if (groupeVehicules && groupeVehicules.visible) ciblesSurvol.push(...groupeVehicules.children);
 }
 
 /** Point dans polygone par lancer de rayon. Coordonnées en degrés (lon, lat). */
@@ -1721,6 +1724,7 @@ chargerScene()
         activerVegetation();
         chargerMonuments();
         chargerOuvrages();
+        chargerVehicules();
     })
     .catch(err => {
         note.textContent = 'Chargement impossible : ' + err.message;
@@ -2326,6 +2330,7 @@ function appliquerExageration() {
     if (lignesElec.length) placerLignes();
     if (constructionsPosees && constructionsPosees.length) placerConstructions();
     if (ouvragesPoses && ouvragesPoses.length) placerOuvrages();
+    if (vehiculesPoses && vehiculesPoses.length) placerVehicules();
     // Le grand plan gris sert de fond au-delà de l'emprise, et sous les trous
     // de l'anneau : on le glisse sous le point le plus bas du terrain pour
     // qu'il ne le traverse pas.
@@ -2419,6 +2424,7 @@ async function chargerRelief() {
         construireConstructions();
         reliefRegle = true;
         construireOuvrages();
+        construireVehicules();
         return;
     }
 
@@ -2469,6 +2475,7 @@ async function chargerRelief() {
     construireConstructions();
     reliefRegle = true;
     construireOuvrages();
+    construireVehicules();
     sourceRelief = source.nom;
     majCredits();
 
@@ -3334,6 +3341,213 @@ document.getElementById('t-ouvrages').addEventListener('click', e => {
     if (ouvragesEnVolume && vegPrete) construireVegetation();
 });
 
+// --- Véhicules de l'orthophoto ---------------------------------------------------
+// Une couche à part et optionnelle (/api/vehicules, vue3d/vehicules.py) : le
+// serveur ne la calcule que s'il a été lancé avec un détecteur. Chaque véhicule
+// est une boîte orientée lue sur l'orthophoto à 0,2 m — position, longueur,
+// largeur, cap du grand axe, couleur. Tout le reste est convention : la
+// hauteur (aucune source ne la donne, le LiDAR ne retient pas les véhicules),
+// la forme, et le sens de marche, que la boîte ne dit pas.
+const URL_VEHICULES = `api/vehicules?${REQUETE}`;
+// Gabarit d'après la longueur de la boîte. Sur Gordes et Carcassonne, 95 %
+// des boîtes font moins de 5,3 à 5,5 m : en deçà de 5,6 m, une voiture.
+// Hauteurs de convention.
+const GABARITS_VEHICULE = {
+    voiture: { nom: 'Voiture', longueurMax: 5.6, hauteur: 1.5 },
+    fourgon: { nom: 'Fourgon ou camionnette', longueurMax: 8, hauteur: 2.5 },
+    car: { nom: 'Autocar ou poids lourd', longueurMax: Infinity, hauteur: 3.2 },
+};
+// La boîte déborde la carrosserie : largeur médiane de 2,0 à 2,2 m, longueur
+// médiane de 4,3 à 4,6 m, pour des voitures de 1,8 m sur 4,3 m environ. Le
+// volume est dessiné en retrait d'autant, sans quoi deux voitures garées côte
+// à côte se touchent.
+const VEHICULE_PART_LARGEUR = 0.86;
+const VEHICULE_PART_LONGUEUR = 0.97;
+const MAT_CARROSSERIE = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.45, metalness: 0.25, flatShading: true });
+const MAT_VITRES = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.35, metalness: 0.2, flatShading: true });
+const TEINTE_VITRE = [0.13, 0.17, 0.21], TEINTE_ROUE = [0.05, 0.05, 0.05];
+let VEHICULES = null;
+// `var` : majCiblesSurvol() et appliquerExageration() les lisent avant que ce
+// bloc soit évalué.
+var groupeVehicules = new THREE.Group();
+scene.add(groupeVehicules);
+var vehiculesPoses = [];       // { maillages, liste } par gabarit
+let vehiculesConstruits = false;
+
+/**
+ * Blocs d'un véhicule dans son repère unité : x de −0,5 (arrière) à 0,5
+ * (avant), y de 0 (sol) à 1 (toit), z de −0,5 à 0,5 (largeur). Chaque bloc
+ * est un tronc fermé — une base rectangulaire, un dessus rectangulaire plus
+ * petit —, triangles tournés vers l'extérieur.
+ *
+ * Returns: [{ teinte: 'caisse' | 'vitre' | 'roue', tris: [[a, b, c], ...] }]
+ */
+function blocsVehicule(gabarit) {
+    // Base à y0 : x de xa à xb, demi-largeur d ; dessus à y1 : x de xc à xd,
+    // demi-largeur e.
+    const tronc = (teinte, y0, y1, xa, xb, d, xc = xa, xd = xb, e = d) => {
+        const b = [[xa, y0, -d], [xb, y0, -d], [xb, y0, d], [xa, y0, d]];
+        const h = [[xc, y1, -e], [xd, y1, -e], [xd, y1, e], [xc, y1, e]];
+        const tris = [];
+        const quad = (p, q, r, t) => tris.push([p, q, r], [p, r, t]);
+        quad(b[0], b[1], b[2], b[3]);                 // dessous
+        quad(h[0], h[3], h[2], h[1]);                 // dessus
+        for (let i = 0; i < 4; i++) {
+            const j = (i + 1) % 4;
+            quad(b[i], h[i], h[j], b[j]);             // flancs
+        }
+        return { teinte, tris };
+    };
+    const roues = (xs, rayon, epaisseur) => xs.flatMap(x => [-1, 1].map(cote => {
+        const z = cote * (0.5 - epaisseur / 2) + cote * 0.01;       // à peine en saillie
+        const r = tronc('roue', 0, 2 * rayon, x - rayon, x + rayon, epaisseur / 2);
+        r.tris = r.tris.map(t => t.map(([px, py, pz]) => [px, py, pz + z]));
+        return r;
+    }));
+    if (gabarit === 'voiture') return [
+        tronc('caisse', 0.17, 0.58, -0.5, 0.5, 0.5, -0.49, 0.47, 0.48),
+        tronc('vitre', 0.58, 0.96, -0.34, 0.22, 0.46, -0.25, 0.08, 0.4),     // habitacle, capot devant
+        tronc('caisse', 0.96, 1, -0.25, 0.08, 0.4),                         // pavillon
+        ...roues([-0.3, 0.31], 0.075, 0.12),
+    ];
+    if (gabarit === 'fourgon') return [
+        tronc('caisse', 0.13, 1, -0.5, 0.2, 0.5),                           // caisse de chargement
+        tronc('caisse', 0.13, 0.5, 0.2, 0.5, 0.48),                         // cabine, bas
+        tronc('vitre', 0.5, 0.78, 0.2, 0.48, 0.47, 0.2, 0.38, 0.45),        // pare-brise et vitres
+        tronc('caisse', 0.78, 0.81, 0.2, 0.38, 0.45),
+        ...roues([-0.3, 0.33], 0.055, 0.12),
+    ];
+    return [
+        tronc('caisse', 0.1, 0.42, -0.5, 0.5, 0.5),
+        tronc('vitre', 0.42, 0.8, -0.5, 0.5, 0.49, -0.49, 0.48, 0.48),      // bandeau vitré
+        tronc('caisse', 0.8, 1, -0.49, 0.48, 0.49, -0.47, 0.46, 0.46),
+        ...roues([-0.32, 0.33], 0.04, 0.1),
+    ];
+}
+
+/**
+ * Repère d'un véhicule posé sur le sol : l'avant vers (est, nord), et la
+ * hauteur du sol à l'avant, à l'arrière, à gauche et à droite de la boîte.
+ * Le véhicule suit la pente au lieu de s'y enfoncer d'un bout.
+ *
+ * Returns: { X, Y, Z } unitaires dans le repère de la scène (x est, y haut,
+ * z sud) : X vers l'avant, Y vers le haut, Z vers la droite.
+ */
+function repereVehicule(est, nord, longueur, largeur, yAvant, yArriere, yGauche, yDroite) {
+    const norme = v => { const l = Math.hypot(...v); return v.map(c => c / l); };
+    const croix = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    const X = norme([est * longueur, yAvant - yArriere, -nord * longueur]);
+    // La droite d'un cap (est, nord) est (nord, −est).
+    const versDroite = [nord * largeur, yDroite - yGauche, est * largeur];
+    const Y = norme(croix(versDroite, X));
+    return { X, Y, Z: croix(X, Y) };
+}
+
+function construireVehicules() {
+    if (!VEHICULES || !reliefRegle || vehiculesConstruits) return;
+    vehiculesConstruits = true;
+    const parGabarit = { voiture: [], fourgon: [], car: [] };
+    for (const [lon, lat, longueur, largeur, cap, couleur] of VEHICULES.vehicules) {
+        const gabarit = Object.keys(GABARITS_VEHICULE).find(g => longueur < GABARITS_VEHICULE[g].longueurMax);
+        parGabarit[gabarit].push({ lon, lat, longueur, largeur, cap, couleur, gabarit });
+    }
+    for (const [gabarit, liste] of Object.entries(parGabarit)) {
+        if (!liste.length) continue;
+        const blocs = blocsVehicule(gabarit);
+        const geometrie = (teintes, colorer) => {
+            const pos = [], col = [];
+            for (const b of blocs) {
+                if (!teintes.includes(b.teinte)) continue;
+                for (const t of b.tris) for (const p of t) {
+                    pos.push(...p);
+                    if (colorer) col.push(...(b.teinte === 'roue' ? TEINTE_ROUE : TEINTE_VITRE));
+                }
+            }
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+            if (colorer) geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+            geo.computeVertexNormals();
+            return geo;
+        };
+        // Deux maillages par gabarit, un appel de dessin chacun : la caisse,
+        // teinte par véhicule, et ce qui reste sombre quelle que soit la teinte.
+        const caisse = new THREE.InstancedMesh(geometrie(['caisse'], false), MAT_CARROSSERIE, liste.length);
+        const sombre = new THREE.InstancedMesh(geometrie(['vitre', 'roue'], true), MAT_VITRES, liste.length);
+        const teinte = new THREE.Color();
+        liste.forEach((v, i) => caisse.setColorAt(i, teinte.setHex(v.couleur)));
+        for (const m of [caisse, sombre]) {
+            m.castShadow = true; m.receiveShadow = true;
+            m.userData = { vehicules: liste };
+            groupeVehicules.add(m);
+        }
+        vehiculesPoses.push({ maillages: [caisse, sombre], liste });
+    }
+    placerVehicules();
+    const bouton = document.getElementById('t-vehicules');
+    bouton.hidden = !vehiculesPoses.length;
+    bouton.title = `${VEHICULES.vehicules.length} véhicule(s) vus sur l'orthophoto, le jour de la prise de vue `
+        + `(détecteur : ${VEHICULES.mode})`;
+    majCiblesSurvol();
+}
+
+/** Roues sur le sol exagéré, dimensions réelles : la règle des bâtiments. */
+function placerVehicules() {
+    const matrice = new THREE.Matrix4();
+    const axe = new THREE.Vector3(), haut = new THREE.Vector3(), travers = new THREE.Vector3();
+    for (const { maillages, liste } of vehiculesPoses) {
+        liste.forEach((v, i) => {
+            const longueur = v.longueur * VEHICULE_PART_LONGUEUR, largeur = v.largeur * VEHICULE_PART_LARGEUR;
+            const cap = v.cap * Math.PI / 180, est = Math.sin(cap), nord = Math.cos(cap);
+            const [x, y] = toLocal(v.lon, v.lat);
+            const sol = (dx, dy) => ySol(...toLonLat(x + dx, y + dy));
+            const yAv = sol(est * longueur / 2, nord * longueur / 2), yAr = sol(-est * longueur / 2, -nord * longueur / 2);
+            const yD = sol(nord * largeur / 2, -est * largeur / 2), yG = sol(-nord * largeur / 2, est * largeur / 2);
+            const { X, Y, Z } = repereVehicule(est, nord, longueur, largeur, yAv, yAr, yG, yD);
+            matrice.makeBasis(axe.fromArray(X).multiplyScalar(longueur),
+                              haut.fromArray(Y).multiplyScalar(GABARITS_VEHICULE[v.gabarit].hauteur),
+                              travers.fromArray(Z).multiplyScalar(largeur));
+            matrice.setPosition(x, (yAv + yAr + yG + yD) / 4, -y);
+            for (const m of maillages) m.setMatrixAt(i, matrice);
+        });
+        for (const m of maillages) {
+            m.instanceMatrix.needsUpdate = true;
+            m.computeBoundingSphere();          // le lancer de rayon du survol s'y fie
+        }
+    }
+}
+
+async function chargerVehicules(essai = 1) {
+    // Au premier essai seulement : ensuite l'indicateur est déjà affiché.
+    const retard = setTimeout(
+        () => etatCouche('etat-vehicules', 'Véhicules : détection sur l\'orthophoto…', true),
+        essai === 1 ? RETARD_ETAT_MONUMENTS_MS : 0);
+    try {
+        const r = await fetch(URL_VEHICULES);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const v = await r.json();
+        clearTimeout(retard);
+        etatCouche('etat-vehicules', null);
+        // Service lancé sans détecteur, ou aucun véhicule sur l'emprise.
+        if (!v || !v.vehicules || !v.vehicules.length) return;
+        VEHICULES = v;
+        construireVehicules();
+    } catch (e) {
+        clearTimeout(retard);
+        if (essai >= ESSAIS_MONUMENTS) {
+            etatCouche('etat-vehicules', 'Véhicules indisponibles : recharger la page pour réessayer.');
+            return;
+        }
+        etatCouche('etat-vehicules', `Véhicules indisponibles : nouvel essai dans ${ATTENTE_MONUMENTS_S} s.`, true);
+        setTimeout(() => chargerVehicules(essai + 1), ATTENTE_MONUMENTS_S * 1000);
+    }
+}
+
+document.getElementById('t-vehicules').addEventListener('click', e => {
+    groupeVehicules.visible = !groupeVehicules.visible;
+    e.currentTarget.classList.toggle('on', groupeVehicules.visible);
+    majCiblesSurvol();
+});
+
 // --- Végétation et sursol (MNH LiDAR HD) ---------------------------------
 // La BD TOPO dit OÙ est la végétation mais jamais sa hauteur : `zone_de_vegetation`
 // n'expose que la nature et la géométrie. La hauteur vient du MNH LiDAR HD, une
@@ -4152,6 +4366,18 @@ renderer.domElement.addEventListener('pointermove', e => {
             + (u.gestionnaire ? `<br>${u.gestionnaire}` : '')
             + `<br>pylône ${u.h.toFixed(1)} m `
             + (u.mesuree ? '<i>(BD TOPO)</i>' : '<i>(hauteur typique de la tension)</i>');
+        tip.style.display = 'block';
+        tip.style.left = (e.clientX - r.left + 14) + 'px';
+        tip.style.top = (e.clientY - r.top + 14) + 'px';
+        return;
+    }
+
+    if (touche && touche.object.userData.vehicules && touche.instanceId != null) {
+        const v = touche.object.userData.vehicules[touche.instanceId];
+        tip.innerHTML = `<b>${GABARITS_VEHICULE[v.gabarit].nom}</b>`
+            + `<br>boîte de ${enMetres(v.longueur)} sur ${enMetres(v.largeur)}, lue sur l'orthophoto`
+            + '<br><i>là où il était le jour de la prise de vue</i>'
+            + '<br><i>hauteur et forme de convention, avant et arrière non distingués</i>';
         tip.style.display = 'block';
         tip.style.left = (e.clientX - r.left + 14) + 'px';
         tip.style.top = (e.clientY - r.top + 14) + 'px';

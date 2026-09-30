@@ -8,3 +8,6 @@ __pycache__/
 node_modules/
 package.json
 package-lock.json
+# Réseaux de la couche des véhicules, exportés en local par
+# outils/exporter_vehicules.py : leurs poids ne sont jamais dans le dépôt.
+/modeles/

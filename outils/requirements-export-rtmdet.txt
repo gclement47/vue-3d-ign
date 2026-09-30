@@ -1,0 +1,13 @@
+# Étage d'export de RTMDet-R (outils/exporter_vehicules.py) : jamais installé
+# dans l'image finale, qui ne lit que le .onnx. Versions de l'export vérifié
+# contre le réseau d'origine. torch et torchvision s'installent avant, depuis
+# l'index CPU de PyTorch ; mmdet et mmrotate après, sans leurs dépendances
+# (mmcv complet, e2cnn) — voir le Dockerfile.
+mmengine==0.10.7
+mmcv-lite==2.2.0
+onnx==1.23.1
+pycocotools==2.0.11
+terminaltables==3.1.10
+scipy==1.18.1
+shapely==2.1.2
+six==1.17.0

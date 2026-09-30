@@ -35,6 +35,28 @@ def client(tmp_path):
     return appli.test_client()
 
 
+@pytest.fixture
+def client_vehicules(tmp_path):
+    """Un service lancé avec un détecteur : la lecture rend une boîte au
+    centre d'une orthophoto à 0,2 m, sauf au sud de 46° où elle échoue."""
+    scene = {"version": 1, "bbox": [0, 0, 1, 1], "batiments": {"features": []}, "eau": None}
+
+    def construire(lat, lon, avancer=None):
+        return gzip.compress(json.dumps(scene).encode()), b"\xff\xd8jpeg"
+
+    def lire_vehicules(west, south, east, north):
+        if south < 46:
+            raise ConnectionError("Read timed out")
+        return {"largeur": 1173, "hauteur": 1781,
+                "boites": [[586.5, 890.5, 22, 10, 0.0, 0.6, 0, 0xC81E28, "rtmdet"]]}
+
+    lire_vehicules.mode = "rtmdet"
+    appli = module_app.creer_app(str(tmp_path), construire=construire,
+                                 lire_monuments=lambda *b: {"elements": []},
+                                 lire_vehicules=lire_vehicules)
+    return appli.test_client()
+
+
 def test_la_page_est_servie(client):
     r = client.get("/")
     assert r.status_code == 200 and b"Vue 3D IGN" in r.data
@@ -106,6 +128,32 @@ def test_une_panne_des_ouvrages_rend_503_sans_toucher_la_scene(client):
     r = client.get("/api/ouvrages?lat=45.5&lon=2")
     assert r.status_code == 503 and "IGN" in r.get_json()["erreur"]
     assert client.get("/api/scene?lat=45.5&lon=2").status_code == 200
+
+
+def test_sans_detecteur_la_couche_des_vehicules_le_dit(client):
+    """Ni erreur ni fichier : la page lit le mode et ne montre pas la couche."""
+    r = client.get("/api/vehicules?lat=48.8049&lon=2.1204")
+    assert r.status_code == 200 and r.get_json() == {"mode": "aucun", "vehicules": []}
+    # Le service peut être relancé avec un détecteur : jamais gardée.
+    assert r.headers["Cache-Control"] == "no-store"
+
+
+def test_la_couche_des_vehicules_est_servie_a_part(client_vehicules):
+    r = client_vehicules.get("/api/vehicules?lat=48.8049&lon=2.1204")
+    assert r.status_code == 200 and r.headers["Content-Encoding"] == "gzip"
+    couche = json.loads(gzip.decompress(r.data))
+    assert couche["mode"] == "rtmdet"
+    (lon, lat, longueur, largeur, cap, couleur), = couche["vehicules"]
+    assert (round(lat, 4), round(lon, 4)) == (48.8049, 2.1204) and couleur == 0xC81E28
+    assert client_vehicules.get("/api/vehicules").status_code == 400
+    assert client_vehicules.get("/api/vehicules?lat=40&lon=2").status_code == 422
+
+
+def test_une_panne_des_vehicules_rend_503_sans_toucher_la_scene(client_vehicules):
+    assert client_vehicules.get("/api/scene?lat=45.5&lon=2").status_code == 200
+    r = client_vehicules.get("/api/vehicules?lat=45.5&lon=2")
+    assert r.status_code == 503 and "véhicules" in r.get_json()["erreur"]
+    assert client_vehicules.get("/api/scene?lat=45.5&lon=2").status_code == 200
 
 
 def test_sante(client):

@@ -27,6 +27,10 @@ vue3d/ouvrages.py) suivent le même chemin (`Cache.obtenir_ouvrages`) : rien de
 ce qu'ils décrivent n'entre dans un calcul de la scène, qui n'a donc pas à
 échouer avec eux ni à être reconstruite quand leur format change.
 
+Les véhicules de l'orthophoto (vue3d/vehicules.py) sont une troisième couche à
+part, la seule optionnelle : elle n'existe que si le service a été lancé avec
+un détecteur (`Cache.obtenir_vehicules`, `VUE3D_VEHICULES`).
+
 La construction coûte une vingtaine à une trentaine de secondes, dont la moitié
 à télécharger la grille MNH. Le résultat est donc mis en cache sur disque, par
 point arrondi à 4 décimales (une dizaine de mètres) : deux demandes voisines
@@ -66,6 +70,7 @@ from .ortho import fetch_exg_grid, fetch_ortho_jpeg
 from .ouvrages import OUVRAGES_VERSION, fetch_ouvrages, ouvrages_pour_emprise
 from .relief import fetch_relief, fetch_relief_anneau
 from .toits import TOITS_RESOLUTION_M, toits_pour_emprise
+from .vehicules import VEHICULES_VERSION, vehicules_pour_emprise
 
 journal = logging.getLogger(__name__)
 
@@ -106,6 +111,13 @@ NOM_MONUMENTS = "monuments.json.gz"
 # La version de la couche est dans son nom : la changer ne refait qu'elle.
 NOM_OUVRAGES = f"ouvrages-v{OUVRAGES_VERSION}.json.gz"
 
+
+def nom_vehicules(mode):
+    """Fichier de la couche des véhicules. Le détecteur est dans le nom, avec
+    la version : relancer le service avec un autre ne ressert jamais la couche
+    du précédent, et les deux restent en cache côte à côte."""
+    return f"vehicules-{mode}-v{VEHICULES_VERSION}.json.gz"
+
 # Le service couvre la France. Au-delà, les couches répondent vide et la scène
 # n'aurait rien à montrer : mieux vaut le dire tout de suite.
 EMPRISE_SERVIE = {"lat": (41.0, 51.6), "lon": (-5.8, 10.0)}
@@ -113,6 +125,15 @@ EMPRISE_SERVIE = {"lat": (41.0, 51.6), "lon": (-5.8, 10.0)}
 
 class SceneIncomplete(RuntimeError):
     """Une source n'a pas répondu : rien n'est mis en cache, réessayer plus tard."""
+
+
+class VehiculesIndisponibles(RuntimeError):
+    """L'orthophoto des véhicules n'a pas pu être lue, ou la détection a
+    échoué : rien n'est mis en cache, la scène reste affichée sans eux."""
+
+
+class VehiculesDesactives(RuntimeError):
+    """Le service tourne sans détecteur de véhicules : la couche n'existe pas."""
 
 
 class HorsEmprise(ValueError):
@@ -286,7 +307,10 @@ class Cache:
     de la scène, sous la même règle : écrites entières, ou pas du tout.
     """
 
-    def __init__(self, dossier, lire_monuments=fetch_monuments, lire_ouvrages=fetch_ouvrages):
+    def __init__(self, dossier, lire_monuments=fetch_monuments, lire_ouvrages=fetch_ouvrages,
+                 lire_vehicules=None):
+        """`lire_vehicules` : de `vehicules.lecteur()`, avec son attribut
+        `mode` ; None, et la couche des véhicules n'existe pas."""
         self.dossier = dossier
         os.makedirs(dossier, exist_ok=True)
         self._verrous = {}
@@ -300,6 +324,8 @@ class Cache:
         # plus de 100 s, l'IGN n'a pas à attendre derrière lui.
         self.lire_monuments = lire_monuments
         self.lire_ouvrages = lire_ouvrages
+        self.lire_vehicules = lire_vehicules
+        self.mode_vehicules = lire_vehicules.mode if lire_vehicules else None
         self._lectures = {}
         self._taches = {
             NOM_MONUMENTS: concurrent.futures.ThreadPoolExecutor(
@@ -307,6 +333,12 @@ class Cache:
             NOM_OUVRAGES: concurrent.futures.ThreadPoolExecutor(
                 max_workers=2, thread_name_prefix="ouvrages"),
         }
+        if lire_vehicules:
+            # Un seul fil : la détection occupe déjà tous les cœurs, deux
+            # scènes demandées ensemble attendent leur tour.
+            self._taches[nom_vehicules(self.mode_vehicules)] = (
+                concurrent.futures.ThreadPoolExecutor(max_workers=1,
+                                                      thread_name_prefix="vehicules"))
 
     def _ecrire(self, dossier, nom, octets):
         """Écrit d'un bloc : un fichier temporaire, renommé une fois complet."""
@@ -471,3 +503,32 @@ class Cache:
             lambda message: OuvragesIndisponibles(f"ouvrages illisibles : {message}"),
             lambda bbox, brut, scene: ouvrages_pour_emprise(
                 *bbox, brut, scene.get("relief"), scene.get("masses"), scene.get("routes")))
+
+    def prelire_vehicules(self, lat, lon):
+        """Lance en tâche de fond la lecture de l'orthophoto à 0,2 m et la
+        détection, si le service a un détecteur : quelques secondes à un quart
+        de minute de calcul, qui avancent pendant que la scène attend l'IGN."""
+        if self.lire_vehicules:
+            self._prelire(nom_vehicules(self.mode_vehicules), lat, lon, self.lire_vehicules)
+
+    def obtenir_vehicules(self, lat, lon, construire=construire):
+        """(dossier, nom du fichier) de la couche des véhicules du point.
+
+        La couche lit les bâtiments et l'eau de la scène : un « véhicule »
+        sur un toit ou sur une rivière n'en est pas un.
+
+        Raises:
+            VehiculesDesactives si le service tourne sans détecteur.
+            VehiculesIndisponibles si l'orthophoto n'a pas pu être lue ou si
+            la détection a échoué : rien n'est écrit, la demande suivante
+            réessaie.
+        """
+        if not self.lire_vehicules:
+            raise VehiculesDesactives("service lancé sans détecteur de véhicules")
+        nom = nom_vehicules(self.mode_vehicules)
+        return self._obtenir_couche(
+            nom, lat, lon, construire, self.lire_vehicules,
+            lambda message: VehiculesIndisponibles(f"véhicules illisibles : {message}"),
+            lambda bbox, brut, scene: vehicules_pour_emprise(
+                *bbox, brut, self.mode_vehicules, scene.get("batiments"),
+                scene.get("eau"))), nom

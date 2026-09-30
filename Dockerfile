@@ -1,15 +1,59 @@
+# Détecteur de véhicules embarqué (vue3d/vehicules.py) : aucun, rtmdet, yolo
+# ou tous. Par défaut aucun : l'image est alors celle du service sans la
+# couche des véhicules, sans moteur d'inférence ni réseau.
+ARG VEHICULES=aucun
+
+# --- Étage d'export -------------------------------------------------------------
+# Produit les réseaux au format ONNX, et rien d'autre n'en sort : torch,
+# MMRotate, Ultralytics et les poids d'origine restent ici. Sans détecteur,
+# l'étage ne fait que créer un dossier vide.
+FROM python:3.12-slim AS export
+ARG VEHICULES
+WORKDIR /export
+COPY outils/exporter_vehicules.py outils/requirements-export-rtmdet.txt outils/requirements-export-yolo.txt ./
+RUN set -e; mkdir /modeles; \
+    case "$VEHICULES" in \
+      aucun) exit 0 ;; \
+      rtmdet|yolo|tous) ;; \
+      *) echo "VEHICULES=$VEHICULES : attendu aucun, rtmdet, yolo ou tous" >&2; exit 1 ;; \
+    esac; \
+    # OpenCV, dépendance de mmcv-lite et d'Ultralytics, veut ces bibliothèques.
+    apt-get update && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 \
+      && rm -rf /var/lib/apt/lists/*; \
+    # L'index CPU : sur x86-64, le torch de PyPI tire deux gigaoctets de CUDA.
+    pip install --no-cache-dir torch==2.14.0 torchvision==0.29.0 \
+      --index-url https://download.pytorch.org/whl/cpu; \
+    if [ "$VEHICULES" != yolo ]; then \
+      pip install --no-cache-dir -r requirements-export-rtmdet.txt; \
+      pip install --no-cache-dir --no-deps mmdet==3.0.0 mmrotate==1.0.0rc1; \
+      python exporter_vehicules.py rtmdet /modeles; \
+    fi; \
+    if [ "$VEHICULES" != rtmdet ]; then \
+      pip install --no-cache-dir -r requirements-export-yolo.txt; \
+      python exporter_vehicules.py yolo /modeles; \
+    fi; \
+    # Seuls les .onnx passent à l'image finale.
+    find /modeles -type f ! -name '*.onnx' -delete
+
+# --- Image du service -----------------------------------------------------------
 FROM python:3.12-slim
+ARG VEHICULES
 
 # Pas de .pyc, sortie non tamponnée : les journaux arrivent tout de suite dans
-# `docker compose logs`.
+# `docker compose logs`. Le détecteur est celui avec lequel l'image a été
+# construite : le serveur refuse de démarrer si on lui en demande un autre.
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    VUE3D_CACHE=/cache
+    VUE3D_CACHE=/cache \
+    VUE3D_MODELES=/modeles \
+    VUE3D_VEHICULES=$VEHICULES
 
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt requirements-vehicules.txt ./
+RUN pip install --no-cache-dir -r requirements.txt \
+    && if [ "$VEHICULES" != aucun ]; then pip install --no-cache-dir -r requirements-vehicules.txt; fi
 
+COPY --from=export /modeles /modeles
 COPY vue3d ./vue3d
 
 # Utilisateur sans privilège, propriétaire du cache.

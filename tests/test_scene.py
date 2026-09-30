@@ -366,3 +366,72 @@ def test_assembler_coupe_les_batiments_au_bord_de_la_scene():
     (b,) = art["batiments"]["features"]
     assert shape(b["geometry"]).bounds[0] > ouest and 0 < b["properties"]["coupe"]["part"] < 1
     assert "LONG" in art["toits"]["toits"]
+
+
+# --- Véhicules : la couche optionnelle --------------------------------------------
+
+def _scene_nue(lat, lon, avancer=None):
+    import gzip
+    import json
+    return gzip.compress(json.dumps({"batiments": {"features": []}, "eau": None}).encode()), b"jpeg"
+
+
+def _lecteur_vehicules(mode, appels=None, en_panne=None):
+    def lire(*bbox):
+        if appels is not None:
+            appels.append(bbox)
+        if en_panne and en_panne[0]:
+            raise ConnectionError("Read timed out")
+        return {"largeur": 1173, "hauteur": 1781,
+                "boites": [[586.5, 890.5, 22, 10, 0.0, 0.6, 0, 0x808080, mode]]}
+    lire.mode = mode
+    return lire
+
+
+def test_sans_detecteur_la_couche_des_vehicules_n_existe_pas(tmp_path):
+    cache = Cache(str(tmp_path))
+    cache.prelire_vehicules(48.8049, 2.1204)              # sans effet, sans erreur
+    with pytest.raises(scene.VehiculesDesactives):
+        cache.obtenir_vehicules(48.8049, 2.1204, construire=_scene_nue)
+
+
+def test_la_couche_des_vehicules_porte_le_detecteur_dans_son_nom(tmp_path):
+    """Relancer le service avec un autre détecteur ne ressert pas la couche
+    du précédent : chacun a son fichier, et sa seule lecture."""
+    import gzip
+    import json
+    appels = []
+    cache = Cache(str(tmp_path), lire_vehicules=_lecteur_vehicules("rtmdet", appels))
+    dossier, nom = cache.obtenir_vehicules(48.8049, 2.1204, construire=_scene_nue)
+    assert cache.obtenir_vehicules(48.8049, 2.1204, construire=_scene_nue) == (dossier, nom)
+    assert len(appels) == 1
+    assert nom == f"vehicules-rtmdet-v{scene.VEHICULES_VERSION}.json.gz"
+    couche = json.loads(gzip.decompress(open(os.path.join(dossier, nom), "rb").read()))
+    assert couche["mode"] == "rtmdet" and len(couche["vehicules"]) == 1
+
+    autre = Cache(str(tmp_path), lire_vehicules=_lecteur_vehicules("yolo", appels))
+    _, nom_yolo = autre.obtenir_vehicules(48.8049, 2.1204, construire=_scene_nue)
+    assert nom_yolo != nom and len(appels) == 2
+    assert os.path.exists(os.path.join(dossier, nom)) and os.path.exists(os.path.join(dossier, nom_yolo))
+
+
+def test_une_panne_des_vehicules_ne_met_rien_en_cache_et_epargne_la_scene(tmp_path):
+    en_panne = [True]
+    cache = Cache(str(tmp_path), lire_vehicules=_lecteur_vehicules("tous", en_panne=en_panne))
+    with pytest.raises(scene.VehiculesIndisponibles):
+        cache.obtenir_vehicules(48.8049, 2.1204, construire=_scene_nue)
+    assert cache.present(48.8049, 2.1204)
+    assert not os.path.exists(cache.chemin(48.8049, 2.1204, scene.nom_vehicules("tous")))
+    en_panne[0] = False
+    cache.obtenir_vehicules(48.8049, 2.1204, construire=_scene_nue)
+    assert os.path.exists(cache.chemin(48.8049, 2.1204, scene.nom_vehicules("tous")))
+
+
+def test_les_vehicules_sont_detectes_pendant_que_la_scene_se_construit(tmp_path):
+    """La lecture anticipée sert la demande : une seule détection."""
+    appels = []
+    cache = Cache(str(tmp_path), lire_vehicules=_lecteur_vehicules("rtmdet", appels))
+    cache.prelire_vehicules(48.8049, 2.1204)
+    cache.prelire_vehicules(48.8049, 2.1204)              # page rechargée : pas de second calcul
+    cache.obtenir_vehicules(48.8049, 2.1204, construire=_scene_nue)
+    assert len(appels) == 1

@@ -14,7 +14,10 @@
 //   vers l'extérieur ;
 // - toit résumé découpé sur l'emprise (geometrieToitDecoupe) : pans tournés
 //   vers le haut, d'aire égale à celle de l'emprise, pignons tournés vers
-//   l'extérieur, volume égal à l'intégrale de la hauteur du toit.
+//   l'extérieur, volume égal à l'intégrale de la hauteur du toit ;
+// - véhicules (blocsVehicule, repereVehicule) : chaque bloc fermé, tourné vers
+//   l'extérieur, dans le gabarit unité ; le repère d'un véhicule posé sur une
+//   pente reste orthonormé, direct, le toit vers le haut.
 //
 // Sort en erreur au premier contrôle manqué.
 import * as THREE from 'three';
@@ -36,8 +39,10 @@ function extraire(nom) {
 const M = 111320, MLON = 111320 * Math.cos(45 * Math.PI / 180);
 const toLocal = (lon, lat) => [(lon - 2) * MLON, (lat - 45) * M];
 const NOMS = ['couperPolygone', 'enveloppeConvexe', 'rectangleMin', 'rectangleSelonAxe',
-              'geometrieToitDecoupe', 'stationsLeLong', 'prismeLeLong', 'dalle'];
-const { rectangleMin, rectangleSelonAxe, geometrieToitDecoupe, stationsLeLong, prismeLeLong, dalle } =
+              'geometrieToitDecoupe', 'stationsLeLong', 'prismeLeLong', 'dalle',
+              'blocsVehicule', 'repereVehicule'];
+const { rectangleMin, rectangleSelonAxe, geometrieToitDecoupe, stationsLeLong, prismeLeLong, dalle,
+        blocsVehicule, repereVehicule } =
   new Function('THREE', 'toLocal', NOMS.map(extraire).join('\n') + `\nreturn { ${NOMS.join(', ')} };`)(THREE, toLocal);
 let tout = true;
 
@@ -196,6 +201,48 @@ console.log(`${bas === 0 ? 'OK ' : 'KO '} deux corps sur une maison en L : ${p2.
 const rien = geometrieToitDecoupe(fermer(rect).map(ll), [], [{ rect: { ang: 0, x0: 100, x1: 120, y0: 0, y1: 10 }, g: 4, f: 7 }], 4);
 console.log(`${rien === null ? 'OK ' : 'KO '} boîte hors de l'emprise : ${rien === null ? 'null' : 'géométrie'}`);
 tout = tout && bas === 0 && rien === null;
+}
+
+// --- Véhicules ------------------------------------------------------------------
+{
+for (const gabarit of ['voiture', 'fourgon', 'car']) {
+  const blocs = blocsVehicule(gabarit);
+  let ouvertes = 0, dehors = 0, retournes = 0, volume = 0;
+  for (const b of blocs) {
+    const aretes = new Map();
+    let v = 0;
+    const cle = p => p.map(c => c.toFixed(5)).join(',');
+    for (const [a, bb, c] of b.tris) {
+      v += (a[0] * (bb[1] * c[2] - bb[2] * c[1]) - a[1] * (bb[0] * c[2] - bb[2] * c[0]) + a[2] * (bb[0] * c[1] - bb[1] * c[0])) / 6;
+      for (const [u, w] of [[a, bb], [bb, c], [c, a]]) aretes.set(cle(u) + '>' + cle(w), (aretes.get(cle(u) + '>' + cle(w)) || 0) + 1);
+      for (const p of [a, bb, c]) if (Math.abs(p[0]) > 0.5 + 1e-9 || p[1] < -1e-9 || p[1] > 1 + 1e-9 || Math.abs(p[2]) > 0.52) dehors++;
+    }
+    for (const [k, n] of aretes) { const [u, w] = k.split('>'); if (n !== 1 || (aretes.get(w + '>' + u) || 0) !== 1) ouvertes++; }
+    if (v <= 0) retournes++;
+    volume += v;
+  }
+  const teintes = new Set(blocs.map(b => b.teinte));
+  const ok = ouvertes === 0 && dehors === 0 && retournes === 0 && teintes.has('caisse') && teintes.has('vitre') && teintes.has('roue');
+  console.log(`${ok ? 'OK ' : 'KO '} véhicule « ${gabarit} » : ${blocs.length} blocs, volume ${volume.toFixed(2)} du gabarit, arêtes sans vis-à-vis ${ouvertes}, blocs retournés ${retournes}, sommets hors gabarit ${dehors}`);
+  tout = tout && ok;
+}
+// Repère : caps tous les 15°, pentes jusqu'à 100 % en long et en travers.
+let mauvais = 0, essais = 0, pire = 0;
+const scal = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+for (let cap = 0; cap < 360; cap += 15) for (const pl of [-1, -0.2, 0, 0.2, 1]) for (const pt of [-1, -0.2, 0, 0.2, 1]) {
+  const est = Math.sin(cap * Math.PI / 180), nord = Math.cos(cap * Math.PI / 180), L = 4.3, W = 1.8;
+  const { X, Y, Z } = repereVehicule(est, nord, L, W, pl * L / 2, -pl * L / 2, -pt * W / 2, pt * W / 2);
+  const det = scal(X, [Y[1] * Z[2] - Y[2] * Z[1], Y[2] * Z[0] - Y[0] * Z[2], Y[0] * Z[1] - Y[1] * Z[0]]);
+  const ecart = Math.max(Math.abs(scal(X, X) - 1), Math.abs(scal(Y, Y) - 1), Math.abs(scal(Z, Z) - 1), Math.abs(scal(X, Y)), Math.abs(scal(Y, Z)), Math.abs(det - 1));
+  // L'avant pointe vers le cap et monte avec la pente ; la droite descend si le sol descend à droite.
+  const sens = X[0] * est - X[2] * nord > 0 && Math.sign(X[1]) === Math.sign(pl) && Z[0] * nord + Z[2] * est > 0;
+  essais++; pire = Math.max(pire, ecart);
+  if (ecart > 1e-9 || Y[1] <= 0 || !sens) mauvais++;
+}
+const plat = repereVehicule(0, 1, 4.3, 1.8, 0, 0, 0, 0);       // cap nord, sol plat
+const platOk = [plat.X, plat.Y, plat.Z].flat().every((c, i) => Math.abs(c - [0, 0, -1, 0, 1, 0, 1, 0, 0][i]) < 1e-12);
+console.log(`${mauvais === 0 && platOk ? 'OK ' : 'KO '} repère d'un véhicule : ${essais} poses, ${mauvais} fausses, écart à l'orthonormé ${pire.toExponential(1)}, à plat cap nord ${platOk ? 'avant au nord, droite à l\'est' : 'FAUX'}`);
+tout = tout && mauvais === 0 && platOk;
 }
 
 process.exit(tout ? 0 : 1);

@@ -1,7 +1,15 @@
 services:
   vue3d:
-    build: .
-    image: vue-3d-ign
+    build:
+      context: .
+      args:
+        # Détecteur de véhicules embarqué dans l'image : aucun (défaut),
+        # rtmdet, yolo ou tous. Le changer demande de reconstruire :
+        #   VUE3D_VEHICULES=rtmdet docker compose up -d --build
+        VEHICULES: ${VUE3D_VEHICULES:-aucun}
+    # Une image par détecteur (latest sans détecteur) : en changer ne réutilise
+    # pas celle d'un autre.
+    image: vue-3d-ign:${VUE3D_VEHICULES:-latest}
     ports:
       - "${VUE3D_PORT:-8080}:8080"
     volumes:
