@@ -5,3 +5,4 @@ tests
 *.pyc
 .pytest_cache
 modeles
+donnees

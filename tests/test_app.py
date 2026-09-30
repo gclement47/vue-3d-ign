@@ -156,7 +156,7 @@ def test_les_couches_de_l_orthophoto_sont_servies_a_part_detecteur_par_detecteur
     """La page apprend les détecteurs par /api/sante, demande les piscines,
     puis les véhicules de chaque détecteur : chaque couche a sa route."""
     sante = client_vehicules.get("/api/sante")
-    assert sante.get_json() == {"ok": True, "vehicules": {"mode": "rtmdet", "detecteurs": ["rtmdet"]}}
+    assert sante.get_json()["vehicules"] == {"mode": "rtmdet", "detecteurs": ["rtmdet"]}
     assert sante.headers["Cache-Control"] == "no-store"
     r = client_vehicules.get("/api/piscines?lat=48.8049&lon=2.1204")
     assert r.status_code == 200 and r.headers["Content-Encoding"] == "gzip"
@@ -212,4 +212,51 @@ def test_une_panne_des_vehicules_rend_503_sans_toucher_la_scene(client_vehicules
 
 def test_sante(client):
     assert client.get("/api/sante").get_json() == {
-        "ok": True, "vehicules": {"mode": "aucun", "detecteurs": []}}
+        "ok": True, "vehicules": {"mode": "aucun", "detecteurs": []},
+        "panneaux": {"actif": False, "source": None}}
+
+
+def test_sans_registre_la_couche_des_panneaux_le_dit(client):
+    r = client.get("/api/panneaux?lat=48.8049&lon=2.1204")
+    assert r.status_code == 200 and r.get_json() == {"actif": False, "panneaux": []}
+    assert r.headers["Cache-Control"] == "no-store"
+
+
+@pytest.fixture
+def client_panneaux(tmp_path):
+    """Un service lancé avec un registre : une installation carrée de 10 m au
+    point demandé, sauf au sud de 46° où la base est illisible."""
+    scene = {"version": 1, "bbox": [0, 0, 1, 1]}
+
+    def construire(lat, lon, avancer=None):
+        return gzip.compress(json.dumps(scene).encode()), b"\xff\xd8jpeg"
+
+    def lire_panneaux(west, south, east, north):
+        if south < 46:
+            raise OSError("disk I/O error")
+        lon, lat = (west + east) / 2, (south + north) / 2
+        d = 5 / 111320
+        return [{"contour": [[lon - d, lat - d], [lon + d, lat - d], [lon + d, lat + d], [lon - d, lat + d],
+                             [lon - d, lat - d]], "surface": 100, "kwp": 12, "annee": 2023}]
+
+    appli = module_app.creer_app(str(tmp_path), construire=construire,
+                                 lire_monuments=lambda *b: {"elements": []},
+                                 lire_ouvrages=lambda *b: {}, lire_panneaux=lire_panneaux)
+    return appli.test_client()
+
+
+def test_la_couche_des_panneaux_est_servie_a_part(client_panneaux):
+    from vue3d.scene import NOM_PANNEAUX
+    assert client_panneaux.get("/api/sante").get_json()["panneaux"] == {
+        "actif": True, "source": "OpenPVMapper (G. Kasmi), CC-BY 4.0"}
+    r = client_panneaux.get("/api/panneaux?lat=48.8049&lon=2.1204")
+    assert r.status_code == 200 and r.headers["Content-Encoding"] == "gzip"
+    assert r.headers["Cache-Control"] == "no-cache" and r.headers["ETag"] == f'"{NOM_PANNEAUX}"'
+    (p,) = json.loads(gzip.decompress(r.data))["panneaux"]
+    assert p["surface"] == 100 and p["kwp"] == 12 and p["annee"] == 2023 and len(p["contour"]) == 4
+    assert client_panneaux.get("/api/panneaux").status_code == 400
+    assert client_panneaux.get("/api/panneaux?lat=40&lon=2").status_code == 422
+    # La base illisible : 503, rien en cache, la scène reste servie.
+    assert client_panneaux.get("/api/scene?lat=45.5&lon=2").status_code == 200
+    r = client_panneaux.get("/api/panneaux?lat=45.5&lon=2")
+    assert r.status_code == 503 and "panneaux" in r.get_json()["erreur"]

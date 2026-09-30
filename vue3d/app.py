@@ -7,6 +7,7 @@
     GET /api/ouvrages?lat=…&lon=…    la couche des ouvrages BD TOPO, JSON gzippé
     GET /api/piscines?lat=…&lon=…    les piscines de l'orthophoto, si le service a un détecteur
     GET /api/vehicules?lat=…&lon=…&detecteur=…   les véhicules vus d'un détecteur du service
+    GET /api/panneaux?lat=…&lon=…    les panneaux solaires du registre, si le service en a un
     GET /api/avancement?lat=…&lon=…  l'étape de la construction en cours
     GET /api/sante                 contrôle de vie, pour Docker
 
@@ -21,9 +22,12 @@ from flask import Flask, jsonify, request, send_from_directory
 
 from .monuments import fetch_monuments
 from .ouvrages import fetch_ouvrages
-from .scene import (NOM_MONUMENTS, NOM_ORTHO, NOM_OUVRAGES, NOM_SCENE, Cache,
+from .panneaux import REGISTRE_LICENCE
+from .panneaux import lecteur as lecteur_panneaux
+from .scene import (NOM_MONUMENTS, NOM_ORTHO, NOM_OUVRAGES, NOM_PANNEAUX, NOM_SCENE, Cache,
                     HorsEmprise, MonumentsIndisponibles, OuvragesIndisponibles,
-                    SceneIncomplete, VehiculesDesactives, VehiculesIndisponibles)
+                    PanneauxIndisponibles, SceneIncomplete, VehiculesDesactives,
+                    VehiculesIndisponibles)
 from .scene import construire as construire_scene
 from .vehicules import MODE_PAR_DEFAUT
 from .vehicules import lecteur as lecteur_vehicules
@@ -40,18 +44,19 @@ ICI = os.path.dirname(os.path.abspath(__file__))
 
 
 def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fetch_monuments,
-              lire_ouvrages=fetch_ouvrages, lire_vehicules=None):
-    """`construire`, `lire_monuments`, `lire_ouvrages` et `lire_vehicules`
-    sont injectables pour les tests, qui n'appellent ni l'IGN ni Overpass et
-    ne chargent aucun réseau. `lire_vehicules` : de `vehicules.lecteur()` ;
-    None, le service n'a ni véhicules ni piscines."""
+              lire_ouvrages=fetch_ouvrages, lire_vehicules=None, lire_panneaux=None):
+    """`construire`, `lire_monuments`, `lire_ouvrages`, `lire_vehicules` et
+    `lire_panneaux` sont injectables pour les tests, qui n'appellent ni l'IGN
+    ni Overpass et ne chargent aucun réseau ni registre. `lire_vehicules` :
+    de `vehicules.lecteur()` ; None, le service n'a ni véhicules ni piscines.
+    `lire_panneaux` : de `panneaux.lecteur()` ; None, pas de panneaux."""
     app = Flask(__name__, static_folder=os.path.join(ICI, "static"), static_url_path="/static")
     # Absolu : send_from_directory résout un chemin relatif depuis le dossier
     # de l'application, pas depuis le répertoire courant — avec
     # VUE3D_CACHE=./cache, l'orthophoto répondait 404.
     cache = Cache(os.path.abspath(dossier_cache or os.environ.get("VUE3D_CACHE", "/tmp/vue3d-cache")),
                   lire_monuments=lire_monuments, lire_ouvrages=lire_ouvrages,
-                  lire_vehicules=lire_vehicules)
+                  lire_vehicules=lire_vehicules, lire_panneaux=lire_panneaux)
 
     def point():
         try:
@@ -73,6 +78,8 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
                 return cache.obtenir_ouvrages(*p, construire=construire), None
             if couche == COUCHE_PISCINES:
                 return cache.obtenir_piscines(*p, construire=construire), None
+            if couche == NOM_PANNEAUX:
+                return cache.obtenir_panneaux(*p, construire=construire), None
             if couche == COUCHE_VEHICULES:
                 return cache.obtenir_vehicules(*p, detecteur, construire=construire), None
             if prelire:
@@ -82,6 +89,7 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
                 cache.prelire_monuments(*p)
                 cache.prelire_ouvrages(*p)
                 cache.prelire_vehicules(*p)
+                cache.prelire_panneaux(*p)
             return cache.obtenir(*p, construire=construire), None
         except HorsEmprise as exc:
             return None, erreur(422, str(exc))
@@ -106,6 +114,10 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
             return None, erreur(503, "La détection sur l'orthophoto n'a pas abouti ("
                                 f"{exc}). Rien n'a été mis en cache : réessayez "
                                 "dans quelques instants.")
+        except PanneauxIndisponibles as exc:
+            app.logger.warning("Panneaux indisponibles pour %s : %s", p, exc)
+            return None, erreur(503, f"Le registre des panneaux solaires n'a pas pu être lu ({exc}). "
+                                "Rien n'a été mis en cache : réessayez dans quelques instants.")
         except VehiculesDesactives as exc:
             return None, erreur(400, f"{exc} : détecteurs de ce service : "
                                 f"{', '.join(cache.lire_vehicules.detecteurs) or 'aucun'}.")
@@ -203,6 +215,22 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
             return err
         return servir_gzip(*trouve, a_revalider=True)
 
+    @app.get("/api/panneaux")
+    def panneaux():
+        """Les panneaux solaires du registre OpenPVMapper, demandés par la
+        page une fois la scène affichée. Sans registre, la réponse le dit
+        (`actif: false`) : ce n'est pas une erreur."""
+        if not cache.lire_panneaux:
+            reponse = jsonify({"actif": False, "panneaux": []})
+            reponse.headers["Cache-Control"] = "no-store"
+            return reponse
+        dossier, err = dossier_scene(couche=NOM_PANNEAUX)
+        if err:
+            return err
+        # Revalidée comme les couches de l'orthophoto : à la même adresse, la
+        # couche apparaît quand le service est relancé avec le registre.
+        return servir_gzip(dossier, NOM_PANNEAUX, a_revalider=True)
+
     @app.get("/api/ortho")
     def ortho():
         dossier, err = dossier_scene()
@@ -234,13 +262,16 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
         lecteur = cache.lire_vehicules
         reponse = jsonify({"ok": True, "vehicules": {
             "mode": lecteur.mode if lecteur else MODE_PAR_DEFAUT,
-            "detecteurs": list(lecteur.detecteurs) if lecteur else []}})
+            "detecteurs": list(lecteur.detecteurs) if lecteur else []},
+            "panneaux": {"actif": bool(cache.lire_panneaux),
+                         "source": REGISTRE_LICENCE if cache.lire_panneaux else None}})
         reponse.headers["Cache-Control"] = "no-store"
         return reponse
 
     return app
 
 
-# Le détecteur de VUE3D_VEHICULES est chargé ici, une fois : un mode demandé
-# sans son réseau arrête le démarrage, avec la commande qui le produit.
-app = creer_app(lire_vehicules=lecteur_vehicules())
+# Le détecteur de VUE3D_VEHICULES et le registre de VUE3D_PANNEAUX sont
+# chargés ici, une fois : demandés sans leur réseau ou leur base, ils
+# arrêtent le démarrage, avec la commande qui les produit.
+app = creer_app(lire_vehicules=lecteur_vehicules(), lire_panneaux=lecteur_panneaux())

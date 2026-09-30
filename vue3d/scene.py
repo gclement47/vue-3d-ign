@@ -28,8 +28,10 @@ ce qu'ils décrivent n'entre dans un calcul de la scène, qui n'a donc pas à
 échouer avec eux ni à être reconstruite quand leur format change.
 
 Les véhicules et les piscines de l'orthophoto (vue3d/vehicules.py) sont une
-troisième couche à part, la seule optionnelle : elle n'existe que si le service a été lancé avec
-un détecteur (`Cache.obtenir_vehicules`, `VUE3D_VEHICULES`).
+troisième couche à part, optionnelle : elle n'existe que si le service a été
+lancé avec un détecteur (`Cache.obtenir_vehicules`, `VUE3D_VEHICULES`). Les
+panneaux solaires du registre OpenPVMapper (vue3d/panneaux.py) en sont une
+quatrième, optionnelle aussi (`Cache.obtenir_panneaux`, `VUE3D_PANNEAUX`).
 
 La construction coûte une vingtaine à une trentaine de secondes, dont la moitié
 à télécharger la grille MNH. Le résultat est donc mis en cache sur disque, par
@@ -68,6 +70,7 @@ from .mnh import fetch_mnh_grid, fetch_sol_grid
 from .monuments import fetch_monuments, monuments_pour_emprise
 from .ortho import fetch_exg_grid, fetch_ortho_jpeg
 from .ouvrages import OUVRAGES_VERSION, fetch_ouvrages, ouvrages_pour_emprise
+from .panneaux import PANNEAUX_VERSION, panneaux_pour_emprise
 from .relief import fetch_relief, fetch_relief_anneau
 from .toits import TOITS_RESOLUTION_M, toits_pour_emprise
 from .vehicules import (PISCINES_VERSION, VEHICULES_VERSION, piscines_pour_emprise,
@@ -113,6 +116,10 @@ NOM_MONUMENTS = "monuments.json.gz"
 NOM_OUVRAGES = f"ouvrages-v{OUVRAGES_VERSION}.json.gz"
 
 
+# Les panneaux solaires ont une seule source : le registre, à sa version.
+NOM_PANNEAUX = f"panneaux-v{PANNEAUX_VERSION}.json.gz"
+
+
 def nom_vehicules(detecteur):
     """Fichier des véhicules d'un détecteur. Son nom est dans celui du fichier,
     avec la version : relancer le service avec un autre ne ressert jamais la
@@ -144,6 +151,14 @@ class VehiculesIndisponibles(RuntimeError):
 class VehiculesDesactives(RuntimeError):
     """Le service tourne sans détecteur, ou sans celui qu'on lui demande : la
     couche n'existe pas."""
+
+
+class PanneauxIndisponibles(RuntimeError):
+    """La base des panneaux n'a pas pu être lue : rien n'est mis en cache."""
+
+
+class PanneauxDesactives(RuntimeError):
+    """Le service tourne sans registre des panneaux : la couche n'existe pas."""
 
 
 class HorsEmprise(ValueError):
@@ -318,10 +333,12 @@ class Cache:
     """
 
     def __init__(self, dossier, lire_monuments=fetch_monuments, lire_ouvrages=fetch_ouvrages,
-                 lire_vehicules=None):
+                 lire_vehicules=None, lire_panneaux=None):
         """`lire_vehicules` : de `vehicules.lecteur()` — `mode`,
         `detecteurs`, `piscines(emprise)` et `vehicules(detecteur)` ; None,
-        et les couches des véhicules et des piscines n'existent pas."""
+        et les couches des véhicules et des piscines n'existent pas.
+        `lire_panneaux` : de `panneaux.lecteur()`, (emprise) -> installations ;
+        None, et la couche des panneaux n'existe pas."""
         self.dossier = dossier
         os.makedirs(dossier, exist_ok=True)
         self._verrous = {}
@@ -337,12 +354,16 @@ class Cache:
         self.lire_ouvrages = lire_ouvrages
         self.lire_vehicules = lire_vehicules
         self.mode_vehicules = lire_vehicules.mode if lire_vehicules else None
+        self.lire_panneaux = lire_panneaux
         self._lectures = {}
         self._taches = {
             NOM_MONUMENTS: concurrent.futures.ThreadPoolExecutor(
                 max_workers=2, thread_name_prefix="overpass"),
             NOM_OUVRAGES: concurrent.futures.ThreadPoolExecutor(
                 max_workers=2, thread_name_prefix="ouvrages"),
+            # Une lecture SQLite de quelques millisecondes.
+            NOM_PANNEAUX: concurrent.futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="panneaux"),
         }
         if lire_vehicules:
             # Un seul fil pour toutes les détections : chacune occupe déjà
@@ -518,6 +539,27 @@ class Cache:
             lambda message: OuvragesIndisponibles(f"ouvrages illisibles : {message}"),
             lambda bbox, brut, scene: ouvrages_pour_emprise(
                 *bbox, brut, scene.get("relief"), scene.get("masses"), scene.get("routes")))
+
+    def prelire_panneaux(self, lat, lon):
+        """Lance la lecture du registre en tâche de fond, si le service en a un."""
+        if self.lire_panneaux:
+            self._prelire(NOM_PANNEAUX, lat, lon, self.lire_panneaux)
+
+    def obtenir_panneaux(self, lat, lon, construire=construire):
+        """Chemin du dossier où la couche des panneaux solaires du point est
+        écrite. Elle ne lit rien de la scène, mais suit le même chemin.
+
+        Raises:
+            PanneauxDesactives si le service tourne sans registre.
+            PanneauxIndisponibles si la base n'a pas pu être lue : rien n'est
+            écrit, la demande suivante réessaie.
+        """
+        if not self.lire_panneaux:
+            raise PanneauxDesactives("service lancé sans registre des panneaux solaires")
+        return self._obtenir_couche(
+            NOM_PANNEAUX, lat, lon, construire, self.lire_panneaux,
+            lambda message: PanneauxIndisponibles(f"panneaux solaires illisibles : {message}"),
+            lambda bbox, brut, scene: panneaux_pour_emprise(*bbox, brut))
 
     def prelire_vehicules(self, lat, lon):
         """Lance en tâche de fond les détections sur l'orthophoto à 0,2 m, si

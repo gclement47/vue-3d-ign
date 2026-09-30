@@ -135,6 +135,7 @@
                 <button class="toggle on" id="t-ouvrages" hidden title="Murs, ponts, voies ferrées et terrains de sport de la BD TOPO">Murs, ponts, rails</button>
                 <button class="toggle on" id="t-vehicules" hidden title="Véhicules vus sur l'orthophoto, le jour de la prise de vue">Véhicules</button>
                 <button class="toggle on" id="t-piscines" hidden title="Piscines vues sur l'orthophoto">Piscines</button>
+                <button class="toggle on" id="t-panneaux" hidden title="Panneaux solaires du registre OpenPVMapper">Panneaux solaires</button>
                 <button class="toggle" id="t-moi">Ma position</button>
             </div>
             <div class="row">
@@ -1053,6 +1054,7 @@ function majCiblesSurvol() {
     if (groupeOuvrages && groupeOuvrages.visible) ciblesSurvol.push(...ouvragesSurvol);
     if (groupeVehicules && groupeVehicules.visible) ciblesSurvol.push(...groupeVehicules.children);
     if (groupePiscines && groupePiscines.visible) ciblesSurvol.push(...groupePiscines.children);
+    if (groupePanneaux && groupePanneaux.visible) ciblesSurvol.push(...groupePanneaux.children);
 }
 
 /** Point dans polygone par lancer de rayon. Coordonnées en degrés (lon, lat). */
@@ -1479,6 +1481,8 @@ function construire(features, toitsEnPente) {
     // à chaque reconstruction.
     appliquerTextureToits();
     majCiblesSurvol();
+    // Les toits viennent d'être redessinés : les panneaux solaires les suivent.
+    if (panneauxPoses && panneauxPoses.length) placerPanneaux();
 }
 
 /**
@@ -1727,6 +1731,7 @@ chargerScene()
         chargerMonuments();
         chargerOuvrages();
         chargerDetections();
+        chargerPanneaux();
     })
     .catch(err => {
         note.textContent = 'Chargement impossible : ' + err.message;
@@ -2004,6 +2009,10 @@ function majCredits() {
     if (monumentsActifs && MONUMENTS) {
         html += ' · Monuments 3D © <a href="https://www.openstreetmap.org/copyright"'
             + ' target="_blank" rel="noopener">contributeurs OpenStreetMap</a>, ODbL';
+    }
+    if (panneauxPoses && panneauxPoses.length && groupePanneaux.visible) {
+        html += ' · Panneaux solaires © <a href="https://doi.org/10.5281/zenodo.19188878"'
+            + ' target="_blank" rel="noopener">OpenPVMapper</a> (G. Kasmi), CC-BY 4.0';
     }
     document.getElementById('credits').innerHTML = html;
 }
@@ -2344,6 +2353,7 @@ function appliquerExageration() {
     rebaserBatiments();
     placerVegetation();
     placerPosition();
+    placerPanneaux();
 }
 
 /** Bascule du relief : le fond passe du plan plat au maillage, ou l'inverse. */
@@ -2429,6 +2439,7 @@ async function chargerRelief() {
         construireOuvrages();
         construireVehicules();
         construirePiscines();
+        construirePanneaux();
         return;
     }
 
@@ -2481,6 +2492,7 @@ async function chargerRelief() {
     construireOuvrages();
     construireVehicules();
     construirePiscines();
+    construirePanneaux();
     sourceRelief = source.nom;
     majCredits();
 
@@ -3686,6 +3698,93 @@ document.getElementById('t-piscines').addEventListener('click', e => {
     groupePiscines.visible = !groupePiscines.visible;
     e.currentTarget.classList.toggle('on', groupePiscines.visible);
     majCiblesSurvol();
+});
+
+// --- Panneaux solaires du registre OpenPVMapper ------------------------------------
+// Une couche à part et optionnelle (/api/panneaux, vue3d/panneaux.py) : le
+// registre national de Gabriel Kasmi, DeepPVMapper passé sur la BD ORTHO, lu
+// tel quel — aucun réseau ne tourne ici. Chaque installation est un polygone
+// avec sa surface, sa puissance estimée et l'année de la photo.
+//
+// Le registre ne dit pas la hauteur : le polygone est posé sur le toit tel
+// que la vue le dessine, par un rayon vertical lancé sur les bâtiments à
+// chacun de ses sommets — le panneau épouse les pans, mesurés ou résumés.
+// Là où aucun toit n'est touché (bâtiment absent, registre décalé), il est
+// posé sur le sol.
+const URL_PANNEAUX = `api/panneaux?${REQUETE}`;
+const PANNEAU_MAILLE = 1.5;            // sommets tous les 1,5 m : un pan de toit est plan à cette échelle
+const PANNEAU_DECALAGE = 0.08;         // au-dessus du toit, sous les cheminées
+const MAT_PANNEAU = new THREE.MeshStandardMaterial({
+    color: 0x1c2b46, roughness: 0.25, metalness: 0.5, polygonOffset: true,
+    polygonOffsetFactor: -3, polygonOffsetUnits: -3 });
+let PANNEAUX = null;           // { panneaux }
+var groupePanneaux = new THREE.Group();
+scene.add(groupePanneaux);
+var panneauxPoses = [];        // { mesh, sommets: [[x, y]] } — y : nord, en mètres locaux
+let panneauxSource = null;     // libellé de la source, pour les crédits
+const rayonPanneau = new THREE.Raycaster();
+
+/** Hauteur du toit (ou du sol) sous un point local, en unités de scène. */
+function hauteurSousPanneau(x, y) {
+    rayonPanneau.set(new THREE.Vector3(x, 1000, -y), new THREE.Vector3(0, -1, 0));
+    const touche = rayonPanneau.intersectObjects(groupeBatiments.children, false)[0];
+    return (touche ? touche.point.y : ySol(...toLonLat(x, y))) + PANNEAU_DECALAGE;
+}
+
+function construirePanneaux() {
+    if (!PANNEAUX || !reliefRegle || panneauxPoses.length) return;
+    for (const p of PANNEAUX.panneaux) {
+        if (!p.contour || p.contour.length < 3) continue;
+        const tris = subdiviser(trianglesPolygone([p.contour.concat([p.contour[0]])]), PANNEAU_MAILLE);
+        if (!tris.length) continue;
+        const sommets = tris.flat();
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(sommets.length * 3, 3));
+        const mesh = new THREE.Mesh(geo, MAT_PANNEAU);
+        mesh.receiveShadow = true;
+        mesh.userData = { infobulle: '<b>Panneaux solaires</b>'
+            + `<br>${p.surface != null ? enMetres(p.surface).replace(' m', ' m²') : 'surface inconnue'}`
+            + (p.kwp != null ? ` · ≈ ${String(p.kwp).replace('.', ',')} kWc` : '')
+            + (p.annee ? `<br>vus sur la photo aérienne de ${p.annee}` : '')
+            + '<br><i>registre OpenPVMapper (G. Kasmi), posé sur le toit tel que dessiné</i>' };
+        groupePanneaux.add(mesh);
+        panneauxPoses.push({ mesh, sommets });
+    }
+    placerPanneaux();
+    const bouton = document.getElementById('t-panneaux');
+    bouton.hidden = !panneauxPoses.length;
+    bouton.title = `${panneauxPoses.length} installation(s) du registre OpenPVMapper`;
+    majCiblesSurvol();
+    majCredits();
+}
+
+/** Repose chaque sommet sur le toit : après le relief, l'exagération, ou un
+ * autre dessin des toits. */
+function placerPanneaux() {
+    if (!panneauxPoses.length) return;
+    groupeBatiments.updateMatrixWorld(true);
+    for (const { mesh, sommets } of panneauxPoses) {
+        const pos = mesh.geometry.attributes.position;
+        sommets.forEach(([x, y], k) => pos.setXYZ(k, x, hauteurSousPanneau(x, y), -y));
+        pos.needsUpdate = true;
+        mesh.geometry.computeVertexNormals();
+        mesh.geometry.computeBoundingSphere();
+    }
+}
+
+async function chargerPanneaux() {
+    await chargerCouche('Panneaux solaires', URL_PANNEAUX, p => {
+        if (!p || !p.actif && !(p.panneaux || []).length) return;   // service sans registre, ou rien ici
+        PANNEAUX = p;
+        construirePanneaux();
+    });
+}
+
+document.getElementById('t-panneaux').addEventListener('click', e => {
+    groupePanneaux.visible = !groupePanneaux.visible;
+    e.currentTarget.classList.toggle('on', groupePanneaux.visible);
+    majCiblesSurvol();
+    majCredits();
 });
 
 // --- Végétation et sursol (MNH LiDAR HD) ---------------------------------

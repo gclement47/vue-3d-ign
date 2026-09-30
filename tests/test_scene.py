@@ -461,3 +461,54 @@ def test_les_detections_sont_lancees_pendant_que_la_scene_se_construit(tmp_path)
     cache.obtenir_vehicules(48.8049, 2.1204, "yolo", construire=_scene_nue)
     cache.obtenir_vehicules(48.8049, 2.1204, "rtmdet", construire=_scene_nue)
     assert appels == ["piscines", "rtmdet", "yolo"]
+
+
+# --- Panneaux solaires : le registre ------------------------------------------------
+
+def _installation(west, south, east, north):
+    lon, lat, d = (west + east) / 2, (south + north) / 2, 5 / 111320
+    return [{"contour": [[lon - d, lat - d], [lon + d, lat - d], [lon + d, lat + d], [lon - d, lat + d]],
+             "surface": 100, "kwp": 12, "annee": 2023}]
+
+
+def test_sans_registre_la_couche_des_panneaux_n_existe_pas(tmp_path):
+    cache = Cache(str(tmp_path))
+    cache.prelire_panneaux(48.8049, 2.1204)              # sans effet, sans erreur
+    with pytest.raises(scene.PanneauxDesactives):
+        cache.obtenir_panneaux(48.8049, 2.1204, construire=_scene_nue)
+
+
+def test_la_couche_des_panneaux_est_lue_une_fois_et_versionnee(tmp_path):
+    import gzip
+    import json
+    appels = []
+
+    def lire(*bbox):
+        appels.append(bbox)
+        return _installation(*bbox)
+
+    cache = Cache(str(tmp_path), lire_panneaux=lire)
+    cache.prelire_panneaux(48.8049, 2.1204)
+    d1 = cache.obtenir_panneaux(48.8049, 2.1204, construire=_scene_nue)
+    d2 = cache.obtenir_panneaux(48.8049, 2.1204, construire=_scene_nue)
+    assert d1 == d2 and len(appels) == 1
+    assert scene.NOM_PANNEAUX == f"panneaux-v{scene.PANNEAUX_VERSION}.json.gz"
+    couche = json.loads(gzip.decompress(open(os.path.join(d1, scene.NOM_PANNEAUX), "rb").read()))
+    assert len(couche["panneaux"]) == 1 and couche["panneaux"][0]["kwp"] == 12
+
+
+def test_une_base_illisible_ne_met_rien_en_cache(tmp_path):
+    en_panne = [True]
+
+    def lire(*bbox):
+        if en_panne[0]:
+            raise OSError("disk I/O error")
+        return _installation(*bbox)
+
+    cache = Cache(str(tmp_path), lire_panneaux=lire)
+    with pytest.raises(scene.PanneauxIndisponibles):
+        cache.obtenir_panneaux(48.8049, 2.1204, construire=_scene_nue)
+    assert not os.path.exists(cache.chemin(48.8049, 2.1204, scene.NOM_PANNEAUX))
+    en_panne[0] = False
+    cache.obtenir_panneaux(48.8049, 2.1204, construire=_scene_nue)
+    assert os.path.exists(cache.chemin(48.8049, 2.1204, scene.NOM_PANNEAUX))

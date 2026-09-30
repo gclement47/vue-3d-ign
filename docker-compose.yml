@@ -7,9 +7,12 @@ services:
         # rtmdet, yolo ou tous. Le changer demande de reconstruire :
         #   VUE3D_VEHICULES=rtmdet docker compose up -d --build
         VEHICULES: ${VUE3D_VEHICULES:-aucun}
-    # Une image par détecteur (latest sans détecteur) : en changer ne réutilise
-    # pas celle d'un autre.
-    image: vue-3d-ign:${VUE3D_VEHICULES:-latest}
+        # Panneaux solaires du registre OpenPVMapper : vide (défaut) ou oui.
+        #   VUE3D_PANNEAUX=oui docker compose up -d --build
+        PANNEAUX: ${VUE3D_PANNEAUX:-}
+    # Une image par choix (latest sans détecteur ni registre) : en changer ne
+    # réutilise pas celle d'un autre.
+    image: vue-3d-ign:${VUE3D_VEHICULES:-latest}${VUE3D_PANNEAUX:+-panneaux}
     ports:
       - "${VUE3D_PORT:-8080}:8080"
     volumes:
