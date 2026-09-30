@@ -1726,7 +1726,7 @@ chargerScene()
         activerVegetation();
         chargerMonuments();
         chargerOuvrages();
-        chargerVehicules();
+        chargerDetections();
     })
     .catch(err => {
         note.textContent = 'Chargement impossible : ' + err.message;
@@ -2428,6 +2428,7 @@ async function chargerRelief() {
         reliefRegle = true;
         construireOuvrages();
         construireVehicules();
+        construirePiscines();
         return;
     }
 
@@ -2479,6 +2480,7 @@ async function chargerRelief() {
     reliefRegle = true;
     construireOuvrages();
     construireVehicules();
+    construirePiscines();
     sourceRelief = source.nom;
     majCredits();
 
@@ -3352,7 +3354,11 @@ document.getElementById('t-ouvrages').addEventListener('click', e => {
 // largeur, cap du grand axe, couleur. Tout le reste est convention : la
 // hauteur (aucune source ne la donne, le LiDAR ne retient pas les véhicules),
 // la forme, et le sens de marche, que la boîte ne dit pas.
-const URL_VEHICULES = `api/vehicules?${REQUETE}`;
+const URL_PISCINES = `api/piscines?${REQUETE}`;
+const urlVehicules = detecteur => `api/vehicules?${REQUETE}&detecteur=${detecteur}`;
+// Même véhicule vu de deux détecteurs : centres à moins de 1,5 m
+// (vehicules.DOUBLON_ENTRE_DETECTEURS_M). Le premier arrivé est gardé.
+const VEHICULE_DOUBLON_M = 1.5;
 // Gabarit d'après la longueur de la boîte. Sur Gordes et Carcassonne, 95 %
 // des boîtes font moins de 5,3 à 5,5 m : en deçà de 5,6 m, une voiture.
 // Hauteurs de convention.
@@ -3370,13 +3376,14 @@ const VEHICULE_PART_LONGUEUR = 0.97;
 const MAT_CARROSSERIE = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.45, metalness: 0.25, flatShading: true });
 const MAT_VITRES = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.35, metalness: 0.2, flatShading: true });
 const TEINTE_VITRE = [0.13, 0.17, 0.21], TEINTE_ROUE = [0.05, 0.05, 0.05];
-let VEHICULES = null;
+// Réunis à mesure que les détecteurs répondent, du rapide au lent.
+let VEHICULES = { mode: null, detecteurs: [], vehicules: [] };
+let PISCINES = null;           // { mode, piscines }
 // `var` : majCiblesSurvol() et appliquerExageration() les lisent avant que ce
 // bloc soit évalué.
 var groupeVehicules = new THREE.Group();
 scene.add(groupeVehicules);
 var vehiculesPoses = [];       // { maillages, liste } par gabarit
-let vehiculesConstruits = false;
 
 /**
  * Blocs d'un véhicule dans son repère unité : x de −0,5 (arrière) à 0,5
@@ -3447,12 +3454,15 @@ function repereVehicule(est, nord, longueur, largeur, yAvant, yArriere, yGauche,
     return { X, Y, Z: croix(X, Y) };
 }
 
+/** Reconstruit tous les véhicules connus : rappelée à chaque détecteur reçu. */
 function construireVehicules() {
-    if (!VEHICULES || !reliefRegle || vehiculesConstruits) return;
-    vehiculesConstruits = true;
-    construirePiscines();
+    if (!VEHICULES.vehicules.length || !reliefRegle) return;
+    for (const { maillages } of vehiculesPoses) {
+        for (const m of maillages) { groupeVehicules.remove(m); m.geometry.dispose(); }
+    }
+    vehiculesPoses = [];
     const parGabarit = { voiture: [], fourgon: [], car: [] };
-    for (const [lon, lat, longueur, largeur, cap, couleur] of VEHICULES.vehicules || []) {
+    for (const [lon, lat, longueur, largeur, cap, couleur] of VEHICULES.vehicules) {
         const gabarit = Object.keys(GABARITS_VEHICULE).find(g => longueur < GABARITS_VEHICULE[g].longueurMax);
         parGabarit[gabarit].push({ lon, lat, longueur, largeur, cap, couleur, gabarit });
     }
@@ -3490,8 +3500,8 @@ function construireVehicules() {
     placerVehicules();
     const bouton = document.getElementById('t-vehicules');
     bouton.hidden = !vehiculesPoses.length;
-    bouton.title = `${(VEHICULES.vehicules || []).length} véhicule(s) vus sur l'orthophoto, le jour de la prise de vue `
-        + `(détecteur : ${VEHICULES.mode})`;
+    bouton.title = `${VEHICULES.vehicules.length} véhicule(s) vus sur l'orthophoto, le jour de la prise de vue `
+        + `(détecteur${VEHICULES.detecteurs.length > 1 ? 's' : ''} : ${VEHICULES.detecteurs.join(', ')})`;
     majCiblesSurvol();
 }
 
@@ -3521,31 +3531,70 @@ function placerVehicules() {
     }
 }
 
-async function chargerVehicules(essai = 1) {
-    // Au premier essai seulement : ensuite l'indicateur est déjà affiché.
-    const retard = setTimeout(
-        () => etatCouche('etat-vehicules', 'Véhicules et piscines : détection sur l\'orthophoto…', true),
-        essai === 1 ? RETARD_ETAT_MONUMENTS_MS : 0);
-    try {
-        // Revalidée auprès du serveur : à la même adresse, la couche dépend
-        // du détecteur avec lequel il a été lancé, et de sa version.
-        const r = await fetch(URL_VEHICULES, { cache: 'no-cache' });
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const v = await r.json();
-        clearTimeout(retard);
-        etatCouche('etat-vehicules', null);
-        // Service lancé sans détecteur, ou rien à montrer sur l'emprise.
-        if (!v || !((v.vehicules || []).length + (v.piscines || []).length)) return;
-        VEHICULES = v;
-        construireVehicules();
-    } catch (e) {
-        clearTimeout(retard);
-        if (essai >= ESSAIS_MONUMENTS) {
-            etatCouche('etat-vehicules', 'Véhicules et piscines indisponibles : recharger la page pour réessayer.');
+/**
+ * Une couche de l'orthophoto : demandée jusqu'à ESSAIS_MONUMENTS fois,
+ * l'indicateur disant où on en est, puis remise à `recevoir`. Revalidée
+ * auprès du serveur : à la même adresse, la couche dépend du détecteur avec
+ * lequel il a été lancé, et de sa version.
+ */
+async function chargerCouche(libelle, url, recevoir) {
+    for (let essai = 1; ; essai++) {
+        // Au premier essai seulement : ensuite l'indicateur est déjà affiché.
+        const retard = setTimeout(
+            () => etatCouche('etat-vehicules', `${libelle} : détection sur l'orthophoto…`, true),
+            essai === 1 ? RETARD_ETAT_MONUMENTS_MS : 0);
+        try {
+            const r = await fetch(url, { cache: 'no-cache' });
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            const couche = await r.json();
+            clearTimeout(retard);
+            etatCouche('etat-vehicules', null);
+            recevoir(couche);
             return;
+        } catch (e) {
+            clearTimeout(retard);
+            if (essai >= ESSAIS_MONUMENTS) {
+                etatCouche('etat-vehicules', `${libelle} indisponibles : recharger la page pour réessayer.`);
+                return;
+            }
+            etatCouche('etat-vehicules', `${libelle} indisponibles : nouvel essai dans ${ATTENTE_MONUMENTS_S} s.`, true);
+            await new Promise(r => setTimeout(r, ATTENTE_MONUMENTS_S * 1000));
         }
-        etatCouche('etat-vehicules', `Véhicules et piscines indisponibles : nouvel essai dans ${ATTENTE_MONUMENTS_S} s.`, true);
-        setTimeout(() => chargerVehicules(essai + 1), ATTENTE_MONUMENTS_S * 1000);
+    }
+}
+
+/** Les véhicules d'un détecteur rejoignent ceux déjà connus, sauf doublons. */
+function ajouterVehicules(detecteur, couche) {
+    const connus = VEHICULES.vehicules.map(v => toLocal(v[0], v[1]));
+    for (const v of couche.vehicules || []) {
+        const [x, y] = toLocal(v[0], v[1]);
+        if (connus.some(([cx, cy]) => Math.hypot(cx - x, cy - y) < VEHICULE_DOUBLON_M)) continue;
+        VEHICULES.vehicules.push(v);
+        connus.push([x, y]);
+    }
+    VEHICULES.detecteurs.push(detecteur);
+    construireVehicules();
+}
+
+/**
+ * Les couches de l'orthophoto, l'une après l'autre : les piscines (une
+ * demi-seconde de détection), puis les véhicules de chaque détecteur du
+ * service, du rapide au lent. Chacune s'affiche dès qu'elle est prête, sans
+ * attendre la suivante ; le serveur les calcule dans le même ordre.
+ */
+async function chargerDetections() {
+    let sante = null;
+    try {
+        const r = await fetch('api/sante', { cache: 'no-store' });
+        sante = r.ok ? await r.json() : null;
+    } catch (e) { /* le serveur ne répond plus : la scène reste telle quelle */ }
+    const service = sante && sante.vehicules;
+    if (!service || !service.detecteurs || !service.detecteurs.length) return;   // sans détecteur
+    VEHICULES.mode = service.mode;
+    await chargerCouche('Piscines', URL_PISCINES, p => { PISCINES = p; construirePiscines(); });
+    for (const detecteur of service.detecteurs) {
+        await chargerCouche(`Véhicules (${detecteur})`, urlVehicules(detecteur),
+                            v => ajouterVehicules(detecteur, v));
     }
 }
 
@@ -3578,7 +3627,8 @@ scene.add(groupePiscines);
 var piscinesPosees = null;      // { cuves, eaux, liste }
 
 function construirePiscines() {
-    const liste = (VEHICULES.piscines || []).map(([lon, lat, longueur, largeur, cap, couleur]) =>
+    if (!PISCINES || !reliefRegle || piscinesPosees) return;
+    const liste = (PISCINES.piscines || []).map(([lon, lat, longueur, largeur, cap, couleur]) =>
         ({ lon, lat, longueur, largeur, cap, couleur }));
     if (!liste.length) return;
     const cuve = new THREE.BoxGeometry(1, 1, 1);
@@ -3598,7 +3648,7 @@ function construirePiscines() {
     placerPiscines();
     const bouton = document.getElementById('t-piscines');
     bouton.hidden = false;
-    bouton.title = `${liste.length} piscine(s) vues sur l'orthophoto (détecteur : ${VEHICULES.mode})`;
+    bouton.title = `${liste.length} piscine(s) vues sur l'orthophoto (détecteur : ${PISCINES.mode})`;
 }
 
 /** L'eau de niveau sur le sol exagéré du centre, la cuve jusqu'au plus bas. */

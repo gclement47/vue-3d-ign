@@ -1,6 +1,7 @@
 """Serveur (vue3d/app.py) : paramètres, codes d'erreur, en-têtes."""
 import gzip
 import json
+import types
 
 import pytest
 
@@ -44,17 +45,25 @@ def client_vehicules(tmp_path):
     def construire(lat, lon, avancer=None):
         return gzip.compress(json.dumps(scene).encode()), b"\xff\xd8jpeg"
 
-    def lire_vehicules(west, south, east, north):
+    def lire_piscines(west, south, east, north):
         if south < 46:
             raise ConnectionError("Read timed out")
         return {"largeur": 1173, "hauteur": 1781,
-                "boites": [[586.5, 890.5, 22, 10, 0.0, 0.6, 0, 0xC81E28, "rtmdet"]],
                 "piscines": [[300, 400, 50, 25, 0.0, 0.3, 0x5AC8D2, "rtmdet"]]}
 
-    lire_vehicules.mode = "rtmdet"
+    def lire_vehicules(detecteur):
+        def lire(west, south, east, north):
+            if south < 46:
+                raise ConnectionError("Read timed out")
+            return {"largeur": 1173, "hauteur": 1781,
+                    "boites": [[586.5, 890.5, 22, 10, 0.0, 0.6, 0, 0xC81E28, detecteur]]}
+        return lire
+
+    lecteur = types.SimpleNamespace(mode="rtmdet", detecteurs=("rtmdet",),
+                                    piscines=lire_piscines, vehicules=lire_vehicules)
     appli = module_app.creer_app(str(tmp_path), construire=construire,
                                  lire_monuments=lambda *b: {"elements": []},
-                                 lire_vehicules=lire_vehicules)
+                                 lire_vehicules=lecteur)
     return appli.test_client()
 
 
@@ -131,33 +140,50 @@ def test_une_panne_des_ouvrages_rend_503_sans_toucher_la_scene(client):
     assert client.get("/api/scene?lat=45.5&lon=2").status_code == 200
 
 
-def test_sans_detecteur_la_couche_des_vehicules_le_dit(client):
+def test_sans_detecteur_les_couches_de_l_orthophoto_le_disent(client):
     """Ni erreur ni fichier : la page lit le mode et ne montre pas la couche."""
+    assert client.get("/api/sante").get_json()["vehicules"] == {"mode": "aucun", "detecteurs": []}
     r = client.get("/api/vehicules?lat=48.8049&lon=2.1204")
     assert r.status_code == 200
-    assert r.get_json() == {"mode": "aucun", "vehicules": [], "piscines": []}
+    assert r.get_json() == {"mode": "aucun", "detecteur": None, "vehicules": []}
     # Le service peut être relancé avec un détecteur : jamais gardée.
     assert r.headers["Cache-Control"] == "no-store"
+    r = client.get("/api/piscines?lat=48.8049&lon=2.1204")
+    assert r.get_json() == {"mode": "aucun", "piscines": []} and r.headers["Cache-Control"] == "no-store"
 
 
-def test_la_couche_des_vehicules_est_servie_a_part(client_vehicules):
-    r = client_vehicules.get("/api/vehicules?lat=48.8049&lon=2.1204")
+def test_les_couches_de_l_orthophoto_sont_servies_a_part_detecteur_par_detecteur(client_vehicules):
+    """La page apprend les détecteurs par /api/sante, demande les piscines,
+    puis les véhicules de chaque détecteur : chaque couche a sa route."""
+    sante = client_vehicules.get("/api/sante")
+    assert sante.get_json() == {"ok": True, "vehicules": {"mode": "rtmdet", "detecteurs": ["rtmdet"]}}
+    assert sante.headers["Cache-Control"] == "no-store"
+    r = client_vehicules.get("/api/piscines?lat=48.8049&lon=2.1204")
     assert r.status_code == 200 and r.headers["Content-Encoding"] == "gzip"
     couche = json.loads(gzip.decompress(r.data))
-    assert couche["mode"] == "rtmdet"
+    assert couche["mode"] == "rtmdet" and [p[2:] for p in couche["piscines"]] == [[10.0, 5.0, 90.0, 0x5AC8D2]]
+    r = client_vehicules.get("/api/vehicules?lat=48.8049&lon=2.1204&detecteur=rtmdet")
+    assert r.status_code == 200 and r.headers["Content-Encoding"] == "gzip"
+    couche = json.loads(gzip.decompress(r.data))
+    assert couche["detecteur"] == "rtmdet" and "piscines" not in couche
     (lon, lat, longueur, largeur, cap, couleur), = couche["vehicules"]
     assert (round(lat, 4), round(lon, 4)) == (48.8049, 2.1204) and couleur == 0xC81E28
-    assert [p[2:] for p in couche["piscines"]] == [[10.0, 5.0, 90.0, 0x5AC8D2]]
-    assert client_vehicules.get("/api/vehicules").status_code == 400
-    assert client_vehicules.get("/api/vehicules?lat=40&lon=2").status_code == 422
+    # Sans détecteur, ou avec un détecteur que ce service n'a pas : 400, avec la liste.
+    r = client_vehicules.get("/api/vehicules?lat=48.8049&lon=2.1204")
+    assert r.status_code == 400 and "rtmdet" in r.get_json()["erreur"]
+    r = client_vehicules.get("/api/vehicules?lat=48.8049&lon=2.1204&detecteur=yolo")
+    assert r.status_code == 400 and "yolo" in r.get_json()["erreur"] and "rtmdet" in r.get_json()["erreur"]
+    assert client_vehicules.get("/api/vehicules?detecteur=rtmdet").status_code == 400
+    assert client_vehicules.get("/api/vehicules?lat=40&lon=2&detecteur=rtmdet").status_code == 422
+    assert client_vehicules.get("/api/piscines?lat=40&lon=2").status_code == 422
 
 
 def test_la_couche_des_vehicules_est_revalidee_a_chaque_demande(client_vehicules):
     """Le navigateur ne la garde pas un jour comme la scène : à la même
     adresse, elle change avec le détecteur et la version. Le nom du fichier,
     qui porte les deux, sert de validateur."""
-    from vue3d.scene import nom_vehicules
-    url = "/api/vehicules?lat=48.8049&lon=2.1204"
+    from vue3d.scene import nom_piscines, nom_vehicules
+    url = "/api/vehicules?lat=48.8049&lon=2.1204&detecteur=rtmdet"
     r = client_vehicules.get(url)
     assert r.headers["Cache-Control"] == "no-cache"
     assert r.headers["ETag"] == f'"{nom_vehicules("rtmdet")}"'
@@ -166,7 +192,10 @@ def test_la_couche_des_vehicules_est_revalidee_a_chaque_demande(client_vehicules
     assert r2.status_code == 304 and r2.data == b"" and r2.headers["ETag"] == r.headers["ETag"]
     # Le validateur d'un autre détecteur, ou d'une autre version : la couche entière.
     r3 = client_vehicules.get(url, headers={"If-None-Match": f'"{nom_vehicules("yolo")}"'})
-    assert r3.status_code == 200 and json.loads(gzip.decompress(r3.data))["mode"] == "rtmdet"
+    assert r3.status_code == 200 and json.loads(gzip.decompress(r3.data))["detecteur"] == "rtmdet"
+    # Les piscines, de même.
+    r4 = client_vehicules.get("/api/piscines?lat=48.8049&lon=2.1204")
+    assert r4.headers["Cache-Control"] == "no-cache" and r4.headers["ETag"] == f'"{nom_piscines("rtmdet")}"'
     # La scène, elle, ne change pas sous son adresse : gardée un jour.
     assert client_vehicules.get("/api/scene?lat=48.8049&lon=2.1204").headers["Cache-Control"] \
         == "public, max-age=86400"
@@ -174,10 +203,13 @@ def test_la_couche_des_vehicules_est_revalidee_a_chaque_demande(client_vehicules
 
 def test_une_panne_des_vehicules_rend_503_sans_toucher_la_scene(client_vehicules):
     assert client_vehicules.get("/api/scene?lat=45.5&lon=2").status_code == 200
-    r = client_vehicules.get("/api/vehicules?lat=45.5&lon=2")
+    r = client_vehicules.get("/api/vehicules?lat=45.5&lon=2&detecteur=rtmdet")
     assert r.status_code == 503 and "véhicules" in r.get_json()["erreur"]
+    r = client_vehicules.get("/api/piscines?lat=45.5&lon=2")
+    assert r.status_code == 503 and "piscines" in r.get_json()["erreur"]
     assert client_vehicules.get("/api/scene?lat=45.5&lon=2").status_code == 200
 
 
 def test_sante(client):
-    assert client.get("/api/sante").get_json() == {"ok": True}
+    assert client.get("/api/sante").get_json() == {
+        "ok": True, "vehicules": {"mode": "aucun", "detecteurs": []}}

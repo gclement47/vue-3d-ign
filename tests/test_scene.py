@@ -377,61 +377,87 @@ def _scene_nue(lat, lon, avancer=None):
 
 
 def _lecteur_vehicules(mode, appels=None, en_panne=None):
-    def lire(*bbox):
-        if appels is not None:
-            appels.append(bbox)
-        if en_panne and en_panne[0]:
-            raise ConnectionError("Read timed out")
-        return {"largeur": 1173, "hauteur": 1781,
-                "boites": [[586.5, 890.5, 22, 10, 0.0, 0.6, 0, 0x808080, mode]]}
-    lire.mode = mode
-    return lire
+    """Doublure de vehicules.Lecteur : `appels` note chaque lecture, par
+    fichier ('piscines' ou le détecteur)."""
+    import types
+    from vue3d.vehicules import MODES
+
+    def lecture(quoi):
+        def lire(*bbox):
+            if appels is not None:
+                appels.append(quoi)
+            if en_panne and en_panne[0]:
+                raise ConnectionError("Read timed out")
+            if quoi == "piscines":
+                return {"largeur": 1173, "hauteur": 1781,
+                        "piscines": [[300, 400, 50, 25, 0.0, 0.3, 0x5AC8D2, mode]]}
+            return {"largeur": 1173, "hauteur": 1781,
+                    "boites": [[586.5, 890.5, 22, 10, 0.0, 0.6, 0, 0x808080, quoi]]}
+        return lire
+
+    return types.SimpleNamespace(mode=mode, detecteurs=MODES[mode], piscines=lecture("piscines"),
+                                 vehicules=lecture)
 
 
-def test_sans_detecteur_la_couche_des_vehicules_n_existe_pas(tmp_path):
+def test_sans_detecteur_les_couches_de_l_orthophoto_n_existent_pas(tmp_path):
     cache = Cache(str(tmp_path))
     cache.prelire_vehicules(48.8049, 2.1204)              # sans effet, sans erreur
     with pytest.raises(scene.VehiculesDesactives):
-        cache.obtenir_vehicules(48.8049, 2.1204, construire=_scene_nue)
+        cache.obtenir_vehicules(48.8049, 2.1204, "rtmdet", construire=_scene_nue)
+    with pytest.raises(scene.VehiculesDesactives):
+        cache.obtenir_piscines(48.8049, 2.1204, construire=_scene_nue)
 
 
-def test_la_couche_des_vehicules_porte_le_detecteur_dans_son_nom(tmp_path):
-    """Relancer le service avec un autre détecteur ne ressert pas la couche
-    du précédent : chacun a son fichier, et sa seule lecture."""
+def test_un_fichier_par_detecteur_et_un_pour_les_piscines(tmp_path):
+    """Le nom du fichier porte le détecteur (ou le mode, pour les piscines)
+    et la version : relancer le service avec un autre détecteur ne ressert
+    jamais la couche du précédent, et chaque fichier n'est lu qu'une fois."""
     import gzip
     import json
     appels = []
-    cache = Cache(str(tmp_path), lire_vehicules=_lecteur_vehicules("rtmdet", appels))
-    dossier, nom = cache.obtenir_vehicules(48.8049, 2.1204, construire=_scene_nue)
-    assert cache.obtenir_vehicules(48.8049, 2.1204, construire=_scene_nue) == (dossier, nom)
-    assert len(appels) == 1
+    cache = Cache(str(tmp_path), lire_vehicules=_lecteur_vehicules("tous", appels))
+    dossier, nom = cache.obtenir_vehicules(48.8049, 2.1204, "rtmdet", construire=_scene_nue)
+    assert cache.obtenir_vehicules(48.8049, 2.1204, "rtmdet", construire=_scene_nue) == (dossier, nom)
     assert nom == f"vehicules-rtmdet-v{scene.VEHICULES_VERSION}.json.gz"
     couche = json.loads(gzip.decompress(open(os.path.join(dossier, nom), "rb").read()))
-    assert couche["mode"] == "rtmdet" and len(couche["vehicules"]) == 1
+    assert couche["detecteur"] == "rtmdet" and len(couche["vehicules"]) == 1
+    _, nom_yolo = cache.obtenir_vehicules(48.8049, 2.1204, "yolo", construire=_scene_nue)
+    assert nom_yolo == f"vehicules-yolo-v{scene.VEHICULES_VERSION}.json.gz"
+    _, nom_piscines = cache.obtenir_piscines(48.8049, 2.1204, construire=_scene_nue)
+    assert nom_piscines == f"piscines-tous-v{scene.PISCINES_VERSION}.json.gz"
+    couche = json.loads(gzip.decompress(open(os.path.join(dossier, nom_piscines), "rb").read()))
+    assert couche["mode"] == "tous" and len(couche["piscines"]) == 1
+    assert appels == ["rtmdet", "yolo", "piscines"]
+    # Un détecteur que ce service n'a pas.
+    with pytest.raises(scene.VehiculesDesactives):
+        cache.obtenir_vehicules(48.8049, 2.1204, "inconnu", construire=_scene_nue)
 
-    autre = Cache(str(tmp_path), lire_vehicules=_lecteur_vehicules("yolo", appels))
-    _, nom_yolo = autre.obtenir_vehicules(48.8049, 2.1204, construire=_scene_nue)
-    assert nom_yolo != nom and len(appels) == 2
-    assert os.path.exists(os.path.join(dossier, nom)) and os.path.exists(os.path.join(dossier, nom_yolo))
 
-
-def test_une_panne_des_vehicules_ne_met_rien_en_cache_et_epargne_la_scene(tmp_path):
+def test_une_panne_de_detection_ne_met_rien_en_cache_et_epargne_la_scene(tmp_path):
     en_panne = [True]
-    cache = Cache(str(tmp_path), lire_vehicules=_lecteur_vehicules("tous", en_panne=en_panne))
+    cache = Cache(str(tmp_path), lire_vehicules=_lecteur_vehicules("rtmdet", en_panne=en_panne))
     with pytest.raises(scene.VehiculesIndisponibles):
-        cache.obtenir_vehicules(48.8049, 2.1204, construire=_scene_nue)
+        cache.obtenir_vehicules(48.8049, 2.1204, "rtmdet", construire=_scene_nue)
+    with pytest.raises(scene.VehiculesIndisponibles):
+        cache.obtenir_piscines(48.8049, 2.1204, construire=_scene_nue)
     assert cache.present(48.8049, 2.1204)
-    assert not os.path.exists(cache.chemin(48.8049, 2.1204, scene.nom_vehicules("tous")))
+    assert not os.path.exists(cache.chemin(48.8049, 2.1204, scene.nom_vehicules("rtmdet")))
+    assert not os.path.exists(cache.chemin(48.8049, 2.1204, scene.nom_piscines("rtmdet")))
     en_panne[0] = False
-    cache.obtenir_vehicules(48.8049, 2.1204, construire=_scene_nue)
-    assert os.path.exists(cache.chemin(48.8049, 2.1204, scene.nom_vehicules("tous")))
+    cache.obtenir_vehicules(48.8049, 2.1204, "rtmdet", construire=_scene_nue)
+    cache.obtenir_piscines(48.8049, 2.1204, construire=_scene_nue)
+    assert os.path.exists(cache.chemin(48.8049, 2.1204, scene.nom_vehicules("rtmdet")))
+    assert os.path.exists(cache.chemin(48.8049, 2.1204, scene.nom_piscines("rtmdet")))
 
 
-def test_les_vehicules_sont_detectes_pendant_que_la_scene_se_construit(tmp_path):
-    """La lecture anticipée sert la demande : une seule détection."""
+def test_les_detections_sont_lancees_pendant_que_la_scene_se_construit(tmp_path):
+    """La lecture anticipée sert la demande : une seule détection par
+    fichier, les piscines d'abord, puis les détecteurs du rapide au lent."""
     appels = []
-    cache = Cache(str(tmp_path), lire_vehicules=_lecteur_vehicules("rtmdet", appels))
+    cache = Cache(str(tmp_path), lire_vehicules=_lecteur_vehicules("tous", appels))
     cache.prelire_vehicules(48.8049, 2.1204)
     cache.prelire_vehicules(48.8049, 2.1204)              # page rechargée : pas de second calcul
-    cache.obtenir_vehicules(48.8049, 2.1204, construire=_scene_nue)
-    assert len(appels) == 1
+    cache.obtenir_piscines(48.8049, 2.1204, construire=_scene_nue)
+    cache.obtenir_vehicules(48.8049, 2.1204, "yolo", construire=_scene_nue)
+    cache.obtenir_vehicules(48.8049, 2.1204, "rtmdet", construire=_scene_nue)
+    assert appels == ["piscines", "rtmdet", "yolo"]

@@ -5,7 +5,8 @@
     GET /api/ortho?lat=…&lon=…     l'orthophoto de la scène, en JPEG
     GET /api/monuments?lat=…&lon=…   la couche des monuments OSM, JSON gzippé
     GET /api/ouvrages?lat=…&lon=…    la couche des ouvrages BD TOPO, JSON gzippé
-    GET /api/vehicules?lat=…&lon=…   la couche des véhicules et des piscines, si le service a un détecteur
+    GET /api/piscines?lat=…&lon=…    les piscines de l'orthophoto, si le service a un détecteur
+    GET /api/vehicules?lat=…&lon=…&detecteur=…   les véhicules vus d'un détecteur du service
     GET /api/avancement?lat=…&lon=…  l'étape de la construction en cours
     GET /api/sante                 contrôle de vie, pour Docker
 
@@ -22,13 +23,15 @@ from .monuments import fetch_monuments
 from .ouvrages import fetch_ouvrages
 from .scene import (NOM_MONUMENTS, NOM_ORTHO, NOM_OUVRAGES, NOM_SCENE, Cache,
                     HorsEmprise, MonumentsIndisponibles, OuvragesIndisponibles,
-                    SceneIncomplete, VehiculesIndisponibles)
+                    SceneIncomplete, VehiculesDesactives, VehiculesIndisponibles)
 from .scene import construire as construire_scene
 from .vehicules import MODE_PAR_DEFAUT
 from .vehicules import lecteur as lecteur_vehicules
 
-# Nom de couche pour dossier_scene : le fichier, lui, dépend du détecteur.
+# Noms de couche pour dossier_scene : les fichiers, eux, dépendent du mode et
+# du détecteur.
 COUCHE_VEHICULES = "vehicules"
+COUCHE_PISCINES = "piscines"
 
 logging.basicConfig(level=os.environ.get("VUE3D_LOG", "INFO"),
                     format="%(asctime)s %(levelname)s %(name)s : %(message)s")
@@ -41,7 +44,7 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
     """`construire`, `lire_monuments`, `lire_ouvrages` et `lire_vehicules`
     sont injectables pour les tests, qui n'appellent ni l'IGN ni Overpass et
     ne chargent aucun réseau. `lire_vehicules` : de `vehicules.lecteur()` ;
-    None, le service n'a pas de couche des véhicules."""
+    None, le service n'a ni véhicules ni piscines."""
     app = Flask(__name__, static_folder=os.path.join(ICI, "static"), static_url_path="/static")
     # Absolu : send_from_directory résout un chemin relatif depuis le dossier
     # de l'application, pas depuis le répertoire courant — avec
@@ -59,7 +62,7 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
     def erreur(code, message):
         return jsonify({"erreur": message}), code
 
-    def dossier_scene(couche=None, prelire=False):
+    def dossier_scene(couche=None, prelire=False, detecteur=None):
         p = point()
         if p is None:
             return None, erreur(400, "Paramètres lat et lon attendus, en degrés décimaux.")
@@ -68,8 +71,10 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
                 return cache.obtenir_monuments(*p, construire=construire), None
             if couche == NOM_OUVRAGES:
                 return cache.obtenir_ouvrages(*p, construire=construire), None
+            if couche == COUCHE_PISCINES:
+                return cache.obtenir_piscines(*p, construire=construire), None
             if couche == COUCHE_VEHICULES:
-                return cache.obtenir_vehicules(*p, construire=construire), None
+                return cache.obtenir_vehicules(*p, detecteur, construire=construire), None
             if prelire:
                 # Les couches à part d'abord, en tâche de fond : leurs sources
                 # répondent pendant que la scène se construit, et elles sont
@@ -97,10 +102,13 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
                                 f"{exc}). Rien n'a été mis en cache : réessayez "
                                 "dans quelques instants.")
         except VehiculesIndisponibles as exc:
-            app.logger.warning("Véhicules indisponibles pour %s : %s", p, exc)
-            return None, erreur(503, "La détection des véhicules n'a pas abouti ("
+            app.logger.warning("Détection indisponible pour %s : %s", p, exc)
+            return None, erreur(503, "La détection sur l'orthophoto n'a pas abouti ("
                                 f"{exc}). Rien n'a été mis en cache : réessayez "
                                 "dans quelques instants.")
+        except VehiculesDesactives as exc:
+            return None, erreur(400, f"{exc} : détecteurs de ce service : "
+                                f"{', '.join(cache.lire_vehicules.detecteurs) or 'aucun'}.")
 
     def servir_gzip(dossier, nom, a_revalider=False):
         """`a_revalider` : le navigateur redemande à chaque fois, et le nom
@@ -150,24 +158,49 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
             return err
         return servir_gzip(dossier, NOM_OUVRAGES)
 
-    @app.get("/api/vehicules")
-    def vehicules():
-        """Les véhicules et les piscines de l'orthophoto, demandés par la
-        page une fois la scène affichée. Sans détecteur, la réponse le dit (`mode: aucun`) et
-        la page ne montre pas la couche : ce n'est pas une erreur."""
+    def sans_detecteur(**vide):
+        """Réponse des couches de l'orthophoto quand le service n'a pas de
+        détecteur : le mode, que la page lit, et rien à dessiner. Ce n'est
+        pas une erreur. Jamais gardée : le service peut être relancé avec un
+        détecteur."""
+        reponse = jsonify({"mode": MODE_PAR_DEFAUT, **vide})
+        reponse.headers["Cache-Control"] = "no-store"
+        return reponse
+
+    # Les couches de l'orthophoto sont revalidées à chaque demande : à la
+    # même adresse, elles changent avec le détecteur du service et avec leur
+    # version. Gardée un jour par le navigateur, la couche montrait encore
+    # les véhicules sans les piscines après une reconstruction de l'image.
+    # Le nom du fichier porte le détecteur et la version, et le fichier ne
+    # change jamais une fois écrit.
+
+    @app.get("/api/piscines")
+    def piscines():
+        """Les piscines de l'orthophoto, demandées par la page une fois la
+        scène affichée : une demi-seconde de détection, la première couche
+        prête."""
         if not cache.lire_vehicules:
-            reponse = jsonify({"mode": MODE_PAR_DEFAUT, "vehicules": [], "piscines": []})
-            # Jamais gardée : le service peut être relancé avec un détecteur.
-            reponse.headers["Cache-Control"] = "no-store"
-            return reponse
-        trouve, err = dossier_scene(couche=COUCHE_VEHICULES)
+            return sans_detecteur(piscines=[])
+        trouve, err = dossier_scene(couche=COUCHE_PISCINES)
         if err:
             return err
-        # Revalidée à chaque demande : à la même adresse, la couche change
-        # avec le détecteur du service et avec sa version. Gardée un jour par
-        # le navigateur, elle montrait encore les véhicules sans les piscines
-        # après une reconstruction de l'image. Le nom du fichier porte les
-        # deux, et le fichier ne change jamais une fois écrit.
+        return servir_gzip(*trouve, a_revalider=True)
+
+    @app.get("/api/vehicules")
+    def vehicules():
+        """Les véhicules vus d'un détecteur (`detecteur=`), demandés par la
+        page dans l'ordre que /api/sante lui donne, du rapide au lent : elle
+        les réunit à mesure. Sans le paramètre, ou avec un détecteur que le
+        service n'a pas : 400."""
+        if not cache.lire_vehicules:
+            return sans_detecteur(detecteur=None, vehicules=[])
+        detecteur = request.args.get("detecteur")
+        if not detecteur:
+            return erreur(400, "Paramètre detecteur attendu : "
+                          f"{', '.join(cache.lire_vehicules.detecteurs)}.")
+        trouve, err = dossier_scene(couche=COUCHE_VEHICULES, detecteur=detecteur)
+        if err:
+            return err
         return servir_gzip(*trouve, a_revalider=True)
 
     @app.get("/api/ortho")
@@ -195,7 +228,15 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
 
     @app.get("/api/sante")
     def sante():
-        return {"ok": True}
+        """Contrôle de vie, et ce que le service sait détecter sur
+        l'orthophoto : la page y lit les détecteurs à demander, dans
+        l'ordre."""
+        lecteur = cache.lire_vehicules
+        reponse = jsonify({"ok": True, "vehicules": {
+            "mode": lecteur.mode if lecteur else MODE_PAR_DEFAUT,
+            "detecteurs": list(lecteur.detecteurs) if lecteur else []}})
+        reponse.headers["Cache-Control"] = "no-store"
+        return reponse
 
     return app
 

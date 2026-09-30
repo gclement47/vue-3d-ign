@@ -42,12 +42,19 @@ sur l'orthophoto.
 pool », et la BD TOPO n'a pas les piscines des particuliers. Une passe de
 plus, à l'échelle native de l'orthophoto et d'une demi-seconde, les ajoute à
 la couche (PISCINES) : 13 à Gordes et 9 à Carcassonne pour `rtmdet`, 8 et 8
-pour `yolo`, 14 et 10 pour les deux. Ici c'est rtmdet qui voit le mieux.
+pour `yolo`, 14 et 9 pour les deux. Ici c'est rtmdet qui voit le mieux.
+
+**Une couche par fichier, le rapide d'abord.** Les piscines ont leur fichier
+et chaque détecteur de véhicules le sien : la page demande les piscines
+(prêtes une demi-seconde après la scène), puis les véhicules détecteur par
+détecteur, du rapide au lent, et dessine chaque couche dès qu'elle arrive.
+En mode `tous`, c'est elle qui réunit les détecteurs, avec la règle de
+DOUBLON_ENTRE_DETECTEURS_M.
 
 **Une couche est complète ou n'existe pas**, comme la scène : l'orthophoto
-illisible lève, rien n'est écrit. Le nom du fichier de cache porte le mode et
-la version (scene.nom_vehicules) : changer de détecteur ne ressert jamais la
-couche d'un autre.
+illisible lève, rien n'est écrit. Le nom de chaque fichier de cache porte le
+détecteur (ou le mode) et la version (scene.nom_vehicules, nom_piscines) :
+changer de détecteur ne ressert jamais la couche d'un autre.
 """
 
 import io
@@ -64,13 +71,17 @@ from .ortho import fetch_ortho_jpeg
 
 journal = logging.getLogger(__name__)
 
-# Format de la couche. L'incrémenter ne refait que la couche, pas les scènes.
-# 2 : piscines.
-VEHICULES_VERSION = 2
+# Formats des couches. Les incrémenter ne refait que la couche, pas les scènes.
+# Véhicules — 2 : piscines ; 3 : un fichier par détecteur, les piscines à part.
+VEHICULES_VERSION = 3
+PISCINES_VERSION = 1
 
-# Détecteurs de chaque mode, dans l'ordre où leurs boîtes sont gardées : en
-# mode `tous`, une boîte du second qui double une boîte du premier est retirée.
-MODES = {"aucun": (), "rtmdet": ("rtmdet",), "yolo": ("yolo",), "tous": ("yolo", "rtmdet")}
+# Détecteurs de chaque mode, dans l'ordre où la page les demande et où leurs
+# boîtes sont gardées : le rapide d'abord, pour que la vue montre ses
+# véhicules sans attendre le lent ; une boîte du second qui double une boîte
+# du premier est retirée. Ce que ce choix coûte : là où les deux voient la
+# même voiture, c'est la boîte de rtmdet qui est dessinée.
+MODES = {"aucun": (), "rtmdet": ("rtmdet",), "yolo": ("yolo",), "tous": ("rtmdet", "yolo")}
 MODE_PAR_DEFAUT = "aucun"
 
 # Résolution de l'orthophoto demandée : celle de la BD ORTHO. La mosaïque de
@@ -417,11 +428,53 @@ def detecter_piscines(rgb, sessions, reglages=None):
     return toutes
 
 
-def lecteur(mode=None, dossier=None):
-    """Lecture de la source pour `scene.Cache` : (emprise) -> détections brutes.
+class Lecteur:
+    """Les lectures de la couche pour `scene.Cache` : une par fichier.
 
-    None en mode `aucun` : la couche n'existe pas. Les réseaux sont chargés
-    ici, une fois, au démarrage du serveur.
+    Les piscines sont un fichier, et chaque détecteur de véhicules le sien :
+    ce qui est vite lu est vite affiché, et le lent n'y change rien — sur
+    une même machine, rtmdet met 3 s là où yolo en met 14, et les piscines
+    une demi-seconde. Chaque lecture relit l'orthophoto : trois petites
+    requêtes plutôt qu'un fichier intermédiaire sur disque.
+    """
+
+    def __init__(self, mode, sessions):
+        self.mode = mode
+        self.sessions = sessions
+        self.detecteurs = tuple(sessions)
+
+    @staticmethod
+    def _orthophoto(west, south, east, north):
+        """Orthophoto à 0,2 m de l'emprise, en tableau RGB.
+
+        Raises:
+            requests.RequestException si elle n'a pas pu être lue.
+        """
+        from PIL import Image
+        contenu, _, _ = fetch_ortho_jpeg(west, south, east, north, resolution_m=RESOLUTION_M)
+        return np.asarray(Image.open(io.BytesIO(contenu)).convert("RGB"))
+
+    def piscines(self, west, south, east, north):
+        """Les piscines de l'emprise, vues de tous les détecteurs du mode."""
+        rgb = self._orthophoto(west, south, east, north)
+        return {"largeur": rgb.shape[1], "hauteur": rgb.shape[0],
+                "piscines": detecter_piscines(rgb, self.sessions)}
+
+    def vehicules(self, detecteur):
+        """La lecture des véhicules d'un détecteur : (emprise) -> brut."""
+        session = {detecteur: self.sessions[detecteur]}
+
+        def lire(west, south, east, north):
+            rgb = self._orthophoto(west, south, east, north)
+            return {"largeur": rgb.shape[1], "hauteur": rgb.shape[0],
+                    "boites": detecter(rgb, session)}
+        return lire
+
+
+def lecteur(mode=None, dossier=None):
+    """Le `Lecteur` du mode de `VUE3D_VEHICULES` ; None en mode `aucun`, la
+    couche n'existe pas. Les réseaux sont chargés ici, une fois, au démarrage
+    du serveur.
 
     Raises:
         VehiculesMalConfigures si le mode demandé n'a pas ses réseaux.
@@ -431,22 +484,7 @@ def lecteur(mode=None, dossier=None):
         return None
     sessions = charger(mode, dossier or os.environ.get("VUE3D_MODELES", "/modeles"))
     journal.info("Véhicules et piscines : mode %s (%s)", mode, ", ".join(sessions))
-
-    def lire(west, south, east, north):
-        """Orthophoto à 0,2 m de l'emprise, ses véhicules et ses piscines.
-
-        Raises:
-            requests.RequestException si l'orthophoto n'a pas pu être lue.
-        """
-        from PIL import Image
-        contenu, _, _ = fetch_ortho_jpeg(west, south, east, north, resolution_m=RESOLUTION_M)
-        rgb = np.asarray(Image.open(io.BytesIO(contenu)).convert("RGB"))
-        return {"largeur": rgb.shape[1], "hauteur": rgb.shape[0],
-                "boites": detecter(rgb, sessions),
-                "piscines": detecter_piscines(rgb, sessions)}
-
-    lire.mode = mode
-    return lire
+    return Lecteur(mode, sessions)
 
 
 def _zone(geojsons, kx, ky):
@@ -465,30 +503,10 @@ def _zone(geojsons, kx, ky):
     return shapely.transform(shapely.force_2d(unary_union(polys)), lambda c: c * [kx, ky])
 
 
-def vehicules_pour_emprise(west, south, east, north, brut, mode, batiments=None, eau=None):
-    """Véhicules et piscines de l'emprise, prêts pour la vue.
-
-    Args:
-        brut: détections de `lecteur(...)`, en pixels de l'orthophoto.
-        mode: celui du lecteur, inscrit dans la couche.
-        batiments: GeoJSON des bâtiments de la scène ; un « véhicule » sur un
-            toit est une lucarne ou une verrière, une « piscine » une
-            véranda.
-        eau: eau de la scène (vue3d/eau.py) ; un « véhicule » sur l'eau est
-            une barque, et une « piscine » y est un bassin que la BD TOPO
-            dessine déjà.
-
-    Returns:
-        dict(version, mode, vehicules, piscines), les listes vides si
-        l'emprise n'en a aucun : la vue lit toujours le mode.
-        `vehicules` : [[lon, lat, longueur_m, largeur_m, cap, couleur]] — cap
-        du grand axe en degrés depuis le nord vers l'est, de 0 à 180 (l'avant
-        et l'arrière ne sont pas distingués) ; couleur 0xRRGGBB lue sur
-        l'orthophoto.
-        `piscines` : de même ; la boîte est celle du bassin, qu'il soit
-        rectangulaire ou non.
-    """
-    brut = brut or {}
+def _poser(west, south, east, north, brut, boites, nom, longueurs, largeurs, batiments, eau):
+    """Boîtes (cx, cy, longueur, largeur, angle, couleur) en pixels de
+    l'orthophoto -> objets de la couche, ceux hors gabarit ou mal placés
+    écartés : [[lon, lat, longueur_m, largeur_m, cap, couleur]]."""
     largeur, hauteur = brut.get("largeur") or 1, brut.get("hauteur") or 1
     kx = 111320 * math.cos(math.radians((south + north) / 2))
     ky = 111320
@@ -500,44 +518,83 @@ def vehicules_pour_emprise(west, south, east, north, brut, mode, batiments=None,
                if f.get("geometry")], kx, ky),
         _zone([s["geometrie"] for s in (eau or {}).get("surfaces", [])], kx, ky)) if z is not None]
     # Au bord, la scène ne connaît pas les bâtiments (ils sont découpés en
-    # retrait) et la boîte d'un véhicule coupé par le cadre n'est pas fiable.
+    # retrait) et la boîte d'un objet coupé par le cadre n'est pas fiable.
     marge_x, marge_y = DECOUPE_RETRAIT_M / kx, DECOUPE_RETRAIT_M / ky
+    gardes, ecartes = [], {"gabarit": 0, "bord": 0, "bâti ou eau": 0}
+    for cx, cy, lo, la, angle, couleur in boites:
+        # Longueur et largeur en mètres : la boîte est tournée, chaque
+        # demi-axe se mesure avec les deux pas.
+        c, s_ = math.cos(angle), math.sin(angle)
+        longueur = lo * math.hypot(c * px, s_ * py)
+        travers = la * math.hypot(s_ * px, c * py)
+        if not (longueurs[0] <= longueur <= longueurs[1]
+                and largeurs[0] <= travers <= largeurs[1]):
+            ecartes["gabarit"] += 1
+            continue
+        lon, lat = west + cx * px / kx, north - cy * py / ky
+        if not (west + marge_x <= lon <= east - marge_x
+                and south + marge_y <= lat <= north - marge_y):
+            ecartes["bord"] += 1
+            continue
+        if any(z.contains(Point(lon * kx, lat * ky)) for z in interdit):
+            ecartes["bâti ou eau"] += 1
+            continue
+        # Dans l'image, y descend vers le sud : vers l'est c·px, vers le nord −s·py.
+        cap = math.degrees(math.atan2(c * px, -s_ * py)) % 180.0
+        gardes.append([round(lon, DECIMALES), round(lat, DECIMALES), round(longueur, 1),
+                       round(travers, 1), round(cap, 1), couleur])
+    journal.info("%s : %d gardé(s) ; écartés : %s", nom, len(gardes),
+                 ", ".join(f"{n} {cle}" for cle, n in ecartes.items()))
+    return gardes
 
-    def poser(boites, nom, longueurs, largeurs):
-        """Boîtes (cx, cy, longueur, largeur, angle, couleur) en pixels ->
-        objets de la couche, ceux hors gabarit ou mal placés écartés."""
-        gardes, ecartes = [], {"gabarit": 0, "bord": 0, "bâti ou eau": 0}
-        for cx, cy, lo, la, angle, couleur in boites:
-            # Longueur et largeur en mètres : la boîte est tournée, chaque
-            # demi-axe se mesure avec les deux pas.
-            c, s = math.cos(angle), math.sin(angle)
-            longueur = lo * math.hypot(c * px, s * py)
-            travers = la * math.hypot(s * px, c * py)
-            if not (longueurs[0] <= longueur <= longueurs[1]
-                    and largeurs[0] <= travers <= largeurs[1]):
-                ecartes["gabarit"] += 1
-                continue
-            lon, lat = west + cx * px / kx, north - cy * py / ky
-            if not (west + marge_x <= lon <= east - marge_x
-                    and south + marge_y <= lat <= north - marge_y):
-                ecartes["bord"] += 1
-                continue
-            if any(z.contains(Point(lon * kx, lat * ky)) for z in interdit):
-                ecartes["bâti ou eau"] += 1
-                continue
-            # Dans l'image, y descend vers le sud : vers l'est c·px, vers le
-            # nord −s·py.
-            cap = math.degrees(math.atan2(c * px, -s * py)) % 180.0
-            gardes.append([round(lon, DECIMALES), round(lat, DECIMALES), round(longueur, 1),
-                           round(travers, 1), round(cap, 1), couleur])
-        journal.info("%s (%s) : %d gardé(s) ; écartés : %s", nom, mode, len(gardes),
-                     ", ".join(f"{n} {cle}" for cle, n in ecartes.items()))
-        return gardes
 
+def vehicules_pour_emprise(west, south, east, north, brut, detecteur, batiments=None, eau=None):
+    """Véhicules d'un détecteur sur l'emprise, prêts pour la vue.
+
+    Args:
+        brut: détections de `Lecteur.vehicules(detecteur)`, en pixels de
+            l'orthophoto.
+        detecteur: son nom, inscrit dans la couche.
+        batiments: GeoJSON des bâtiments de la scène ; un « véhicule » sur un
+            toit est une lucarne ou une verrière.
+        eau: eau de la scène (vue3d/eau.py) ; un « véhicule » sur l'eau est
+            une barque.
+
+    Returns:
+        dict(version, detecteur, vehicules), la liste vide si l'emprise n'en
+        a aucun. `vehicules` : [[lon, lat, longueur_m, largeur_m, cap,
+        couleur]] — cap du grand axe en degrés depuis le nord vers l'est, de
+        0 à 180 (l'avant et l'arrière ne sont pas distingués) ; couleur
+        0xRRGGBB lue sur l'orthophoto. C'est la vue qui réunit les
+        détecteurs d'un mode, dans leur ordre (MODES) : une boîte dont le
+        centre est à moins de DOUBLON_ENTRE_DETECTEURS_M d'une boîte déjà
+        dessinée n'est pas ajoutée.
+    """
+    brut = brut or {}
     # La longueur maximale d'un véhicule est déjà celle de son détecteur.
-    vehicules = poser([(*b[:5], b[7]) for b in brut.get("boites", [])], "Véhicules",
-                      (LONGUEUR_MIN_M, math.inf), LARGEUR_M)
-    piscines = poser([(*b[:5], b[6]) for b in brut.get("piscines", [])], "Piscines",
-                     PISCINE_LONGUEUR_M, PISCINE_LARGEUR_M)
-    return {"version": VEHICULES_VERSION, "mode": mode, "vehicules": vehicules,
-            "piscines": piscines}
+    vehicules = _poser(west, south, east, north, brut,
+                       [(*b[:5], b[7]) for b in brut.get("boites", [])],
+                       f"Véhicules ({detecteur})", (LONGUEUR_MIN_M, math.inf), LARGEUR_M,
+                       batiments, eau)
+    return {"version": VEHICULES_VERSION, "detecteur": detecteur, "vehicules": vehicules}
+
+
+def piscines_pour_emprise(west, south, east, north, brut, mode, batiments=None, eau=None):
+    """Piscines de l'emprise, prêtes pour la vue.
+
+    Args:
+        brut: détections de `Lecteur.piscines`.
+        mode: celui du lecteur, inscrit dans la couche.
+        batiments, eau: comme pour les véhicules ; une « piscine » sur un
+            toit est une véranda, sur l'eau un bassin que la BD TOPO dessine
+            déjà.
+
+    Returns:
+        dict(version, mode, piscines) ; `piscines` comme `vehicules`
+        ci-dessus, la boîte étant celle du bassin, rectangulaire ou non.
+    """
+    brut = brut or {}
+    piscines = _poser(west, south, east, north, brut,
+                      [(*b[:5], b[6]) for b in brut.get("piscines", [])],
+                      f"Piscines ({mode})", PISCINE_LONGUEUR_M, PISCINE_LARGEUR_M, batiments, eau)
+    return {"version": PISCINES_VERSION, "mode": mode, "piscines": piscines}

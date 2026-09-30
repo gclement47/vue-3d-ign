@@ -70,7 +70,8 @@ from .ortho import fetch_exg_grid, fetch_ortho_jpeg
 from .ouvrages import OUVRAGES_VERSION, fetch_ouvrages, ouvrages_pour_emprise
 from .relief import fetch_relief, fetch_relief_anneau
 from .toits import TOITS_RESOLUTION_M, toits_pour_emprise
-from .vehicules import VEHICULES_VERSION, vehicules_pour_emprise
+from .vehicules import (PISCINES_VERSION, VEHICULES_VERSION, piscines_pour_emprise,
+                        vehicules_pour_emprise)
 
 journal = logging.getLogger(__name__)
 
@@ -112,11 +113,18 @@ NOM_MONUMENTS = "monuments.json.gz"
 NOM_OUVRAGES = f"ouvrages-v{OUVRAGES_VERSION}.json.gz"
 
 
-def nom_vehicules(mode):
-    """Fichier de la couche des véhicules. Le détecteur est dans le nom, avec
-    la version : relancer le service avec un autre ne ressert jamais la couche
-    du précédent, et les deux restent en cache côte à côte."""
-    return f"vehicules-{mode}-v{VEHICULES_VERSION}.json.gz"
+def nom_vehicules(detecteur):
+    """Fichier des véhicules d'un détecteur. Son nom est dans celui du fichier,
+    avec la version : relancer le service avec un autre ne ressert jamais la
+    couche du précédent, et les deux restent en cache côte à côte. Un fichier
+    par détecteur, pour que la vue montre ceux du rapide sans attendre le
+    lent."""
+    return f"vehicules-{detecteur}-v{VEHICULES_VERSION}.json.gz"
+
+
+def nom_piscines(mode):
+    """Fichier des piscines, vues de tous les détecteurs du mode."""
+    return f"piscines-{mode}-v{PISCINES_VERSION}.json.gz"
 
 # Le service couvre la France. Au-delà, les couches répondent vide et la scène
 # n'aurait rien à montrer : mieux vaut le dire tout de suite.
@@ -128,12 +136,14 @@ class SceneIncomplete(RuntimeError):
 
 
 class VehiculesIndisponibles(RuntimeError):
-    """L'orthophoto des véhicules n'a pas pu être lue, ou la détection a
-    échoué : rien n'est mis en cache, la scène reste affichée sans eux."""
+    """L'orthophoto des véhicules ou des piscines n'a pas pu être lue, ou la
+    détection a échoué : rien n'est mis en cache, la scène reste affichée
+    sans eux."""
 
 
 class VehiculesDesactives(RuntimeError):
-    """Le service tourne sans détecteur de véhicules : la couche n'existe pas."""
+    """Le service tourne sans détecteur, ou sans celui qu'on lui demande : la
+    couche n'existe pas."""
 
 
 class HorsEmprise(ValueError):
@@ -309,8 +319,9 @@ class Cache:
 
     def __init__(self, dossier, lire_monuments=fetch_monuments, lire_ouvrages=fetch_ouvrages,
                  lire_vehicules=None):
-        """`lire_vehicules` : de `vehicules.lecteur()`, avec son attribut
-        `mode` ; None, et la couche des véhicules n'existe pas."""
+        """`lire_vehicules` : de `vehicules.lecteur()` — `mode`,
+        `detecteurs`, `piscines(emprise)` et `vehicules(detecteur)` ; None,
+        et les couches des véhicules et des piscines n'existent pas."""
         self.dossier = dossier
         os.makedirs(dossier, exist_ok=True)
         self._verrous = {}
@@ -334,11 +345,15 @@ class Cache:
                 max_workers=2, thread_name_prefix="ouvrages"),
         }
         if lire_vehicules:
-            # Un seul fil : la détection occupe déjà tous les cœurs, deux
-            # scènes demandées ensemble attendent leur tour.
-            self._taches[nom_vehicules(self.mode_vehicules)] = (
-                concurrent.futures.ThreadPoolExecutor(max_workers=1,
-                                                      thread_name_prefix="vehicules"))
+            # Un seul fil pour toutes les détections : chacune occupe déjà
+            # tous les cœurs. Elles passent dans l'ordre où elles sont
+            # lancées — les piscines, puis les détecteurs du rapide au lent —
+            # et deux scènes demandées ensemble attendent leur tour.
+            detection = concurrent.futures.ThreadPoolExecutor(max_workers=1,
+                                                              thread_name_prefix="detection")
+            self._taches[nom_piscines(self.mode_vehicules)] = detection
+            for detecteur in lire_vehicules.detecteurs:
+                self._taches[nom_vehicules(detecteur)] = detection
 
     def _ecrire(self, dossier, nom, octets):
         """Écrit d'un bloc : un fichier temporaire, renommé une fois complet."""
@@ -505,17 +520,22 @@ class Cache:
                 *bbox, brut, scene.get("relief"), scene.get("masses"), scene.get("routes")))
 
     def prelire_vehicules(self, lat, lon):
-        """Lance en tâche de fond la lecture de l'orthophoto à 0,2 m et la
-        détection, si le service a un détecteur : quelques secondes à un quart
-        de minute de calcul, qui avancent pendant que la scène attend l'IGN."""
+        """Lance en tâche de fond les détections sur l'orthophoto à 0,2 m, si
+        le service a un détecteur : les piscines d'abord (une demi-seconde),
+        puis les véhicules de chaque détecteur, du rapide au lent. Quelques
+        secondes à une demi-minute de calcul, qui avancent pendant que la
+        scène attend l'IGN."""
         if self.lire_vehicules:
-            self._prelire(nom_vehicules(self.mode_vehicules), lat, lon, self.lire_vehicules)
+            self._prelire(nom_piscines(self.mode_vehicules), lat, lon, self.lire_vehicules.piscines)
+            for detecteur in self.lire_vehicules.detecteurs:
+                self._prelire(nom_vehicules(detecteur), lat, lon,
+                              self.lire_vehicules.vehicules(detecteur))
 
-    def obtenir_vehicules(self, lat, lon, construire=construire):
-        """(dossier, nom du fichier) de la couche des véhicules du point.
+    def obtenir_piscines(self, lat, lon, construire=construire):
+        """(dossier, nom du fichier) des piscines du point.
 
-        La couche lit les bâtiments et l'eau de la scène : un « véhicule »
-        sur un toit ou sur une rivière n'en est pas un.
+        La couche lit les bâtiments et l'eau de la scène : une « piscine »
+        sur un toit ou sur une rivière n'en est pas une.
 
         Raises:
             VehiculesDesactives si le service tourne sans détecteur.
@@ -525,10 +545,25 @@ class Cache:
         """
         if not self.lire_vehicules:
             raise VehiculesDesactives("service lancé sans détecteur de véhicules")
-        nom = nom_vehicules(self.mode_vehicules)
+        nom = nom_piscines(self.mode_vehicules)
         return self._obtenir_couche(
-            nom, lat, lon, construire, self.lire_vehicules,
-            lambda message: VehiculesIndisponibles(f"véhicules illisibles : {message}"),
-            lambda bbox, brut, scene: vehicules_pour_emprise(
+            nom, lat, lon, construire, self.lire_vehicules.piscines,
+            lambda message: VehiculesIndisponibles(f"piscines illisibles : {message}"),
+            lambda bbox, brut, scene: piscines_pour_emprise(
                 *bbox, brut, self.mode_vehicules, scene.get("batiments"),
                 scene.get("eau"))), nom
+
+    def obtenir_vehicules(self, lat, lon, detecteur, construire=construire):
+        """(dossier, nom du fichier) des véhicules du point vus d'un détecteur.
+
+        Mêmes lectures de la scène et mêmes erreurs que les piscines ;
+        VehiculesDesactives aussi si le détecteur n'est pas de ce service.
+        """
+        if not self.lire_vehicules or detecteur not in self.lire_vehicules.detecteurs:
+            raise VehiculesDesactives(f"service lancé sans le détecteur {detecteur!r}")
+        nom = nom_vehicules(detecteur)
+        return self._obtenir_couche(
+            nom, lat, lon, construire, self.lire_vehicules.vehicules(detecteur),
+            lambda message: VehiculesIndisponibles(f"véhicules illisibles : {message}"),
+            lambda bbox, brut, scene: vehicules_pour_emprise(
+                *bbox, brut, detecteur, scene.get("batiments"), scene.get("eau"))), nom

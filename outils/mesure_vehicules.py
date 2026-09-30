@@ -64,10 +64,13 @@ def mesurer(nom_lieu, lat, lon, sessions, images, balayage):
     print(f"\n## {nom_lieu} ({lat}, {lon}) — orthophoto {rgb.shape[1]} × {rgb.shape[0]} px")
 
     def couche(boites, mode, piscines=None):
+        """Les objets gardés par le vrai chemin de la couche ; `mode` n'est
+        qu'un libellé ici (les détecteurs sont réunis en amont par detecter)."""
         brut = {"largeur": rgb.shape[1], "hauteur": rgb.shape[0], "boites": boites,
                 "piscines": piscines or []}
-        c = vehicules.vehicules_pour_emprise(*bbox, brut, mode, batiments, eau)
-        return c["piscines"] if piscines is not None else c["vehicules"]
+        if piscines is not None:
+            return vehicules.piscines_pour_emprise(*bbox, brut, mode, batiments, eau)["piscines"]
+        return vehicules.vehicules_pour_emprise(*bbox, brut, mode, batiments, eau)["vehicules"]
 
     par_detecteur = {}
     for nom, session in sessions.items():

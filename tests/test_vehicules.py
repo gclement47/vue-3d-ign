@@ -12,8 +12,9 @@ import numpy as np
 import pytest
 
 from vue3d import vehicules
-from vue3d.vehicules import (COTE, VehiculesMalConfigures, detecter, detecter_piscines,
-                             mode_demande, sans_doublons, vehicules_pour_emprise)
+from vue3d.vehicules import (COTE, Lecteur, VehiculesMalConfigures, detecter, detecter_piscines,
+                             mode_demande, piscines_pour_emprise, sans_doublons,
+                             vehicules_pour_emprise)
 
 
 # --- Configuration ------------------------------------------------------------
@@ -46,8 +47,8 @@ def test_un_mode_sans_son_reseau_arrete_le_demarrage(tmp_path):
         vehicules.lecteur("tous", str(tmp_path))
 
 
-def test_le_mode_tous_garde_d_abord_les_boites_de_yolo():
-    assert vehicules.MODES["tous"] == ("yolo", "rtmdet")
+def test_le_mode_tous_demande_le_detecteur_rapide_d_abord():
+    assert vehicules.MODES["tous"] == ("rtmdet", "yolo")
     assert set(vehicules.MODES) == {"aucun", "rtmdet", "yolo", "tous"}
 
 
@@ -228,8 +229,8 @@ def test_les_piscines_passent_les_memes_filtres_que_les_vehicules():
         [700, 300, 400, 200, 0.0, 0.4, 0x5AC8D2, "rtmdet"]]}    # 80 m : pas une piscine
     batiments = {"features": [{"type": "Feature", "properties": {}, "geometry": _carre(5, 35, 15, 45)}]}
     eau = {"surfaces": [{"geometrie": _carre(-50, -50, -30, -30)}], "cours": []}
-    couche = vehicules_pour_emprise(*BBOX, brut, "rtmdet", batiments, eau)
-    assert couche["vehicules"] == []
+    couche = piscines_pour_emprise(*BBOX, brut, "rtmdet", batiments, eau)
+    assert couche["mode"] == "rtmdet" and "vehicules" not in couche
     (lon, lat, longueur, largeur, cap, couleur), = couche["piscines"]
     assert (lon, lat) == pytest.approx((LON, LAT), abs=1e-6)
     assert (longueur, largeur, cap, couleur) == (10.0, 5.0, 90.0, 0x5AC8D2)
@@ -257,7 +258,7 @@ def _carre(x0, y0, x1, y1):
 def test_position_gabarit_et_cap_d_un_vehicule():
     # Au centre, 4,4 m sur 2 m, grand axe le long des x de l'image : vers l'est.
     couche = vehicules_pour_emprise(*BBOX, _brut((500, 500, 22, 10, 0.0)), "rtmdet")
-    assert couche["version"] == vehicules.VEHICULES_VERSION and couche["mode"] == "rtmdet"
+    assert couche["version"] == vehicules.VEHICULES_VERSION and couche["detecteur"] == "rtmdet"
     (lon, lat, longueur, largeur, cap, couleur), = couche["vehicules"]
     assert (lon, lat) == pytest.approx((LON, LAT), abs=1e-6)
     assert (longueur, largeur, cap, couleur) == (4.4, 2.0, 90.0, 0x808080)
@@ -302,6 +303,24 @@ def test_au_ras_du_cadre_la_boite_est_ecartee():
 
 def test_sans_vehicule_la_couche_dit_quand_meme_son_mode():
     assert vehicules_pour_emprise(*BBOX, _brut(), "yolo") == {
-        "version": vehicules.VEHICULES_VERSION, "mode": "yolo", "vehicules": [], "piscines": []}
-    vide = vehicules_pour_emprise(*BBOX, None, "yolo")
-    assert vide["vehicules"] == [] and vide["piscines"] == []
+        "version": vehicules.VEHICULES_VERSION, "detecteur": "yolo", "vehicules": []}
+    assert vehicules_pour_emprise(*BBOX, None, "yolo")["vehicules"] == []
+    assert piscines_pour_emprise(*BBOX, None, "yolo") == {
+        "version": vehicules.PISCINES_VERSION, "mode": "yolo", "piscines": []}
+
+
+def test_le_lecteur_a_une_lecture_par_fichier(monkeypatch):
+    """Les piscines, vues de tous les détecteurs ; les véhicules, détecteur
+    par détecteur — le rapide n'attend pas le lent."""
+    rgb = np.zeros((512, 512, 3), dtype=np.uint8)
+    monkeypatch.setattr(Lecteur, "_orthophoto", staticmethod(lambda *bbox: rgb))
+    # Les vrais réglages : yolo découpe l'image en tuiles de 160 px, rtmdet
+    # en une seule ; chaque doublure annonce une voiture dans sa première.
+    sessions = {"rtmdet": FauxReseau([[(400, 200, 44, 20, 0.0, PETIT, 0.9)]]),
+                "yolo": FauxReseau([[(300, 300, 44, 20, 0.0, 10, 0.9)]], ultralytics=True)}
+    lecteur = Lecteur("tous", sessions)
+    assert lecteur.detecteurs == ("rtmdet", "yolo")
+    brut = lecteur.vehicules("yolo")(0, 0, 1, 1)
+    assert [b[8] for b in brut["boites"]] == ["yolo"] and (brut["largeur"], brut["hauteur"]) == (512, 512)
+    assert [b[8] for b in lecteur.vehicules("rtmdet")(0, 0, 1, 1)["boites"]] == ["rtmdet"]
+    assert lecteur.piscines(0, 0, 1, 1)["piscines"] == []
