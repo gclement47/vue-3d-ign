@@ -126,6 +126,25 @@ def test_le_batiment_couvert_est_remplace_le_voisin_non():
     assert m["remplaces"] == ["SOUS"]
 
 
+def test_une_partie_qui_sort_de_la_scene_garde_son_batiment_coupe():
+    """Le bord de la scène coupe le bâtiment BD TOPO, pas la partie OSM : le
+    centre de la partie tombe hors du morceau gardé, qui reste son bâtiment —
+    pour la hauteur de repli comme pour le remplacement. Un bâtiment entier
+    qui ne fait que la chevaucher, lui, ne l'adopte pas."""
+    partie = [(-1.5099, 48.636), (-1.5093, 48.636), (-1.5093, 48.6362),
+              (-1.5099, 48.6362), (-1.5099, 48.636)]          # centre hors de l'emprise
+    morceau = [(-1.5099, 48.636), (-1.50972, 48.636), (-1.50972, 48.6362),
+               (-1.5099, 48.6362), (-1.5099, 48.636)]
+    brut = {"elements": [_way({"building:part": "yes"}, partie)]}
+    coupe = {"features": [_bat("COUPE", morceau, hauteur=12.0,
+                               coupe={"part": 0.3, "largeur_m": 20.0})]}
+    (p,) = monuments_pour_emprise(*EMPRISE, brut, coupe)["parties"]
+    assert (p["h"], p["bat"], p["estime"]) == (12.0, "COUPE", True)
+    entier = {"features": [_bat("ENTIER", morceau, hauteur=12.0)]}
+    (p,) = monuments_pour_emprise(*EMPRISE, brut, entier)["parties"]
+    assert (p["h"], p["bat"]) == (HAUTEUR_PAR_DEFAUT_M, None)
+
+
 # --- Extrait embarqué des lieux d'exemple ---------------------------------
 
 def _lieux_du_readme():

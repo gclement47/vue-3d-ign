@@ -235,3 +235,26 @@ def test_assembler_n_embarque_pas_les_grilles():
     assert len(art["houppiers"]) == 1
     charge = json.dumps(art)
     assert '"values"' not in charge and '"exg"' not in charge
+
+
+def test_assembler_coupe_les_batiments_au_bord_de_la_scene():
+    """Le WFS rend le bâtiment entier : la scène n'en garde que ce qui tient
+    dans son emprise (vue3d/batiments.py), et le dit."""
+    import numpy as np
+    from shapely.geometry import shape
+    from tests.test_houppiers import _emprise, _grille
+    H = _grille()
+    grille = _emprise(H)
+    grille.update({"couvert": True, "source": "lidar_hd", "resolution_m": 0.5})
+    ouest, sud, est, nord = grille["bbox"]
+    milieu, quart = (sud + nord) / 2, (nord - sud) / 4
+    deborde = {"type": "Feature", "properties": {"cleabs": "LONG"}, "geometry": {
+        "type": "Polygon", "coordinates": [[
+            [ouest - 1e-3, milieu - quart], [(ouest + est) / 2, milieu - quart],
+            [(ouest + est) / 2, milieu + quart], [ouest - 1e-3, milieu + quart],
+            [ouest - 1e-3, milieu - quart]]]}}
+    art = scene.assembler(ouest, sud, est, nord, {"features": [deborde]}, {"features": []},
+                          None, {"features": []}, grille, np.full(H.shape, 20, dtype=np.int8), None)
+    (b,) = art["batiments"]["features"]
+    assert shape(b["geometry"]).bounds[0] > ouest and 0 < b["properties"]["coupe"]["part"] < 1
+    assert "LONG" in art["toits"]["toits"]

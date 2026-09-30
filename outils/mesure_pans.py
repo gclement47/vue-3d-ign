@@ -18,6 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from vue3d.batiments import decouper_batiments
 from vue3d.couches import COUCHE_BATIMENTS, lire_couche
 from vue3d.mnh import fetch_mnh_grid, fetch_sol_grid
 from vue3d.ortho import fetch_exg_grid
@@ -29,7 +30,8 @@ LIEUX = {"Gordes": (43.9116, 5.2003), "Strasbourg": (48.5819, 7.7510)}
 
 def mesurer(nom, lat, lon):
     west, south, east, north = emprise(lat, lon)
-    bats = lire_couche(COUCHE_BATIMENTS, west, south, east, north)
+    bats = decouper_batiments(lire_couche(COUCHE_BATIMENTS, west, south, east, north),
+                              west, south, east, north)
     grille = fetch_mnh_grid(west, south, east, north,
                             resolution_m=TOITS_RESOLUTION_M, max_pixels=2048)
     exg = fetch_exg_grid(west, south, east, north, grille["width"], grille["height"])

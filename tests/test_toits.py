@@ -475,3 +475,56 @@ def test_cabane_sans_orthophoto_ne_declare_rien():
     assert t["fiable"] is False
     assert t["hauteur_inconnue"] is False
     assert t["part_verte"] is None
+
+
+# --- Bâtiments coupés par le bord de la scène -------------------------------
+
+def _scene_60m(fonction):
+    """Grille de 60 m autour de (45°, 5°) : (bbox, grille, rectangle en degrés)."""
+    lat0, lon0, pas, n = 45.0, 5.0, 0.5, 120
+    m_lon = 111320 * math.cos(math.radians(lat0))
+    xs = (np.arange(n) + 0.5) * pas - n * pas / 2
+    X, Y = np.meshgrid(xs, -xs)
+    demi = n * pas / 2
+    bbox = (lon0 - demi / m_lon, lat0 - demi / 111320, lon0 + demi / m_lon, lat0 + demi / 111320)
+    grille = {"bbox": list(bbox), "width": n, "height": n, "couvert": True,
+              "source": "lidar_hd", "values": fonction(X, Y).ravel().tolist()}
+
+    def rectangle(cle, x0, y0, x1, y1):
+        c = [(lon0 + x / m_lon, lat0 + y / 111320) for x, y in
+             ((x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0))]
+        return {"type": "Feature", "properties": {"cleabs": cle},
+                "geometry": {"type": "Polygon", "coordinates": [c]}}
+    return bbox, grille, rectangle
+
+
+def test_un_batiment_qui_deborde_recoit_sa_forme_mesuree_une_fois_coupe():
+    """Deux niveaux, 7 m au nord et 3 m au sud, sur un bâtiment qui sort de la
+    grille par l'est. Entier, la grille ne l'encadre pas : il garde son toit
+    résumé — le château de Versailles, avant. Coupé sur l'emprise, son morceau
+    est un bâtiment ordinaire."""
+    from vue3d.batiments import decouper_batiments
+    from vue3d.toits import toits_pour_emprise
+    bbox, grille, rectangle = _scene_60m(
+        lambda X, Y: np.where((X >= 0) & (np.abs(Y) <= 8), np.where(Y > 0, 7.0, 3.0), 0.0))
+    bats = {"features": [rectangle("AILE", 0, -8, 50, 8)]}
+    entier = toits_pour_emprise(*bbox, bats, grille, None)["toits"]["AILE"]
+    assert "pans" not in entier and "surface" not in entier
+    coupe = toits_pour_emprise(*bbox, decouper_batiments(bats, *bbox), grille, None)["toits"]["AILE"]
+    assert coupe["pans"]["n_pans"] == 2
+
+
+def test_la_pente_d_un_toit_coupe_se_juge_a_la_largeur_du_batiment_entier():
+    """Un toit à 49° de 30 m de large, faîtage nord-sud, dont le bord de la
+    scène ne garde que 14 m d'un versant : trop raide pour ce morceau seul,
+    plausible pour le bâtiment."""
+    from vue3d.batiments import decouper_batiments
+    from vue3d.toits import toits_pour_emprise
+    bbox, grille, rectangle = _scene_60m(
+        lambda X, Y: np.where((X >= 14.75) & (np.abs(Y) <= 15), 3.0 + 1.15 * (X - 14.75), 0.0))
+    coupes = decouper_batiments({"features": [rectangle("TOIT", 14.75, -15, 44.75, 15)]}, *bbox)
+    (morceau,) = coupes["features"]
+    assert morceau["properties"]["coupe"]["largeur_m"] == 30.0
+    assert toits_pour_emprise(*bbox, coupes, grille, None)["toits"]["TOIT"]["fiable"]
+    sans = {"features": [{**morceau, "properties": {"cleabs": "TOIT"}}]}
+    assert not toits_pour_emprise(*bbox, sans, grille, None)["toits"]["TOIT"]["fiable"]

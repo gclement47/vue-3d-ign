@@ -524,8 +524,10 @@ def cellules_du_toit(polygone_m, hauteurs, xs, ys, gouttiere, verdure=None):
     j1 = min(int(np.searchsorted(-ys, -miny, side="right")) + 1, len(ys))
     if i1 - i0 < 2 or j1 - j0 < 2:
         return None
-    # Une emprise qui déborde de la scène n'aurait qu'une partie de son toit :
-    # la vue garde alors le toit résumé, qui la couvre en entier.
+    # Une emprise qui déborde de la grille n'aurait qu'une partie de son toit.
+    # La scène découpe ses bâtiments en retrait du bord (vue3d/batiments.py)
+    # pour que la grille les encadre : ce refus n'attrape plus que l'appelant
+    # qui ne l'aurait pas fait.
     if xs[i0] > minx or xs[i1 - 1] < maxx or ys[j0] < maxy or ys[j1 - 1] > miny:
         return None
     X, Y = np.meshgrid(xs[i0:i1], ys[j0:j1])
@@ -881,7 +883,13 @@ def toits_pour_emprise(west, south, east, north, batiments_geojson, grille, exg,
             continue
         # Projection locale identique à celle des cellules.
         poly = transform(lambda x, y, z=None: ((x - lon0) * m_lon, (y - lat0) * 111320), geom)
-        profil = profil_toit(cellules, poly)
+        # Un bâtiment coupé par le bord de la scène (vue3d/batiments.py) juge
+        # la pente de son toit à la largeur du bâtiment entier : le morceau
+        # gardé d'un toit à deux pans est plus étroit que lui sans être plus
+        # raide. Mesuré à Strasbourg : à la largeur du morceau, 3 toits
+        # fiables entiers devenaient « non fiables » une fois coupés.
+        coupe = (f.get("properties") or {}).get("coupe") or {}
+        profil = profil_toit(cellules, poly, largeur_min=coupe.get("largeur_m"))
         part = part_verte(poly, verdure) if verdure is not None else None
         if profil is None:
             # Emprise illisible : moins de TOITS_MIN_CELLULES cellules une fois

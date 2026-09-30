@@ -19,14 +19,31 @@ et les services publics de la [Géoplateforme](https://geoservices.ign.fr/).
 docker compose up -d
 ```
 
-Puis ouvrir <http://localhost:8080/?lat=43.9116&lon=5.2003>, ou saisir un point
-dans le panneau. Sans paramètre, la page s'ouvre sur la cour du château de
-Versailles.
+Puis ouvrir <http://localhost:8080/> : sans paramètre, la page s'ouvre sur le
+village de Gordes. Un autre point se saisit dans le panneau, ou dans l'URL
+(`?lat=…&lon=…`).
 
 La **première** ouverture d'un lieu construit sa scène : 20 à 40 secondes, le
 temps de télécharger une grille de hauteurs à 0,5 m et d'y segmenter les arbres.
 Les ouvertures suivantes sont instantanées, la scène étant gardée sur disque dans
 le volume `scenes`. Pour changer de port : `VUE3D_PORT=9000 docker compose up -d`.
+
+Après une mise à jour du code, il faut reconstruire l'image : le code y est
+copié, `docker compose up -d` seul relancerait l'ancienne.
+
+```bash
+docker compose up -d --build
+```
+
+Pour repartir de zéro, scènes comprises :
+
+```bash
+docker compose down -v
+docker compose up -d --build
+```
+
+`-v` supprime le volume `scenes` : chaque lieu sera reconstruit à sa première
+ouverture.
 
 Sans Docker, **avec Python 3.12**, celui de l'image Docker :
 
@@ -48,13 +65,13 @@ des scènes construites en septembre 2026 ; ils suivent les mises à jour de l'I
 
 | Lieu | Ce qu'il montre |
 |---|---|
-| [Château de Versailles, cour](http://localhost:8080/?lat=48.8049&lon=2.1204) | Le lieu par défaut : un grand toit découpé en plusieurs corps, 146 arbres des jardins |
-| [Gordes, village](http://localhost:8080/?lat=43.9116&lon=5.2003) | Village perché : 84 m de relief sur l'emprise, 242 m dans l'anneau, 2 160 houppiers |
+| [Gordes, village](http://localhost:8080/?lat=43.9116&lon=5.2003) | Le lieu par défaut. Village perché : 84 m de relief sur l'emprise, 242 m dans l'anneau, 2 160 houppiers |
+| [Château de Versailles, cour](http://localhost:8080/?lat=48.8049&lon=2.1204) | Un monument plus grand que la scène : coupé à son bord, le château garde la surface mesurée de ses toits et ses cours ouvertes ; 146 arbres des jardins |
 | [Rocamadour, basilique](http://localhost:8080/?lat=44.7994&lon=1.6177) | Sanctuaire accroché à la falaise : 130 m de dénivelé sous les bâtiments |
 | [Chamonix, église](http://localhost:8080/?lat=45.9232&lon=6.8733) | Fond de vallée : l'anneau monte de 624 m sur les pentes alentour |
 | [Abbaye du Mont-Saint-Michel](http://localhost:8080/?lat=48.6360&lon=-1.5114) | Le rocher et sa baie. Hors LiDAR HD : l'abbaye est reprise au modèle 3D d'OpenStreetMap, flèche comprise |
-| [Saint-Malo, cathédrale](http://localhost:8080/?lat=48.6495&lon=-2.0256) | Ville close dense (253 toits mesurés) ; la mer laisse un tiers de l'anneau vide |
-| [Cité de Carcassonne](http://localhost:8080/?lat=43.2065&lon=2.3640) | Remparts et 292 bâtiments serrés sur 44 m de relief |
+| [Saint-Malo, cathédrale](http://localhost:8080/?lat=48.6495&lon=-2.0256) | Ville close dense (249 toits mesurés) ; la mer laisse un tiers de l'anneau vide |
+| [Cité de Carcassonne](http://localhost:8080/?lat=43.2065&lon=2.3640) | Remparts et 291 bâtiments serrés sur 44 m de relief |
 | [Notre-Dame de Paris](http://localhost:8080/?lat=48.8530&lon=2.3499) | L'île de la Cité, et 1 172 arbres des quais et des squares |
 | [Cathédrale de Strasbourg](http://localhost:8080/?lat=48.5819&lon=7.7510) | Tissu médiéval en plaine : toits LiDAR à plusieurs corps, et la cathédrale reprise à OpenStreetMap |
 | [Château de Chambord](http://localhost:8080/?lat=47.6162&lon=1.5171) | Le château isolé dans son domaine boisé : 477 houppiers |
@@ -71,7 +88,10 @@ Chaque premier chargement construit la scène, en 20 à 40 secondes.
   décentré, îlot autour d'une cour — par des **pans** : quelques plans ajustés
   au LiDAR, faîtages nets, fermés par leurs murs. Un toit qui n'est pas fait de
   plans garde la surface même du LiDAR, plus granuleuse. Le bouton est allumé
-  au départ ; éteint, tous les toits reprennent leur forme résumée.
+  au départ ; éteint, tous les toits reprennent leur forme résumée. Les cours
+  intérieures restent ouvertes, et un bâtiment plus grand que la scène — le
+  château de Versailles, 410 m de long — est coupé à son bord et mesuré comme
+  les autres ; sa fiche le dit.
 - **Le bâtiment visé**, qui contient le point ou, à défaut, le plus proche à
   moins de 25 m, est en orange et sa fiche s'ouvre d'elle-même : BD TOPO,
   mesures LiDAR, distance au point, forme du toit dessiné. Un clic sur un autre
@@ -83,9 +103,10 @@ Chaque premier chargement construit la scène, en 20 à 40 secondes.
   foi : seuls les bâtiments dont il ne sait rien (sous les arbres, profil
   rejeté) sont repris à OSM — la cathédrale de Strasbourg, que la règle
   « sous les arbres » écrasait à 3 m, y gagne son modèle complet. Le bouton
-  **Monuments OSM** débraye la couche ; il n'apparaît que si la scène a des
-  parties. Elles arrivent après la scène : OpenStreetMap répond de 0,6 s à
-  plus de 100 s, la vue ne l'attend pas et réessaie s'il ne répond pas.
+  **Monuments OSM** débraye la couche ; il n'apparaît que si la vue en dessine
+  des parties. Elles arrivent après la scène : OpenStreetMap répond de 0,6 s à
+  plus de 100 s, la vue ne l'attend pas et réessaie s'il ne répond pas ; une
+  roue tourne en haut de la vue tant que la couche est attendue.
 - **L'eau** : lacs, retenues, bassins et rivières larges en nappes, ruisseaux en
   rubans de la largeur de leur classe, posés sur le relief.
 - **Les routes**, en rubans sur le relief, à leur largeur de chaussée.
@@ -145,10 +166,19 @@ principales :
   de tirage au sort). À 12° et 0,15 m, les tolérances courantes, un toit de
   Strasbourg sur trois seulement se découpait : à maille fixe, le bruit de la
   normale croît avec la pente. À 25° et 0,40 m, 87 % des toits proposés à
-  Gordes et 55 % à Strasbourg passent en pans, à 8-12 cm du LiDAR ; le reste
+  Gordes et 56 % à Strasbourg passent en pans, à 8-12 cm du LiDAR ; le reste
   garde la surface. Chaque volume est vérifié fermé — toute arête portée par
   deux triangles, en sens opposés — et refusé sinon, jamais approché. Mesure :
   `python outils/mesure_pans.py [lat lon]`.
+- **Bâtiments coupés au bord de la scène.** Le WFS rend un bâtiment entier dès
+  qu'il touche l'emprise, mais la grille des hauteurs s'arrête à son bord : un
+  bâtiment qui en sortait ne recevait ni pans ni surface. Le château de
+  Versailles, une seule emprise BD TOPO de 22 790 m² plus grande que la scène,
+  n'était qu'une dalle sous la photo aérienne. Les bâtiments sont donc coupés
+  à 1,25 m du bord, là où la grille encadre encore le morceau : 4 bâtiments
+  sur 5 à Versailles, 56 sur 205 à Strasbourg, dont 3 et 22 y gagnent une
+  forme mesurée. La pente du toit d'un morceau se juge à la largeur du
+  bâtiment entier. Les houppiers, eux, lisent les bâtiments entiers.
 - **Toitures.** Gouttière au 15e centile et faîtage au 85e des hauteurs LiDAR
   de l'emprise érodée, plutôt que le minimum et le maximum : un arbre qui
   surplombe gonfle le maximum (16 m lus sur une maison de 4 m). La mesure est
@@ -201,7 +231,9 @@ principales :
   faîtages, et le panneau le signale.
 - **Une scène couvre environ 356 m de côté** autour du point. Au-delà, l'anneau
   ne porte que le relief (maille de 16 m) et le fond en basse résolution, sans
-  bâtiment ni arbre. En bord de mer ou de frontière, ses parties hors
+  bâtiment ni arbre : un bâtiment qui sort de la scène est coupé à son bord,
+  et son morceau est mesuré seul — trop petit, il retombe sur les hauteurs BD
+  TOPO. En bord de mer ou de frontière, ses parties hors
   couverture RGE ALTI restent vides.
 - **Les monuments OSM valent ce que les contributeurs y ont mis** : des
   parties sans hauteur (La Merveille, Le Châtelet) reçoivent celle de la BD

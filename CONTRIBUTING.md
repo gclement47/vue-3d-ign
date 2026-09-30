@@ -116,6 +116,7 @@ anneau de relief grossier s'étend au-delà, sur 2 km de côté.
 | `app.py` | Routes Flask | `creer_app(dossier_cache, construire)` : la construction est injectable, c'est ainsi que les tests évitent le réseau |
 | `scene.py` | Construction et cache | `SCENE_VERSION` (format), `ETAPES_SCENE` (suivi), `SceneIncomplete`, `Cache` et son verrou par point |
 | `geopf.py` | GET avec reprise | 3 essais espacés de 3 s, sur **tout** échec, refus 4xx compris |
+| `batiments.py` | Bâtiments découpés sur l'emprise | Le WFS les rend entiers ; coupés à 1,25 m du bord pour que la grille MNH les encadre, ils portent `coupe` |
 | `couches.py` | Lecture des couches WFS | Le serveur renvoie parfois une erreur Java avec un code 200 : c'est le contenu qui tranche |
 | `mnh.py` | Grille des hauteurs (MNH) et terrain | GetMap au format BIL float32 ; repli MNS − MNT hors LiDAR HD ; `fetch_sol_grid` pour le terrain sous les toits |
 | `ortho.py` | Indice de verdure, mosaïque d'orthophoto | Grille ExG alignée cellule pour cellule sur le MNH |
@@ -181,7 +182,7 @@ niveau :
 |---|---|
 | `version` | `SCENE_VERSION` au moment de la construction |
 | `bbox` | Emprise `[ouest, sud, est, nord]` en degrés |
-| `batiments` | La couche BD TOPO telle quelle (GeoJSON) |
+| `batiments` | La couche BD TOPO (GeoJSON), découpée sur l'emprise : un bâtiment coupé est en 2D et porte `coupe` = `{part, largeur_m}` |
 | `toits` | `{source, resolution_m, ortho, grille, toits: {cleabs: profil}}` |
 | `routes` | Tronçons de route BD TOPO : rubans sur le relief, et point de vue Street View |
 | `houppiers`, `masses` | Arbres segmentés, et masses de sursol indéterminées |
@@ -210,7 +211,7 @@ LiDAR), et au plus l'une des deux formes mesurées :
 
 **Toute modification du format impose d'incrémenter `SCENE_VERSION`** dans
 `scene.py`, avec une ligne de commentaire qui dit ce qui a changé. Le numéro
-fait partie du chemin du cache (`cache/v9/…`) : l'incrémenter invalide toutes
+fait partie du chemin du cache (`cache/v10/…`) : l'incrémenter invalide toutes
 les scènes d'un coup.
 
 ## Les invariants : ce qu'il ne faut jamais défaire
@@ -397,8 +398,8 @@ Les scripts de prototype figent en en-tête les résultats obtenus lors de leur
 - **Le cache** est dans `VUE3D_CACHE`, rangé en
   `v{SCENE_VERSION}/{lat}_{lon}/scene.json.gz` et `ortho.jpg`. Supprimez le
   dossier d'un lieu pour le reconstruire seul.
-- **Lire une scène** (9 est la `SCENE_VERSION` actuelle) :
-  `gunzip -c cache/v9/43.9116_5.2003/scene.json.gz | python -m json.tool | less`.
+- **Lire une scène** (10 est la `SCENE_VERSION` actuelle) :
+  `gunzip -c cache/v10/43.9116_5.2003/scene.json.gz | python -m json.tool | less`.
   La couche OSM est à côté, dans `monuments.json.gz`.
 - **Suivre une construction** : `curl 'localhost:8080/api/avancement?lat=…&lon=…'`
   renvoie l'étape en cours. `VUE3D_LOG=DEBUG` rend les journaux du serveur plus

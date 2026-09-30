@@ -228,6 +228,15 @@ def monuments_pour_emprise(west, south, east, north, brut, batiments):
             continue
         centre = poly.representative_point()
         contenant = next((p for g, _, p in bati if g.contains(centre)), None)
+        if contenant is None:
+            # Un bâtiment coupé par le bord de la scène (vue3d/batiments.py)
+            # ne contient plus le centre d'une partie qui en sort avec lui :
+            # elle reste la sienne, celle du bâtiment coupé qui la recouvre le
+            # plus.
+            recouvre = [(g.intersection(poly).area, p) for g, _, p in bati
+                        if p.get("coupe") and g.intersects(poly)]
+            aire, p = max(recouvre, key=lambda r: r[0], default=(0, None))
+            contenant = p if aire > 0 else None
         brutes.append({"tags": tags, "pts": pts, "poly_m": en_m(poly),
                        "contenant": contenant,
                        "h_osm": _nombre(tags.get("height"))})

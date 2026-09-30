@@ -42,9 +42,22 @@
         #scene { flex:1; position:relative; }
         #scene canvas { display:block; }
         /* En haut : le bas de la vue est aux crédits, qu'il chevauchait. */
-        #hint { position:absolute; left:12px; top:12px; z-index:2; max-width:calc(100% - 110px);
-                background:rgba(31,35,40,.88); color:#e8eaed; font-size:11px;
-                padding:6px 10px; border-radius:5px; pointer-events:none; }
+        #haut-gauche { position:absolute; left:12px; top:12px; z-index:2; max-width:calc(100% - 110px);
+                       display:flex; flex-direction:column; align-items:flex-start; gap:6px;
+                       pointer-events:none; }
+        #hint, #etat-monuments { background:rgba(31,35,40,.88); color:#e8eaed; font-size:11px;
+                                 padding:6px 10px; border-radius:5px; }
+        /* Sur la vue, pas dans le panneau : la couche OSM peut mettre plus de
+           100 s à venir, et c'est la scène qu'on regarde en l'attendant. */
+        #etat-monuments { display:flex; align-items:center; gap:8px; }
+        #etat-monuments[hidden] { display:none; }
+        #etat-monuments .roue { display:none; flex:none; box-sizing:border-box; width:12px; height:12px;
+                                border-radius:50%; border:2px solid rgba(255,255,255,.25);
+                                border-top-color:var(--accent); animation:tourner .8s linear infinite; }
+        #etat-monuments.en-cours .roue { display:block; }
+        @keyframes tourner { to { transform:rotate(360deg); } }
+        /* Ralentie plutôt qu'arrêtée : immobile, la roue ne dirait plus « en cours ». */
+        @media (prefers-reduced-motion: reduce) { #etat-monuments .roue { animation-duration:3s; } }
         #boussole { position:absolute; top:14px; right:14px; z-index:3; width:64px; height:64px;
                     border-radius:50%; background:rgba(31,35,40,.85); border:1px solid var(--line);
                     pointer-events:none; }
@@ -168,7 +181,6 @@
             <div class="stat"><span>toit mesuré au LiDAR</span><b id="s-lidar">—</b></div>
             <div class="stat"><span>dénivelé médian</span><b id="s-slope">—</b></div>
             <div class="note" id="note">Chargement des bâtiments…</div>
-            <div class="note" id="note-monuments" hidden></div>
         </div>
 
         <div class="section">
@@ -206,7 +218,10 @@
     </div>
 
     <div id="scene">
-        <div id="hint">Glisser pour pivoter · molette pour zoomer · survol pour mesurer · clic sur un bâtiment pour sa fiche</div>
+        <div id="haut-gauche">
+            <div id="hint">Glisser pour pivoter · molette pour zoomer · survol pour mesurer · clic sur un bâtiment pour sa fiche</div>
+            <div id="etat-monuments" role="status" hidden><i class="roue"></i><span></span></div>
+        </div>
         <div id="attente" hidden></div>
         <div id="boussole" title="Orientation">
             <div class="rose" id="rose">
@@ -234,10 +249,11 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
 
 // --- Point visé ----------------------------------------------------------
-// Donné dans l'URL (?lat=…&lon=…). Sans point, on en propose un par défaut : la
-// cour du château de Versailles, lieu public couvert par le LiDAR HD.
+// Donné dans l'URL (?lat=…&lon=…). Sans point, on en propose un par défaut : le
+// village de Gordes, lieu public couvert par le LiDAR HD, qui montre d'emblée
+// ce que la vue sait faire — 247 bâtiments sur 84 m de relief, 2 160 houppiers.
 const PARAMS = new URLSearchParams(location.search);
-const POINT_DEFAUT = { lat: 48.8049, lon: 2.1204 };
+const POINT_DEFAUT = { lat: 43.9116, lon: 5.2003 };
 const lireCoord = n => { const v = Number(String(PARAMS.get(n) || '').replace(',', '.')); return Number.isFinite(v) && PARAMS.get(n) !== null ? v : null; };
 const LAT0 = lireCoord('lat') ?? POINT_DEFAUT.lat;
 const LON0 = lireCoord('lon') ?? POINT_DEFAUT.lon;
@@ -593,6 +609,12 @@ function geometriePyramide(rect, hGouttiere, hFaitage) {
 // entre quatre centres de cellules) est coupée par l'emprise, triangulée, et
 // ses sommets prennent la hauteur interpolée. Les murs montent sous le bord du
 // toit, aux mêmes points et aux mêmes hauteurs : pas de fente entre les deux.
+//
+// Une emprise à cours intérieures (les trous du polygone BD TOPO) est d'abord
+// découpée en triangles, et chaque triangle traité comme une emprise : une
+// maille coupée par un contour troué n'a pas de forme simple, coupée par un
+// triangle elle reste convexe. Les cours restent ouvertes, murs compris : au
+// château de Versailles, le toit en couvrait cinq, 724 m² de trop.
 
 const ANGLE_PLI_TOIT = 40 * Math.PI / 180;
 // Au-delà, une facette n'est plus un pan mais la marche entre deux corps : un
@@ -632,7 +654,7 @@ function couperPolygone(pts, garder, intersection) {
  * Murs et toit d'un bâtiment à surface mesurée, en coordonnées de scène, base
  * à 0. Null si la géométrie est dégénérée.
  */
-function geometriesSurface(anneau, s) {
+function geometriesSurface(anneau, s, trous = []) {
     const G = TOITS_GRILLE;
     const [w, sud, e, n] = G.bbox;
     // Centres des cellules de la fenêtre, en mètres locaux : x vers l'est, y
@@ -654,82 +676,109 @@ function geometriesSurface(anneau, s) {
              + (v(i, j + 1) * (1 - ai) + v(i + 1, j + 1) * ai) * aj + ENFONCEMENT;
     };
 
-    let pts = anneau.map(([lo, la]) => toLocal(lo, la));
-    const [fx, fy] = pts[0], [lx, ly] = pts[pts.length - 1];
-    if (fx === lx && fy === ly) pts = pts.slice(0, -1);
+    // Anneau en mètres locaux, sans son dernier sommet s'il répète le premier.
+    const ouvrir = a => {
+        const p = a.map(([lo, la]) => toLocal(lo, la));
+        const [fx, fy] = p[0], [lx, ly] = p[p.length - 1];
+        return fx === lx && fy === ly ? p.slice(0, -1) : p;
+    };
+    const pts = ouvrir(anneau);
     if (pts.length < 3) return null;
+    const cours = trous.map(ouvrir).filter(c => c.length >= 3);
+    // Pièces à couper maille par maille : l'emprise, ou ses triangles.
+    const v2de = a => a.map(([x, y]) => new THREE.Vector2(x, y));
+    const sommets = pts.concat(...cours);
+    const pieces = !cours.length ? [pts]
+        : THREE.ShapeUtils.triangulateShape(v2de(pts), cours.map(v2de))
+              .map(tri => tri.map(k => sommets[k]));
 
     // --- Toit : maille par maille. Les facettes trop raides rejoignent les murs.
     const toit = [], murs = [];
     const poser = (cible, x, y) => cible.push(x, hauteur(x, y), -y);
-    const minX = Math.min(...pts.map(p => p[0])), maxX = Math.max(...pts.map(p => p[0]));
-    const minY = Math.min(...pts.map(p => p[1])), maxY = Math.max(...pts.map(p => p[1]));
+    const coupeX = x0 => (a, b) => [x0, a[1] + (b[1] - a[1]) * (x0 - a[0]) / (b[0] - a[0])];
+    const coupeY = y0 => (a, b) => [a[0] + (b[0] - a[0]) * (y0 - a[1]) / (b[1] - a[1]), y0];
     const v2 = [];
-    for (let j = 0; j < s.h - 1; j++) {
-        const yh = Y0 - j * dy, yb = yh - dy;
-        if (yb > maxY || yh < minY) continue;
-        for (let i = 0; i < s.l - 1; i++) {
-            const xg = X0 + i * dx, xd = xg + dx;
-            if (xg > maxX || xd < minX) continue;
-            const coupeX = x0 => (a, b) => [x0, a[1] + (b[1] - a[1]) * (x0 - a[0]) / (b[0] - a[0])];
-            const coupeY = y0 => (a, b) => [a[0] + (b[0] - a[0]) * (y0 - a[1]) / (b[1] - a[1]), y0];
-            let c = couperPolygone(pts, p => p[0] >= xg, coupeX(xg));
-            c = couperPolygone(c, p => p[0] <= xd, coupeX(xd));
-            c = couperPolygone(c, p => p[1] >= yb, coupeY(yb));
-            c = couperPolygone(c, p => p[1] <= yh, coupeY(yh));
-            if (c.length < 3) continue;
-            v2.length = 0;
-            for (const [x, y] of c) v2.push(new THREE.Vector2(x, y));
-            for (const [a, b, d] of THREE.ShapeUtils.triangulateShape(v2, [])) {
-                // Le plan (x, y) devient (x, -z) : l'ordre qui tourne dans le
-                // sens trigonométrique vu du nord... est inversé vu du ciel.
-                // On l'impose d'après l'aire, pour que la face regarde en haut.
-                const [pa, pb, pd] = [c[a], c[b], c[d]];
-                const aire = (pb[0] - pa[0]) * (pd[1] - pa[1]) - (pd[0] - pa[0]) * (pb[1] - pa[1]);
-                if (Math.abs(aire) < 1e-9) continue;
-                const ordre = aire > 0 ? [pa, pb, pd] : [pa, pd, pb];
-                // Pente : composante verticale de la normale, |aire| étant la
-                // projection au sol de ce même produit vectoriel.
-                const [q0, q1, q2] = ordre.map(([x, y]) => [x, hauteur(x, y), -y]);
-                const ux = q1[0] - q0[0], uy = q1[1] - q0[1], uz = q1[2] - q0[2];
-                const vx = q2[0] - q0[0], vy = q2[1] - q0[1], vz = q2[2] - q0[2];
-                const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
-                const raide = ny < PENTE_MUR_COS * Math.hypot(nx, ny, nz);
-                for (const [x, y] of ordre) poser(raide ? murs : toit, x, y);
+    for (const piece of pieces) {
+        let minY = Infinity, maxY = -Infinity;
+        for (const p of piece) { minY = Math.min(minY, p[1]); maxY = Math.max(maxY, p[1]); }
+        // Une ligne et une colonne de marge : l'arrondi ne doit écarter aucune maille.
+        const jDeb = Math.max(Math.floor((Y0 - maxY) / dy) - 1, 0);
+        const jFin = Math.min(Math.floor((Y0 - minY) / dy) + 1, s.h - 2);
+        for (let j = jDeb; j <= jFin; j++) {
+            const yh = Y0 - j * dy, yb = yh - dy;
+            // La bande de la ligne dit quelles colonnes la pièce y touche : la
+            // boîte d'un triangle long et oblique est presque vide.
+            let bande = couperPolygone(piece, p => p[1] >= yb, coupeY(yb));
+            bande = couperPolygone(bande, p => p[1] <= yh, coupeY(yh));
+            if (bande.length < 3) continue;
+            let minX = Infinity, maxX = -Infinity;
+            for (const p of bande) { minX = Math.min(minX, p[0]); maxX = Math.max(maxX, p[0]); }
+            const iDeb = Math.max(Math.floor((minX - X0) / dx) - 1, 0);
+            const iFin = Math.min(Math.floor((maxX - X0) / dx) + 1, s.l - 2);
+            for (let i = iDeb; i <= iFin; i++) {
+                const xg = X0 + i * dx, xd = xg + dx;
+                let c = couperPolygone(piece, p => p[0] >= xg, coupeX(xg));
+                c = couperPolygone(c, p => p[0] <= xd, coupeX(xd));
+                c = couperPolygone(c, p => p[1] >= yb, coupeY(yb));
+                c = couperPolygone(c, p => p[1] <= yh, coupeY(yh));
+                if (c.length < 3) continue;
+                v2.length = 0;
+                for (const [x, y] of c) v2.push(new THREE.Vector2(x, y));
+                for (const [a, b, d] of THREE.ShapeUtils.triangulateShape(v2, [])) {
+                    // Le plan (x, y) devient (x, -z) : l'ordre qui tourne dans le
+                    // sens trigonométrique vu du nord... est inversé vu du ciel.
+                    // On l'impose d'après l'aire, pour que la face regarde en haut.
+                    const [pa, pb, pd] = [c[a], c[b], c[d]];
+                    const aire = (pb[0] - pa[0]) * (pd[1] - pa[1]) - (pd[0] - pa[0]) * (pb[1] - pa[1]);
+                    if (Math.abs(aire) < 1e-9) continue;
+                    const ordre = aire > 0 ? [pa, pb, pd] : [pa, pd, pb];
+                    // Pente : composante verticale de la normale, |aire| étant la
+                    // projection au sol de ce même produit vectoriel.
+                    const [q0, q1, q2] = ordre.map(([x, y]) => [x, hauteur(x, y), -y]);
+                    const ux = q1[0] - q0[0], uy = q1[1] - q0[1], uz = q1[2] - q0[2];
+                    const vx = q2[0] - q0[0], vy = q2[1] - q0[1], vz = q2[2] - q0[2];
+                    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+                    const raide = ny < PENTE_MUR_COS * Math.hypot(nx, ny, nz);
+                    for (const [x, y] of ordre) poser(raide ? murs : toit, x, y);
+                }
             }
         }
     }
     if (!toit.length) return null;
 
     // --- Murs : chaque côté coupé aux lignes de la grille, là où le bord du
-    // toit change de pente, et monté jusqu'à lui.
-    let aire = 0;
-    for (let k = 0; k < pts.length; k++) {
-        const [ax, ay] = pts[k], [bx, by] = pts[(k + 1) % pts.length];
-        aire += ax * by - bx * ay;
-    }
-    const sens = aire > 0 ? 1 : -1;     // +1 : contour trigonométrique
-    for (let k = 0; k < pts.length; k++) {
-        const a = pts[k], b = pts[(k + 1) % pts.length];
-        const ts = [0, 1];
-        for (let i = 0; i < s.l; i++) {
-            const x = X0 + i * dx;
-            if ((x - a[0]) * (x - b[0]) < 0) ts.push((x - a[0]) / (b[0] - a[0]));
+    // toit change de pente, et monté jusqu'à lui. Ceux d'une cour regardent
+    // la cour : l'extérieur du bâtiment y est à l'intérieur de l'anneau.
+    const debutPourtour = murs.length;
+    for (const [anneauMur, versDehors] of [[pts, 1], ...cours.map(c => [c, -1])]) {
+        let aire = 0;
+        for (let k = 0; k < anneauMur.length; k++) {
+            const [ax, ay] = anneauMur[k], [bx, by] = anneauMur[(k + 1) % anneauMur.length];
+            aire += ax * by - bx * ay;
         }
-        for (let j = 0; j < s.h; j++) {
-            const y = Y0 - j * dy;
-            if ((y - a[1]) * (y - b[1]) < 0) ts.push((y - a[1]) / (b[1] - a[1]));
-        }
-        ts.sort((p, q) => p - q);
-        for (let m = 0; m < ts.length - 1; m++) {
-            const p = [a[0] + (b[0] - a[0]) * ts[m], a[1] + (b[1] - a[1]) * ts[m]];
-            const q = [a[0] + (b[0] - a[0]) * ts[m + 1], a[1] + (b[1] - a[1]) * ts[m + 1]];
-            const hp = hauteur(p[0], p[1]), hq = hauteur(q[0], q[1]);
-            // Face vers l'extérieur : à droite du côté parcouru dans le sens
-            // trigonométrique, à gauche sinon.
-            const quad = [[p, 0], [q, 0], [q, hq], [p, 0], [q, hq], [p, hp]];
-            const tri = sens > 0 ? quad : [quad[0], quad[2], quad[1], quad[3], quad[5], quad[4]];
-            for (const [[x, y], h] of tri) murs.push(x, h, -y);
+        const sens = (aire > 0 ? 1 : -1) * versDehors;     // +1 : contour trigonométrique
+        for (let k = 0; k < anneauMur.length; k++) {
+            const a = anneauMur[k], b = anneauMur[(k + 1) % anneauMur.length];
+            const ts = [0, 1];
+            for (let i = 0; i < s.l; i++) {
+                const x = X0 + i * dx;
+                if ((x - a[0]) * (x - b[0]) < 0) ts.push((x - a[0]) / (b[0] - a[0]));
+            }
+            for (let j = 0; j < s.h; j++) {
+                const y = Y0 - j * dy;
+                if ((y - a[1]) * (y - b[1]) < 0) ts.push((y - a[1]) / (b[1] - a[1]));
+            }
+            ts.sort((p, q) => p - q);
+            for (let m = 0; m < ts.length - 1; m++) {
+                const p = [a[0] + (b[0] - a[0]) * ts[m], a[1] + (b[1] - a[1]) * ts[m]];
+                const q = [a[0] + (b[0] - a[0]) * ts[m + 1], a[1] + (b[1] - a[1]) * ts[m + 1]];
+                const hp = hauteur(p[0], p[1]), hq = hauteur(q[0], q[1]);
+                // Face vers l'extérieur : à droite du côté parcouru dans le sens
+                // trigonométrique, à gauche sinon.
+                const quad = [[p, 0], [q, 0], [q, hq], [p, 0], [q, hq], [p, hp]];
+                const tri = sens > 0 ? quad : [quad[0], quad[2], quad[1], quad[3], quad[5], quad[4]];
+                for (const [[x, y], h] of tri) murs.push(x, h, -y);
+            }
         }
     }
 
@@ -746,7 +795,10 @@ function geometriesSurface(anneau, s) {
     // pli. Mesuré entre facettes voisines (Gordes, Strasbourg, une maison) :
     // 11° en médiane, 16 à 24° au 75e centile — le bruit — et 3 à 7 % au-delà
     // de 45° : faîtages, noues et marches, qui doivent rester nets.
-    return { toit: toCreasedNormals(geo(toit), ANGLE_PLI_TOIT), murs: geo(murs) };
+    // `pourtour` : les seuls murs du contour et des cours, sans les marches du
+    // toit, pour le liseré du bâtiment visé (habillerCible).
+    return { toit: toCreasedNormals(geo(toit), ANGLE_PLI_TOIT), murs: geo(murs),
+             pourtour: () => geo(murs.slice(debutPourtour)) };
 }
 
 /**
@@ -796,21 +848,30 @@ function rectangleDeCorps(corps) {
                   y0: cy - corps.largeur / 2, y1: cy + corps.largeur / 2 };
 }
 
-function anneauVersShape(anneau) {
-    const forme = new THREE.Shape();
-    anneau.forEach(([lon, lat], i) => {
-        const [x, y] = toLocal(lon, lat);
-        // Le plan de la Shape est extrudé vers +Z puis couché : on inverse y.
-        if (i === 0) forme.moveTo(x, y); else forme.lineTo(x, y);
-    });
+function anneauVersShape(anneau, trous = []) {
+    const tracer = (chemin, pts) => {
+        pts.forEach(([lon, lat], i) => {
+            const [x, y] = toLocal(lon, lat);
+            // Le plan de la Shape est extrudé vers +Z puis couché : on inverse y.
+            if (i === 0) chemin.moveTo(x, y); else chemin.lineTo(x, y);
+        });
+        return chemin;
+    };
+    const forme = tracer(new THREE.Shape(), anneau);
+    // Cours intérieures : l'extrusion les laisse ouvertes et leur donne des murs.
+    for (const trou of trous) forme.holes.push(tracer(new THREE.Path(), trou));
     return forme;
 }
 
-function anneauxDe(geometry) {
+/**
+ * Polygones d'une emprise : contour extérieur (`anneau`) et cours intérieures
+ * (`trous`). Le contour seul faisait d'un îlot un bloc plein.
+ */
+function polygonesDe(geometry) {
     if (!geometry) return [];
-    if (geometry.type === 'Polygon') return [geometry.coordinates[0]];
-    if (geometry.type === 'MultiPolygon') return geometry.coordinates.map(p => p[0]);
-    return [];
+    const polygones = geometry.type === 'Polygon' ? [geometry.coordinates]
+                    : geometry.type === 'MultiPolygon' ? geometry.coordinates : [];
+    return polygones.map(p => ({ anneau: p[0], trous: p.slice(1).filter(t => t.length >= 4) }));
 }
 
 let stats = { total: 0, avecToit: 0, pentes: [], lidar: 0, axes: 0, corps: 0 };
@@ -1024,9 +1085,42 @@ function afficherFicheBatiment(ud) {
         : (ud.inconnue
             ? '<div class="note">Hauteur inconnue : bâtiment sous les arbres, le LiDAR y lit la canopée.</div>'
             : '<div class="note">Pas de mesure LiDAR fiable : hauteurs de la BD TOPO.</div>');
-    document.getElementById('fiche-batiment').innerHTML = vise + lignes + mesure
+    // Le bord de la scène coupe les bâtiments qui en sortent (vue3d/batiments.py) :
+    // les attributs ci-dessus décrivent le bâtiment entier, pas le morceau dessiné.
+    const coupe = p.coupe
+        ? '<div class="note">Coupé par le bord de la scène : ' + Math.round(100 * p.coupe.part)
+          + ' % de son emprise est dessinée. Les attributs BD TOPO sont ceux du bâtiment entier.</div>'
+        : '';
+    document.getElementById('fiche-batiment').innerHTML = vise + lignes + mesure + coupe
         + '<div class="note">BD TOPO <code>' + (p.cleabs || '—') + '</code></div>'
         + lienStreetView(ud.anneau);
+}
+
+/**
+ * Bâtiments que les parties OSM remplacent, ou null sans couche : OSM et la BD
+ * TOPO ne découpent pas le bâti pareil, dessiner les deux superposerait deux
+ * modèles.
+ *
+ * Là où le LiDAR HD mesure, il fait foi : OSM ne prend que les bâtiments dont
+ * le LiDAR ne sait rien — sous les arbres, ou profil non fiable. À Strasbourg,
+ * la couche entière remplaçait des toits mesurés par des hauteurs estimées ; ce
+ * filtre lui laisse l'église Saint-Thomas, que le LiDAR dessinait à 3 m (« sous
+ * les arbres »), et rien d'autre. Sans LiDAR (photogrammétrie), la couche est
+ * entière : c'est le cas qui l'a motivée, l'abbaye du Mont-Saint-Michel.
+ */
+function batimentsRemplaces() {
+    const remplaces = monumentsActifs && MONUMENTS ? new Set(MONUMENTS.remplaces) : null;
+    if (!remplaces || TOITS_SOURCE !== 'lidar_hd') return remplaces;
+    return new Set([...remplaces].filter(c => {
+        const t = TOITS[c];
+        return !t || t.hauteur_inconnue || t.fiable === false;
+    }));
+}
+
+/** Une partie OSM est-elle dessinée ? Avec LiDAR, celles des seuls bâtiments repris à OSM. */
+function partieDessinee(partie, remplaces) {
+    if (!partie.contour || partie.contour.length < 4) return false;
+    return TOITS_SOURCE !== 'lidar_hd' || !!(partie.bat && remplaces && remplaces.has(partie.bat));
 }
 
 function construire(features, toitsEnPente) {
@@ -1034,23 +1128,7 @@ function construire(features, toitsEnPente) {
     meshes.length = 0;
     meshesToits.length = 0;
     stats = { total: 0, avecToit: 0, pentes: [], lidar: 0, axes: 0, corps: 0, inconnus: 0, surfaces: 0, pans: 0, osm: 0 };
-    // Bâtiments que les parties OSM remplacent : OSM et la BD TOPO ne découpent
-    // pas le bâti pareil, dessiner les deux superposerait deux modèles.
-    //
-    // Là où le LiDAR HD mesure, il fait foi : OSM ne prend que les bâtiments
-    // dont le LiDAR ne sait rien — sous les arbres, ou profil non fiable. À
-    // Strasbourg, la couche entière remplaçait des toits mesurés par des
-    // hauteurs estimées ; ce filtre lui laisse l'église Saint-Thomas, que le
-    // LiDAR dessinait à 3 m (« sous les arbres »), et rien d'autre. Sans
-    // LiDAR (photogrammétrie), la couche est entière : c'est le cas qui l'a
-    // motivée, l'abbaye du Mont-Saint-Michel.
-    let remplaces = monumentsActifs && MONUMENTS ? new Set(MONUMENTS.remplaces) : null;
-    if (remplaces && TOITS_SOURCE === 'lidar_hd') {
-        remplaces = new Set([...remplaces].filter(c => {
-            const t = TOITS[c];
-            return !t || t.hauteur_inconnue || t.fiable === false;
-        }));
-    }
+    const remplaces = batimentsRemplaces();
 
     for (const f of features) {
         const p = f.properties || {};
@@ -1079,7 +1157,7 @@ function construire(features, toitsEnPente) {
         // qu'un volume de repli, sans toit, et l'infobulle l'explique.
         const inconnue = !!(mesure && mesure.hauteur_inconnue);
 
-        for (const anneau of anneauxDe(f.geometry)) {
+        for (const { anneau, trous } of polygonesDe(f.geometry)) {
             if (!anneau || anneau.length < 4) continue;
             stats.total++;
 
@@ -1087,7 +1165,7 @@ function construire(features, toitsEnPente) {
                 stats.inconnus++;
                 const etages = p.nombre_d_etages > 0 ? p.nombre_d_etages : 1;
                 const hRepli = HAUTEUR_PAR_ETAGE * etages;
-                const geo = new THREE.ExtrudeGeometry(anneauVersShape(anneau), { depth: hRepli, bevelEnabled: false });
+                const geo = new THREE.ExtrudeGeometry(anneauVersShape(anneau, trous), { depth: hRepli, bevelEnabled: false });
                 geo.rotateX(-Math.PI / 2);
                 const mur = new THREE.Mesh(geo, MAT_INCONNU);
                 habillerCible(mur, anneau);
@@ -1124,7 +1202,7 @@ function construire(features, toitsEnPente) {
             // reposer le bâtiment. Le placement vertical lui-même est délégué à
             // rebaserBatiments(), appelé en fin de construction — une seule
             // écriture de cette règle, partagée avec le curseur d'exagération.
-            const forme = anneauVersShape(anneau);
+            const forme = anneauVersShape(anneau, trous);
             const geo = new THREE.ExtrudeGeometry(forme, { depth: hMur, bevelEnabled: false });
             geo.rotateX(-Math.PI / 2);   // le plan XY de la Shape devient le sol
             const mur = new THREE.Mesh(geo, materiauMurs(anneau));
@@ -1142,7 +1220,7 @@ function construire(features, toitsEnPente) {
             // d'ensemble.
             const surface = !(toitsEnPente && toitsMesures && lidar && TOITS_GRILLE) ? null
                 : lidar.pans ? geometriesPans(lidar.pans)
-                : lidar.surface ? geometriesSurface(anneau, lidar.surface) : null;
+                : lidar.surface ? geometriesSurface(anneau, lidar.surface, trous) : null;
             if (surface) {
                 const provisoire = meshes.pop();
                 groupeBatiments.remove(provisoire);
@@ -1153,7 +1231,7 @@ function construire(features, toitsEnPente) {
                 // rebaserBatiments() ne la relève pas.
                 const ud = { p, denivele, hMur, anneau, lidar, surface: true };
                 const murs = new THREE.Mesh(surface.murs, materiauMurs(anneau));
-                habillerCible(murs, anneau);
+                habillerCible(murs, anneau, surface.pourtour ? surface.pourtour() : murs.geometry);
                 const toit = new THREE.Mesh(surface.toit, lidar.pans ? MAT_TOIT_VOISIN : MAT_TOIT_SURFACE);
                 for (const m of [murs, toit]) {
                     m.castShadow = true; m.receiveShadow = true; m.userData = ud;
@@ -1186,7 +1264,7 @@ function construire(features, toitsEnPente) {
                 stats.corps += lidar.corps.length;
                 stats.pentes.push(Math.max(...lidar.corps.map(c => c.denivele)));
                 const hMurs = Math.max(Math.min(...lidar.corps.map(c => c.gouttiere)), 0.5);
-                const forme = anneauVersShape(anneau);
+                const forme = anneauVersShape(anneau, trous);
                 const geo = new THREE.ExtrudeGeometry(forme, { depth: hMurs, bevelEnabled: false });
                 geo.rotateX(-Math.PI / 2);
                 const mur = new THREE.Mesh(geo, materiauMurs(anneau));
@@ -1284,17 +1362,36 @@ const URL_MONUMENTS = `api/monuments?${REQUETE}`;
 const ESSAIS_MONUMENTS = 4;
 const ATTENTE_MONUMENTS_S = 30;
 
+// Une couche déjà en cache répond en 6 ms (mesuré à Versailles) : l'indicateur
+// n'apparaît qu'au-delà de ce délai, pour ne pas clignoter à chaque ouverture.
+const RETARD_ETAT_MONUMENTS_MS = 300;
+
+/** Indicateur posé sur la vue ; la roue tourne tant qu'une réponse est attendue. */
+function etatMonuments(texte, enCours = false) {
+    const etat = document.getElementById('etat-monuments');
+    etat.hidden = !texte;
+    etat.classList.toggle('en-cours', enCours);
+    etat.querySelector('span').textContent = texte || '';
+}
+
 async function chargerMonuments(essai = 1) {
-    const etat = document.getElementById('note-monuments');
-    etat.hidden = false;
-    etat.textContent = 'Monuments OpenStreetMap : chargement…';
+    // Au premier essai seulement : ensuite l'indicateur est déjà affiché.
+    const retard = setTimeout(
+        () => etatMonuments('Monuments OpenStreetMap : chargement…', true),
+        essai === 1 ? RETARD_ETAT_MONUMENTS_MS : 0);
     try {
         const r = await fetch(URL_MONUMENTS);
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const m = await r.json();
-        etat.hidden = true;
+        clearTimeout(retard);
+        etatMonuments(null);
         if (!m || !m.parties || !m.parties.length) return;   // presque partout
         MONUMENTS = m;
+        // Des parties, mais aucune à dessiner : à Versailles, la seule de
+        // l'emprise est dans un bâtiment que le LiDAR mesure. Ni bouton ni
+        // crédit alors — ils annonçaient une couche que la vue ne montre pas.
+        const remplaces = batimentsRemplaces();
+        if (!m.parties.some(partie => partieDessinee(partie, remplaces))) { MONUMENTS = null; return; }
         const b = document.getElementById('t-monuments');
         b.hidden = false;
         b.classList.toggle('on', monumentsActifs);
@@ -1302,11 +1399,13 @@ async function chargerMonuments(essai = 1) {
         afficherCible();
         majCredits();
     } catch (e) {
+        clearTimeout(retard);
         if (essai >= ESSAIS_MONUMENTS) {
-            etat.textContent = 'Monuments OpenStreetMap indisponibles : recharger la page pour réessayer.';
+            etatMonuments('Monuments OpenStreetMap indisponibles : recharger la page pour réessayer.');
             return;
         }
-        etat.textContent = `Monuments OpenStreetMap indisponibles : nouvel essai dans ${ATTENTE_MONUMENTS_S} s.`;
+        // La roue reste : un nouvel essai est prévu, le chargement n'est pas fini.
+        etatMonuments(`Monuments OpenStreetMap indisponibles : nouvel essai dans ${ATTENTE_MONUMENTS_S} s.`, true);
         setTimeout(() => chargerMonuments(essai + 1), ATTENTE_MONUMENTS_S * 1000);
     }
 }
@@ -1318,12 +1417,8 @@ function construireMonuments(features, toitsEnPente, remplaces) {
         if (f.properties && f.properties.cleabs) parCleabs.set(f.properties.cleabs, f.properties);
     }
     for (const partie of MONUMENTS.parties) {
+        if (!partieDessinee(partie, remplaces)) continue;
         const anneau = partie.contour;
-        if (!anneau || anneau.length < 4) continue;
-        // Avec LiDAR, seules les parties des bâtiments repris à OSM sont
-        // dessinées (voir le filtre de `remplaces` dans construire()).
-        if (TOITS_SOURCE === 'lidar_hd'
-            && !(partie.bat && remplaces && remplaces.has(partie.bat))) continue;
         stats.osm++;
         const p = (partie.bat && parCleabs.get(partie.bat)) || {};
         const toitH = toitsEnPente && partie.toit ? Math.min(partie.toit.h, partie.h - 0.5) : 0;
@@ -1377,10 +1472,15 @@ function materiauMurs(anneau) {
  * — l'abbaye du Mont-Saint-Michel, 74 m et 182 sommets — n'était plus qu'une
  * masse orange ; ses murs gardent un ton à peine réchauffé, le contour dit
  * lequel c'est. Enfant du mur : il suit son relèvement (rebaserBatiments).
+ *
+ * `geometrie` : celle dont on tire les arêtes, quand ce n'est pas tout le mur.
+ * Les murs d'une surface mesurée comptent les marches de son toit : au château
+ * de Versailles, 20 587 arêtes, un gribouillis orange sur tout le toit, contre
+ * 7 401 pour son seul pourtour.
  */
-function habillerCible(mur, anneau) {
+function habillerCible(mur, anneau, geometrie = mur.geometry) {
     if (!CIBLE || anneau !== CIBLE.anneau) return;
-    mur.add(new THREE.LineSegments(new THREE.EdgesGeometry(mur.geometry, 40), MAT_CONTOUR_CIBLE));
+    mur.add(new THREE.LineSegments(new THREE.EdgesGeometry(geometrie, 40), MAT_CONTOUR_CIBLE));
 }
 
 // --- Bâtiment visé ---------------------------------------------------------
@@ -1395,26 +1495,34 @@ function habillerCible(mur, anneau) {
 const RAYON_VISE = 25;
 let CIBLE = null;       // { anneau, p, distance } ; distance 0 : le point est dedans
 
-/** Distance du point à une emprise, en mètres ; 0 s'il est dedans. */
-function distanceAuPoint(anneau) {
-    if (pointDansAnneau(CENTER[0], CENTER[1], anneau)) return 0;
-    const pts = anneau.map(([lo, la]) => toLocal(lo, la));
-    let d = Infinity;
-    for (let i = 0; i < pts.length - 1; i++) {
-        const [ax, ay] = pts[i], [bx, by] = pts[i + 1];
-        const lx = bx - ax, ly = by - ay, l2 = lx * lx + ly * ly;
-        const t = l2 > 0 ? Math.min(Math.max(-(ax * lx + ay * ly) / l2, 0), 1) : 0;
-        d = Math.min(d, Math.hypot(ax + t * lx, ay + t * ly));
-    }
-    return d;
+/**
+ * Distance du point à une emprise, en mètres ; 0 s'il est dedans. Dans une
+ * cour intérieure, il n'est pas dans le bâtiment : la distance est celle du
+ * bord de la cour.
+ */
+function distanceAuPoint(anneau, trous = []) {
+    const auBord = contour => {
+        const pts = contour.map(([lo, la]) => toLocal(lo, la));
+        let d = Infinity;
+        for (let i = 0; i < pts.length - 1; i++) {
+            const [ax, ay] = pts[i], [bx, by] = pts[i + 1];
+            const lx = bx - ax, ly = by - ay, l2 = lx * lx + ly * ly;
+            const t = l2 > 0 ? Math.min(Math.max(-(ax * lx + ay * ly) / l2, 0), 1) : 0;
+            d = Math.min(d, Math.hypot(ax + t * lx, ay + t * ly));
+        }
+        return d;
+    };
+    if (!pointDansAnneau(CENTER[0], CENTER[1], anneau)) return auBord(anneau);
+    const cour = trous.find(t => pointDansAnneau(CENTER[0], CENTER[1], t));
+    return cour ? auBord(cour) : 0;
 }
 
 function trouverCible(features) {
     let meilleur = null;
     for (const f of features) {
-        for (const anneau of anneauxDe(f.geometry)) {
+        for (const { anneau, trous } of polygonesDe(f.geometry)) {
             if (!anneau || anneau.length < 4) continue;
-            const distance = distanceAuPoint(anneau);
+            const distance = distanceAuPoint(anneau, trous);
             if (!meilleur || distance < meilleur.distance) {
                 meilleur = { anneau, p: f.properties || {}, distance };
             }
@@ -3519,7 +3627,9 @@ renderer.domElement.addEventListener('pointermove', e => {
               (p.nombre_d_etages > 0 ? ` (${p.nombre_d_etages} étage(s) BD TOPO)` : ' (un étage, par défaut)')
             : `<br>murs ${hMur.toFixed(1)} m` +
               (denivele > 0.5 ? ` · toit ${denivele.toFixed(1)} m` : ' · toit plat') +
-              (ud.lidar ? (ud.lidar.corps ? ` <i>(LiDAR, ${ud.lidar.corps.length} corps de toit)</i>`
+              (ud.lidar ? (ud.surface ? (ud.lidar.pans ? ` <i>(LiDAR, ${ud.lidar.pans.n_pans} pan(s) mesuré(s))</i>`
+                                                       : ' <i>(LiDAR, surface mesurée)</i>')
+                          : ud.lidar.corps ? ` <i>(LiDAR, ${ud.lidar.corps.length} corps de toit)</i>`
                           : ud.lidar.axe_deg != null ? ' <i>(LiDAR, faîtage mesuré)</i>' : ' <i>(LiDAR)</i>')
                         + (ud.lidar.mode_bas ? ` <i>· toit lu sous un arbre qui couvre ${Math.round(ud.lidar.part_haute * 100)} % de l'emprise</i>` : '')
                         : ' <i>(BD TOPO)</i>')) +

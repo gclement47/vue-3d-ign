@@ -23,6 +23,7 @@ vue3d/
   app.py        Flask : /, /api/scene, /api/ortho, /api/monuments, /api/avancement, /api/sante
   scene.py      assemblage d'une scène, cache disque par point arrondi
   couches.py    lecture WFS (bâtiments, végétation, BD Forêt, routes)
+  batiments.py  bâtiments découpés sur l'emprise, en retrait du bord
   mnh.py        hauteurs du sursol, LiDAR HD, repli MNS − MNT
   toits.py      gouttière, faîtage, corps de toit, surface du toit, bâtiments sous les arbres
   pans.py       toit en pans : plans ajustés au MNH, volume fermé et vérifié

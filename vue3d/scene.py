@@ -3,7 +3,8 @@
 Une scène, c'est tout ce que la vue 3D affiche autour d'une coordonnée, dans un
 carré de ±0,0016° (environ 356 m de côté) :
 
-- les bâtiments BD TOPO et leurs toitures mesurées au LiDAR HD ;
+- les bâtiments BD TOPO, découpés sur l'emprise, et leurs toitures mesurées
+  au LiDAR HD ;
 - les houppiers et masses de sursol segmentés sur le MNH LiDAR HD à 0,5 m ;
 - les routes, pour orienter Street View ;
 - le relief RGE ALTI, quantifié au décimètre ;
@@ -42,6 +43,7 @@ import tempfile
 import threading
 import time
 
+from .batiments import decouper_batiments
 from .couches import (COUCHE_BATIMENTS, COUCHE_FORET, COUCHE_ROUTES,
                       COUCHE_VEGETATION, lire_couche)
 from .eau import COUCHE_COURS_EAU, COUCHE_SURFACES_EAU, eau_pour_emprise
@@ -64,7 +66,8 @@ journal = logging.getLogger(__name__)
 # 7 : profil minimal (hauteur inconnue) pour les bâtiments illisibles.
 # 8 : toits en pans (vue3d/pans.py), préférés à la surface mesurée.
 # 9 : monuments OSM hors de la scène, en couche à part (NOM_MONUMENTS).
-SCENE_VERSION = 9
+# 10 : bâtiments découpés sur l'emprise (vue3d/batiments.py).
+SCENE_VERSION = 10
 # Demi-côté de l'emprise, en degrés : ~178 m de part et d'autre du point.
 SCENE_DELTA = 0.0016
 # Demi-côté de l'anneau, en mètres et non en degrés : carré sur le terrain.
@@ -136,14 +139,19 @@ def assembler(west, south, east, north, batiments, vegetation, forets, routes,
     """
     avancer = avancer or (lambda libelle: None)
     avancer("toitures")
-    toits = toits_pour_emprise(west, south, east, north, batiments, grille, exg, sol)
+    # Découpés pour les toitures et pour la vue. Les houppiers gardent les
+    # bâtiments entiers : leur masque bâti s'arrête de toute façon à la
+    # grille, et dans le retrait de la découpe un toit passerait pour du
+    # sursol.
+    decoupes = decouper_batiments(batiments, west, south, east, north)
+    toits = toits_pour_emprise(west, south, east, north, decoupes, grille, exg, sol)
     avancer("houppiers")
     veg = houppiers_pour_emprise(west, south, east, north, batiments, vegetation,
                                  forets, grille, exg)
     return {
         "version": SCENE_VERSION,
         "bbox": [west, south, east, north],
-        "batiments": batiments,
+        "batiments": decoupes,
         "toits": toits,
         "routes": routes,
         "houppiers": veg.get("houppiers", []),
@@ -218,7 +226,7 @@ def construire(lat, lon, avancer=None):
     scene = assembler(west, south, east, north, batiments, vegetation, forets,
                       routes, grille, exg, relief, anneau, sol, eau, lignes, avancer)
     journal.info("Scène %.4f, %.4f : %d bâtiment(s), %d houppier(s), source %s",
-                 lat, lon, len(batiments.get("features", [])),
+                 lat, lon, len(scene["batiments"].get("features", [])),
                  len(scene["houppiers"]), grille.get("source"))
     return gzip.compress(json.dumps(scene, separators=(",", ":")).encode(), 6), mosaique
 
