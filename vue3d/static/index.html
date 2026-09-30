@@ -1087,6 +1087,18 @@ function lienStreetView(anneau) {
         + 'Voir en Street View ↗</a>';
 }
 
+/**
+ * Lien qui recharge la page centrée sur le bâtiment : la scène est toujours
+ * cadrée sur son point, et un bâtiment coupé par le bord, ou vu de loin, se
+ * lit mieux au centre de la sienne. Le point est le centre de l'emprise.
+ */
+function lienRecentrer(anneau) {
+    if (!anneau || anneau.length < 3) return '';
+    const [lon, lat] = centreAnneau(anneau);
+    return ' <a class="lien-ext lien-recentrer" href="?lat=' + lat.toFixed(6) + '&amp;lon=' + lon.toFixed(6) + '">'
+        + 'Recentrer la scène sur ce bâtiment</a>';
+}
+
 // --- Orientation Street View --------------------------------------------
 // Google pose la vue sur le panorama le plus proche du point demandé, avec un
 // cap par défaut quelconque. Pour regarder le bâtiment, on se place sur la
@@ -1240,7 +1252,7 @@ function afficherFicheBatiment(ud) {
         : '';
     document.getElementById('fiche-batiment').innerHTML = vise + lignes + mesure + coupe
         + '<div class="note">BD TOPO <code>' + (p.cleabs || '—') + '</code></div>'
-        + lienStreetView(ud.anneau);
+        + lienStreetView(ud.anneau) + lienRecentrer(ud.anneau);
 }
 
 /**

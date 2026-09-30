@@ -46,6 +46,9 @@ messages de commit et dans les commentaires des modules.
 
 ### Ajouté
 
+- **Un lien « Recentrer la scène sur ce bâtiment » dans la fiche** d'un
+  bâtiment cliqué : la scène est toujours cadrée sur son point, et un
+  bâtiment coupé par le bord se lit mieux au centre de la sienne.
 - **Les véhicules de l'orthophoto, en option.** Lancé avec
   `VUE3D_VEHICULES=rtmdet`, `yolo` ou `tous`, le service lit les véhicules
   sur l'orthophoto à 0,2 m avec un réseau à boîtes orientées, et la vue les
