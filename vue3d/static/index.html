@@ -472,6 +472,11 @@ const MAT_TOIT_SURFACE = new THREE.MeshStandardMaterial({ color: 0x6f7883, rough
 // pour dire « on sait qu'il y a un bâtiment, pas sa hauteur ».
 const MAT_INCONNU = new THREE.MeshStandardMaterial({ color: 0xb8c0c8, roughness: 0.9, flatShading: true,
                                                      transparent: true, opacity: 0.55 });
+// Dessus plat : juste au-dessus de la face haute des murs, qu'il recouvre, et
+// tiré vers la caméra pour ne pas scintiller avec elle au loin.
+const DESSUS_DECALAGE = 0.05;
+const DECALAGE_DESSUS = { polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 };
+const MAT_DESSUS = new THREE.MeshStandardMaterial({ color: 0x6f7883, roughness: 0.9, ...DECALAGE_DESSUS });
 // Repli quand ni le LiDAR ni la BD TOPO ne sont crédibles : 3 m par étage
 // BD TOPO connu, un étage sinon. Un ordre de grandeur, affiché comme tel.
 const HAUTEUR_PAR_ETAGE = 3;
@@ -534,76 +539,6 @@ function rectangleMin(pts) {
     return best;
 }
 
-/**
- * Toit à deux pans posé sur le rectangle d'aire minimale de l'emprise.
- * La BD TOPO donne les altitudes de gouttière et de faîtage, jamais la forme :
- * on suppose donc un toit à deux pans, faîtage sur le grand axe. C'est faux
- * pour une toiture-terrasse ou une croupe, mais bien plus juste qu'un toit plat
- * sur les 85 % de bâtiments qui ont un dénivelé.
- */
-function geometrieToit(rect, hGouttiere, hFaitage, forcerX = null) {
-    const { ang, x0, x1, y0, y1 } = rect;
-    const cos = Math.cos(ang), sin = Math.sin(ang);
-    const versMonde = (x, y) => [x * cos - y * sin, x * sin + y * cos];
-
-    const largeurX = x1 - x0, largeurY = y1 - y0;
-    // Le faîtage suit le grand côté — sauf axe imposé (LiDAR), qui est X.
-    const suivantX = forcerX !== null ? forcerX : largeurX >= largeurY;
-    const my = (y0 + y1) / 2, mx = (x0 + x1) / 2;
-
-    const A = versMonde(x0, y0), B = versMonde(x1, y0),
-          C = versMonde(x1, y1), D = versMonde(x0, y1);
-    const F1 = suivantX ? versMonde(x0, my) : versMonde(mx, y0);
-    const F2 = suivantX ? versMonde(x1, my) : versMonde(mx, y1);
-
-    const g = hGouttiere, f = hFaitage;
-    const v = [];
-    const pousser = (p, h) => v.push(p[0], h, -p[1]);
-
-    if (suivantX) {
-        pousser(A, g); pousser(B, g); pousser(F2, f);      // pan avant
-        pousser(A, g); pousser(F2, f); pousser(F1, f);
-        pousser(D, g); pousser(F1, f); pousser(F2, f);      // pan arrière
-        pousser(D, g); pousser(F2, f); pousser(C, g);
-        pousser(A, g); pousser(F1, f); pousser(D, g);       // pignons
-        pousser(B, g); pousser(C, g); pousser(F2, f);
-    } else {
-        pousser(A, g); pousser(B, g); pousser(F1, f);
-        pousser(B, g); pousser(C, g); pousser(F2, f);
-        pousser(B, g); pousser(F2, f); pousser(F1, f);
-        pousser(D, g); pousser(F1, f); pousser(F2, f);
-        pousser(D, g); pousser(F2, f); pousser(C, g);
-        pousser(A, g); pousser(F1, f); pousser(D, g);
-    }
-
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
-    geo.computeVertexNormals();
-    return geo;
-}
-
-/**
- * Toit en pyramide sur une boîte : quatre pans vers un sommet central. C'est le
- * rendu d'un corps dont les cellules hautes du LiDAR ne dessinent pas de ligne
- * (netteté < 3) — une croupe ou un pavillon, pas un faîtage.
- */
-function geometriePyramide(rect, hGouttiere, hFaitage) {
-    const { ang, x0, x1, y0, y1 } = rect;
-    const cos = Math.cos(ang), sin = Math.sin(ang);
-    const versMonde = (x, y) => [x * cos - y * sin, x * sin + y * cos];
-    const A = versMonde(x0, y0), B = versMonde(x1, y0), C = versMonde(x1, y1), D = versMonde(x0, y1);
-    const S = versMonde((x0 + x1) / 2, (y0 + y1) / 2);
-    const v = [];
-    const pousser = (p, h) => v.push(p[0], h, -p[1]);
-    for (const [P, Q] of [[A, B], [B, C], [C, D], [D, A]]) {
-        pousser(P, hGouttiere); pousser(Q, hGouttiere); pousser(S, hFaitage);
-    }
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
-    geo.computeVertexNormals();
-    return geo;
-}
-
 // --- Surface mesurée du toit ----------------------------------------------
 // Le serveur envoie, pour chaque toit fiable, la fenêtre de la grille MNH à
 // 0,5 m qui couvre l'emprise : des hauteurs rapportées au point le plus bas du
@@ -652,6 +587,165 @@ function couperPolygone(pts, garder, intersection) {
         if (ga !== gb) out.push(intersection(a, b));
     }
     return out;
+}
+
+/**
+ * Toit résumé découpé sur l'emprise : les pans d'une ou plusieurs boîtes — deux
+ * pans sur un faîtage, ou pyramide — mais au-dessus du seul bâtiment.
+ *
+ * Posé sur sa boîte entière, le toit résumé débordait : la boîte englobe
+ * l'emprise dans le repère du faîtage, et une maison en L, un faîtage mesuré
+ * en biais ou une aile courbe en laissent une bonne part au-dessus du jardin
+ * ou de la cour. Mesuré sur 391 toits résumés de huit lieux : le débord vaut
+ * 31 % de l'emprise en médiane, plus de la moitié pour un toit sur trois, et
+ * plus que l'emprise elle-même pour un sur dix. Vu du ciel, c'était un
+ * rectangle de photo aérienne — pelouse et pavés compris — plus grand que la
+ * maison ; à Chambord, deux « corps » de 53 × 43 m sur une aile de 10 m de
+ * large.
+ *
+ * `boites` : [{ rect, g, f, pyramide, suivantX }] — rectangle orienté, hauteurs
+ * de gouttière et de faîtage, forme, et pour deux pans le côté que suit le
+ * faîtage. `hMur` : le haut des murs, d'où montent les pignons. Null si rien
+ * de l'emprise n'est sous une boîte.
+ */
+function geometrieToitDecoupe(anneau, trous, boites, hMur) {
+    const ouvrir = a => {
+        const p = a.map(([lo, la]) => toLocal(lo, la));
+        const [fx, fy] = p[0], [lx, ly] = p[p.length - 1];
+        return fx === lx && fy === ly ? p.slice(0, -1) : p;
+    };
+    const pts = ouvrir(anneau);
+    if (pts.length < 3) return null;
+    const cours = trous.map(ouvrir).filter(c => c.length >= 3);
+    const v2de = a => a.map(([x, y]) => new THREE.Vector2(x, y));
+    const sommets = pts.concat(...cours);
+    // Des triangles : une pièce convexe le reste sous chaque coupe.
+    const pieces = THREE.ShapeUtils.triangulateShape(v2de(pts), cours.map(v2de))
+        .map(tri => tri.map(k => sommets[k]));
+    const aireDe = a => {
+        let s = 0;
+        for (let k = 0; k < a.length; k++) { const p = a[k], q = a[(k + 1) % a.length]; s += p[0] * q[1] - q[0] * p[1]; }
+        return s / 2;
+    };
+    // Coupe par le demi-plan où la fonction affine `f` est positive.
+    const couper = (poly, f) => couperPolygone(poly, p => f(p) >= 0, (a, b) => {
+        const fa = f(a), t = fa / (fa - f(b));
+        return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    });
+
+    const v = [];
+    for (const b of boites) {
+        const { ang, x0, x1, y0, y1 } = b.rect;
+        const cos = Math.cos(ang), sin = Math.sin(ang);
+        const versBoite = ([x, y]) => [x * cos + y * sin, -x * sin + y * cos];
+        const versMonde = ([u, w]) => [u * cos - w * sin, u * sin + w * cos];
+        const mu = (x0 + x1) / 2, mw = (y0 + y1) / 2;
+        const du = Math.max((x1 - x0) / 2, 1e-6), dw = Math.max((y1 - y0) / 2, 1e-6);
+        const suivantX = b.suivantX ?? (x1 - x0 >= y1 - y0);
+        // Lignes où le toit se plie, et pans de part et d'autre : chacun est
+        // l'intersection de demi-plans, et la hauteur y est affine.
+        const plis = b.pyramide
+            ? [p => (p[0] - mu) / du - (p[1] - mw) / dw, p => (p[0] - mu) / du + (p[1] - mw) / dw]
+            : [suivantX ? p => p[1] - mw : p => p[0] - mu];
+        const pans = b.pyramide ? [[1, 1], [-1, 1], [-1, -1], [1, -1]] : [[1], [-1]];
+        const hauteur = b.pyramide
+            ? p => b.g + (b.f - b.g) * (1 - Math.max(Math.abs(p[0] - mu) / du, Math.abs(p[1] - mw) / dw))
+            : suivantX ? p => b.g + (b.f - b.g) * (1 - Math.abs(p[1] - mw) / dw)
+                       : p => b.g + (b.f - b.g) * (1 - Math.abs(p[0] - mu) / du);
+        const poser = (p, h) => { const [x, y] = versMonde(p); v.push(x, h, -y); };
+        const dansLaBoite = poly => {
+            for (const f of [p => p[0] - x0, p => x1 - p[0], p => p[1] - y0, p => y1 - p[1]]) {
+                if (poly.length < 3) break;
+                poly = couper(poly, f);
+            }
+            return poly;
+        };
+
+        // --- Pans : chaque triangle de l'emprise, ramené à la boîte puis à chaque pan.
+        const dedans = [];
+        for (const piece of pieces) {
+            const c = dansLaBoite(piece.map(versBoite));
+            if (c.length < 3 || Math.abs(aireDe(c)) < 1e-6) continue;
+            dedans.push(c);
+            for (const signes of pans) {
+                let pan = c;
+                signes.forEach((s, k) => { if (pan.length >= 3) pan = couper(pan, p => s * plis[k](p)); });
+                if (pan.length < 3 || Math.abs(aireDe(pan)) < 1e-9) continue;
+                // Sens trigonométrique vu du ciel : la face regarde en haut.
+                if (aireDe(pan) < 0) pan = pan.slice().reverse();
+                for (let k = 1; k < pan.length - 1; k++) {
+                    for (const p of [pan[0], pan[k], pan[k + 1]]) poser(p, hauteur(p));
+                }
+            }
+        }
+        if (!dedans.length) continue;
+
+        // --- Pignons : du haut des murs jusqu'au toit, le long d'un segment
+        // parcouru avec l'extérieur à sa droite, recoupé là où le toit se plie.
+        const pignon = (a, c) => {
+            const ts = [0, 1];
+            for (const pli of plis) {
+                const fa = pli(a), fc = pli(c);
+                if (fa * fc < 0) ts.push(fa / (fa - fc));
+            }
+            ts.sort((p, q) => p - q);
+            for (let m = 0; m < ts.length - 1; m++) {
+                const p = [a[0] + (c[0] - a[0]) * ts[m], a[1] + (c[1] - a[1]) * ts[m]];
+                const q = [a[0] + (c[0] - a[0]) * ts[m + 1], a[1] + (c[1] - a[1]) * ts[m + 1]];
+                const hp = hauteur(p), hq = hauteur(q);
+                if (hp - hMur < 1e-3 && hq - hMur < 1e-3) continue;
+                poser(p, hMur); poser(q, hMur); poser(q, hq);
+                poser(p, hMur); poser(q, hq); poser(p, hp);
+            }
+        };
+        // Part d'un segment dans un polygone convexe : [t0, t1], ou null. À un
+        // dixième de millimètre près : la boîte est celle de l'emprise, et ses
+        // côtés portent des côtés du contour, que l'arrondi jetait dehors —
+        // un pignon sur deux manquait.
+        const dansConvexe = (a, c, poly) => {
+            const sens = aireDe(poly) >= 0 ? 1 : -1;
+            let t0 = 0, t1 = 1;
+            for (let k = 0; k < poly.length; k++) {
+                const p = poly[k], q = poly[(k + 1) % poly.length];
+                const longueur = Math.hypot(q[0] - p[0], q[1] - p[1]) || 1;
+                const cote = r => sens * ((q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]))
+                                  / longueur + 1e-4;
+                const fa = cote(a), fc = cote(c);
+                if (fa < 0 && fc < 0) return null;
+                if (fa < 0) t0 = Math.max(t0, fa / (fa - fc));
+                else if (fc < 0) t1 = Math.min(t1, fa / (fa - fc));
+            }
+            return t1 - t0 > 1e-9 ? [t0, t1] : null;
+        };
+        const entre = (a, c, t) => [a[0] + (c[0] - a[0]) * t, a[1] + (c[1] - a[1]) * t];
+        const boite = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+        // Le contour de l'emprise, et ses cours, là où ils passent sous la boîte.
+        for (const [tour, versDehors] of [[pts, 1], ...cours.map(c => [c, -1])]) {
+            const sens = (aireDe(tour) > 0 ? 1 : -1) * versDehors;
+            for (let k = 0; k < tour.length; k++) {
+                let a = versBoite(tour[k]), c = versBoite(tour[(k + 1) % tour.length]);
+                if (sens < 0) [a, c] = [c, a];
+                const t = dansConvexe(a, c, boite);
+                if (t) pignon(entre(a, c, t[0]), entre(a, c, t[1]));
+            }
+        }
+        // Les bords de la boîte qui traversent l'emprise : un corps de toit
+        // parmi d'autres s'arrête en plein bâtiment.
+        if (boites.length > 1) {
+            for (let k = 0; k < 4; k++) {
+                const a = boite[k], c = boite[(k + 1) % 4];
+                for (const piece of pieces) {
+                    const t = dansConvexe(a, c, piece.map(versBoite));
+                    if (t) pignon(entre(a, c, t[0]), entre(a, c, t[1]));
+                }
+            }
+        }
+    }
+    if (!v.length) return null;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
+    geo.computeVertexNormals();
+    return geo;
 }
 
 /**
@@ -799,10 +893,14 @@ function geometriesSurface(anneau, s, trous = []) {
     // pli. Mesuré entre facettes voisines (Gordes, Strasbourg, une maison) :
     // 11° en médiane, 16 à 24° au 75e centile — le bruit — et 3 à 7 % au-delà
     // de 45° : faîtages, noues et marches, qui doivent rester nets.
-    // `pourtour` : les seuls murs du contour et des cours, sans les marches du
-    // toit, pour le liseré du bâtiment visé (habillerCible).
-    return { toit: toCreasedNormals(geo(toit), ANGLE_PLI_TOIT), murs: geo(murs),
-             pourtour: () => geo(murs.slice(debutPourtour)) };
+    // Les marches du toit — ses facettes trop raides pour la photo — sont
+    // rendues à part des murs du pourtour : elles sont du toit, et en prennent
+    // la teinte. Peintes comme les murs, les tours coniques de Chambord, raides
+    // de 65 à 75°, se mouchetaient vues du dessus, en orange sur le bâtiment
+    // visé. Le pourtour seul porte le liseré de la cible (habillerCible).
+    return { toit: toCreasedNormals(geo(toit), ANGLE_PLI_TOIT),
+             murs: geo(murs.slice(debutPourtour)),
+             marches: debutPourtour ? geo(murs.slice(0, debutPourtour)) : null };
 }
 
 /**
@@ -839,6 +937,42 @@ function geometriesPans(s) {
         return g;
     };
     return { toit: geo(0, s.n_toit), murs: geo(s.n_toit, s.triangles.length / 3) };
+}
+
+/**
+ * Dessus plat d'une emprise, à la hauteur `h` : un toit-terrasse, ou ce que les
+ * toits résumés laissent à découvert — les tours rondes d'un château sous des
+ * corps de toit rectangulaires. C'est un toit : il reçoit la photo aérienne,
+ * dont la projection à la verticale est exacte sur une face horizontale. Peint
+ * comme les murs, un quartier de toits plats était un damier gris vu du ciel.
+ */
+function geometrieDessus(anneau, trous, h) {
+    const geo = new THREE.ShapeGeometry(anneauVersShape(anneau, trous));
+    geo.rotateX(-Math.PI / 2);
+    geo.translate(0, h + DESSUS_DECALAGE, 0);
+    return geo;
+}
+
+/** Pose un toit résumé ; `ud` est le userData de ses murs. */
+function poserToit(geo, ud) {
+    const toit = new THREE.Mesh(geo, MAT_TOIT_VOISIN);
+    toit.castShadow = true; toit.receiveShadow = true;
+    toit.userData = ud;
+    toit.name = 'toit';
+    groupeBatiments.add(toit);
+    meshes.push(toit);
+    meshesToits.push(toit);
+}
+
+/** Pose le dessus plat d'un volume ; `ud` est le userData de ses murs. */
+function poserDessus(anneau, trous, h, ud) {
+    const dessus = new THREE.Mesh(geometrieDessus(anneau, trous, h), MAT_DESSUS);
+    dessus.receiveShadow = true;
+    dessus.userData = { ...ud, dessus: true };
+    dessus.name = 'toit';
+    groupeBatiments.add(dessus);
+    meshes.push(dessus);
+    meshesToits.push(dessus);
 }
 
 /** Boîte d'un corps de toit LiDAR, centrée, dans le repère de son axe. */
@@ -1237,9 +1371,11 @@ function construire(features, toitsEnPente) {
                 // rebaserBatiments() ne la relève pas.
                 const ud = { p, denivele, hMur, anneau, lidar, surface: true };
                 const murs = new THREE.Mesh(surface.murs, materiauMurs(anneau));
-                habillerCible(murs, anneau, surface.pourtour ? surface.pourtour() : murs.geometry);
+                habillerCible(murs, anneau);
                 const toit = new THREE.Mesh(surface.toit, lidar.pans ? MAT_TOIT_VOISIN : MAT_TOIT_SURFACE);
-                for (const m of [murs, toit]) {
+                const marches = surface.marches ? new THREE.Mesh(surface.marches, MAT_TOIT_VOISIN) : null;
+                for (const m of [murs, toit, marches]) {
+                    if (!m) continue;
                     m.castShadow = true; m.receiveShadow = true; m.userData = ud;
                     groupeBatiments.add(m);
                     meshes.push(m);
@@ -1279,19 +1415,14 @@ function construire(features, toitsEnPente) {
                 mur.userData = { p, denivele: stats.pentes[stats.pentes.length - 1], hMur: hMurs, anneau, lidar };
                 groupeBatiments.add(mur);
                 meshes.push(mur);
-                for (const c of lidar.corps) {
-                    const rect = rectangleDeCorps(c);
-                    const g = Math.max(c.gouttiere, 0.5), f = Math.max(c.faitage, g + 0.3);
-                    const geoToit = c.axe_deg != null
-                        ? geometrieToit(rect, g, f, true) : geometriePyramide(rect, g, f);
-                    const toit = new THREE.Mesh(geoToit, MAT_TOIT_VOISIN);
-                    toit.castShadow = true; toit.receiveShadow = true;
-                    toit.userData = mur.userData;
-                    groupeBatiments.add(toit);
-                    meshes.push(toit);
-                    meshesToits.push(toit);
-                    toit.name = 'toit';
-                }
+                // Les boîtes des corps ne couvrent pas toute l'emprise.
+                poserDessus(anneau, trous, hMurs, mur.userData);
+                const geoToit = geometrieToitDecoupe(anneau, trous, lidar.corps.map(c => {
+                    const g = Math.max(c.gouttiere, 0.5);
+                    return { rect: rectangleDeCorps(c), g, f: Math.max(c.faitage, g + 0.3),
+                             pyramide: c.axe_deg == null, suivantX: true };
+                }), hMurs);
+                if (geoToit) poserToit(geoToit, mur.userData);
                 continue;
             }
 
@@ -1310,16 +1441,12 @@ function construire(features, toitsEnPente) {
                     const den = lidar ? denivele : Math.min(denivele,
                         PENTE_TOIT_MAX * Math.min(rect.x1 - rect.x0, rect.y1 - rect.y0));
                     mur.userData.denivele = den;
-                    const toit = new THREE.Mesh(
-                        geometrieToit(rect, hMur, hMur + den, axeLidar !== null ? true : null),
-                        MAT_TOIT_VOISIN);
-                    toit.castShadow = true; toit.receiveShadow = true;
-                    toit.userData = mur.userData;
-                    groupeBatiments.add(toit);
-                    meshes.push(toit);
-                    meshesToits.push(toit);
-                    toit.name = 'toit';
+                    const geoToit = geometrieToitDecoupe(anneau, trous, [{
+                        rect, g: hMur, f: hMur + den, suivantX: axeLidar !== null ? true : null }], hMur);
+                    if (geoToit) poserToit(geoToit, mur.userData);
                 }
+            } else {
+                poserDessus(anneau, trous, hMur, mur.userData);
             }
         }
     }
@@ -1443,6 +1570,7 @@ function construireMonuments(features, toitsEnPente, remplaces) {
         }
         groupeBatiments.add(mur);
         meshes.push(mur);
+        if (!(toitH > 0)) poserDessus(anneau, [], hMur, ud);
         if (toitH > 0) {
             const pts = anneau.map(([lo, la]) => toLocal(lo, la));
             const rect = rectangleMin(pts);
@@ -1451,16 +1579,11 @@ function construireMonuments(features, toitsEnPente, remplaces) {
                 // l'inverse du choix par défaut de geometrieToit.
                 const forcerX = partie.toit.orientation === 'across'
                     ? (rect.x1 - rect.x0) < (rect.y1 - rect.y0) : null;
-                const geoT = partie.toit.forme === 'pyramide'
-                    ? geometriePyramide(rect, hMur, partie.h)
-                    : geometrieToit(rect, hMur, partie.h, forcerX);
-                const toit = new THREE.Mesh(geoT, MAT_TOIT_VOISIN);
-                toit.castShadow = true; toit.receiveShadow = true;
-                toit.userData = ud;
-                toit.name = 'toit';
-                groupeBatiments.add(toit);
-                meshes.push(toit);
-                meshesToits.push(toit);
+                // Découpé sur la partie : une tour ronde porte un toit rond.
+                const geoT = geometrieToitDecoupe(anneau, [], [{
+                    rect, g: hMur, f: partie.h, pyramide: partie.toit.forme === 'pyramide',
+                    suivantX: forcerX }], hMur);
+                if (geoT) poserToit(geoT, ud);
             }
         }
     }
@@ -1820,7 +1943,8 @@ async function poserFond(nom) {
 function appliquerTextureToits() {
     for (const toit of meshesToits) {
         if (!fondTexture || !fondBornes) {
-            toit.material = toit.userData.lisse ? MAT_TOIT_SURFACE : MAT_TOIT_VOISIN;
+            toit.material = toit.userData.dessus ? MAT_DESSUS
+                : toit.userData.lisse ? MAT_TOIT_SURFACE : MAT_TOIT_VOISIN;
             continue;
         }
         const geo = toit.geometry;
@@ -1833,7 +1957,8 @@ function appliquerTextureToits() {
         }
         geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
         toit.material = new THREE.MeshStandardMaterial({
-            map: fondTexture, roughness: 0.9, metalness: 0 });
+            map: fondTexture, roughness: 0.9, metalness: 0,
+            ...(toit.userData.dessus ? DECALAGE_DESSUS : {}) });
     }
 }
 
@@ -4072,6 +4197,7 @@ renderer.domElement.addEventListener('pointermove', e => {
                           : ud.lidar.corps ? ` <i>(LiDAR, ${ud.lidar.corps.length} corps de toit)</i>`
                           : ud.lidar.axe_deg != null ? ' <i>(LiDAR, faîtage mesuré)</i>' : ' <i>(LiDAR)</i>')
                         + (ud.lidar.mode_bas ? ` <i>· toit lu sous un arbre qui couvre ${Math.round(ud.lidar.part_haute * 100)} % de l'emprise</i>` : '')
+                        + (ud.lidar.deux_niveaux && !ud.surface ? ` <i>· niveau bas : ${Math.round(ud.lidar.part_haute * 100)} % de l'emprise monte plus haut</i>` : '')
                         : ' <i>(BD TOPO)</i>')) +
         `<br><i>clic pour la fiche</i>`;
     tip.style.display = 'block';
