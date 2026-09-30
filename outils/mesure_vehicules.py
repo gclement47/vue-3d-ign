@@ -1,10 +1,12 @@
-"""Mesure de la couche des véhicules sur des lieux réels.
+"""Mesure de la couche des véhicules et des piscines sur des lieux réels.
 
-Exécute le vrai chemin de la couche — detecter, puis vehicules_pour_emprise —
-sur l'orthophoto de la Géoplateforme. Pour chaque lieu et chaque détecteur :
-le temps de calcul, le nombre de véhicules selon le seuil et le recouvrement
-toléré entre deux boîtes, ce que les filtres écartent, le gabarit des boîtes,
-et l'accord entre les deux détecteurs. C'est la mesure à relancer avant de
+Exécute le vrai chemin de la couche — detecter et detecter_piscines, puis
+vehicules_pour_emprise — sur l'orthophoto de la Géoplateforme. Pour chaque
+lieu et chaque détecteur : le temps de calcul, le nombre de véhicules selon
+le seuil et le recouvrement toléré entre deux boîtes, ce que les filtres
+écartent, le gabarit des boîtes, et l'accord entre les deux détecteurs ; puis
+les piscines, selon le seuil et la tuile, et une planche de vignettes où les
+regarder une à une. C'est la mesure à relancer avant de
 toucher une constante de vue3d/vehicules.py, ou pour éprouver un nouveau lieu.
 
 Il n'y a pas de vérité terrain annotée : les comptes se jugent sur l'image
@@ -40,6 +42,8 @@ LIEUX = {"Gordes": (43.9116, 5.2003), "Carcassonne": (43.2075, 2.3680)}
 SEUILS = {"rtmdet": (0.1, 0.15, 0.2, 0.3), "yolo": (0.15, 0.25, 0.35, 0.5)}
 TUILES = {"rtmdet": (1024, 768, 640, 512, 400, 320), "yolo": (320, 256, 200, 160, 128)}
 RECOUVREMENTS = {"rtmdet": (65, 128, 256, 384), "yolo": (32, 80)}
+SEUILS_PISCINES = (0.1, 0.2, 0.3, 0.4, 0.5)
+TUILES_PISCINES = (1024, 768, 640, 512, 320)
 IOUS = (0.1, 0.3, 0.5)
 
 
@@ -59,10 +63,11 @@ def mesurer(nom_lieu, lat, lon, sessions, images, balayage):
                            lire_couche(COUCHE_COURS_EAU, *bbox))
     print(f"\n## {nom_lieu} ({lat}, {lon}) — orthophoto {rgb.shape[1]} × {rgb.shape[0]} px")
 
-    def couche(boites, mode):
-        brut = {"largeur": rgb.shape[1], "hauteur": rgb.shape[0], "boites": boites}
+    def couche(boites, mode, piscines=None):
+        brut = {"largeur": rgb.shape[1], "hauteur": rgb.shape[0], "boites": boites,
+                "piscines": piscines or []}
         c = vehicules.vehicules_pour_emprise(*bbox, brut, mode, batiments, eau)
-        return c["vehicules"] if c else []
+        return c["piscines"] if piscines is not None else c["vehicules"]
 
     par_detecteur = {}
     for nom, session in sessions.items():
@@ -121,6 +126,49 @@ def mesurer(nom_lieu, lat, lon, sessions, images, balayage):
               f"{len(b) - sum(proche(v, a) for v in b)} de {nb} seul ; "
               f"union {len(union)} boîte(s), {len(couche(union, 'tous'))} gardée(s), "
               f"en {time.time() - t0:.1f} s")
+    mesurer_piscines(nom_lieu, image, rgb, sessions, couche, images, balayage)
+
+
+def mesurer_piscines(nom_lieu, image, rgb, sessions, couche, images, balayage):
+    """Piscines : par détecteur, selon le seuil et la tuile ; planche de
+    vignettes des boîtes du réglage courant, score en légende."""
+    from PIL import Image, ImageDraw
+    regles = lambda nom, **v: {nom: {**vehicules.PISCINES[nom], **v}}       # noqa: E731
+    for nom, session in sessions.items():
+        seul = {nom: session}
+        t0 = time.time()
+        boites = vehicules.detecter_piscines(rgb, seul)
+        duree = time.time() - t0
+        gardees = couche([], nom, boites)
+        print(f"- piscines, {nom} : {len(boites)} boîte(s) en {duree:.1f} s, {len(gardees)} gardée(s)"
+              + (f" ; longueur {min(p[2] for p in gardees)} à {max(p[2] for p in gardees)} m, "
+                 f"largeur {min(p[3] for p in gardees)} à {max(p[3] for p in gardees)} m" if gardees else ""))
+        brutes = vehicules.detecter_piscines(rgb, seul, regles(nom, seuil=min(SEUILS_PISCINES)))
+        print("  selon le seuil : " + ", ".join(
+            f"{s} → {sum(b[5] >= s for b in brutes)}" for s in SEUILS_PISCINES))
+        if balayage:
+            print("  selon la tuile : " + ", ".join(
+                f"{t} px → {len(vehicules.detecter_piscines(rgb, seul, regles(nom, tuile_px=t, recouvrement_px=min(128, t // 3))))}"
+                for t in TUILES_PISCINES))
+        if images and boites:
+            cote, demi = 240, 60
+            planche = Image.new("RGB", (min(len(boites), 8) * (cote + 4), ((len(boites) + 7) // 8) * (cote + 4)), "white")
+            for i, b in enumerate(sorted(boites, key=lambda b: -b[5])):
+                x0, y0 = int(b[0]) - demi, int(b[1]) - demi
+                vignette = image.crop((x0, y0, x0 + 2 * demi, y0 + 2 * demi)).resize((cote, cote), Image.LANCZOS)
+                dessin = ImageDraw.Draw(vignette)
+                k = cote / (2 * demi)
+                dessin.polygon([((x - x0) * k, (y - y0) * k) for x, y in vehicules._coins(*b[:5])],
+                               outline=(255, 0, 255))
+                dessin.text((3, 2), f"{b[5]:.2f}", fill=(255, 255, 255))
+                planche.paste(vignette, ((i % 8) * (cote + 4), (i // 8) * (cote + 4)))
+            chemin = Path(images) / f"{nom_lieu.lower()}-piscines-{nom}.jpg"
+            planche.save(chemin, quality=88)
+            print(f"  planche : {chemin}")
+    if len(sessions) == 2:
+        union = vehicules.detecter_piscines(rgb, sessions)
+        print(f"- piscines, les deux : {len(union)} boîte(s), {len(couche([], 'tous', union))} gardée(s), "
+              + ", ".join(f"{sum(b[7] == n for b in union)} de {n}" for n in sessions))
 
 
 if __name__ == "__main__":

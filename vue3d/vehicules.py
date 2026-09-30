@@ -1,4 +1,5 @@
-"""Véhicules visibles sur l'orthophoto, détectés par un réseau de neurones.
+"""Véhicules et piscines visibles sur l'orthophoto, détectés par un réseau de
+neurones.
 
 Une couche à part de la scène, comme les ouvrages (vue3d/ouvrages.py), et la
 seule qui soit **optionnelle** : elle demande un moteur d'inférence et un
@@ -37,6 +38,12 @@ ils étaient ce jour-là. Un parking à moitié vide à l'écran peut être un
 parking plein que le réseau n'a lu qu'à moitié : ce qui manque reste à plat
 sur l'orthophoto.
 
+**Les piscines avec.** Les mêmes réseaux connaissent la classe « swimming
+pool », et la BD TOPO n'a pas les piscines des particuliers. Une passe de
+plus, à l'échelle native de l'orthophoto et d'une demi-seconde, les ajoute à
+la couche (PISCINES) : 13 à Gordes et 9 à Carcassonne pour `rtmdet`, 8 et 8
+pour `yolo`, 14 et 10 pour les deux. Ici c'est rtmdet qui voit le mieux.
+
 **Une couche est complète ou n'existe pas**, comme la scène : l'orthophoto
 illisible lève, rien n'est écrit. Le nom du fichier de cache porte le mode et
 la version (scene.nom_vehicules) : changer de détecteur ne ressert jamais la
@@ -58,7 +65,8 @@ from .ortho import fetch_ortho_jpeg
 journal = logging.getLogger(__name__)
 
 # Format de la couche. L'incrémenter ne refait que la couche, pas les scènes.
-VEHICULES_VERSION = 1
+# 2 : piscines.
+VEHICULES_VERSION = 2
 
 # Détecteurs de chaque mode, dans l'ordre où leurs boîtes sont gardées : en
 # mode `tous`, une boîte du second qui double une boîte du premier est retirée.
@@ -140,6 +148,46 @@ DETECTEURS = {
              "seuil": 0.25, "longueur_max_m": 14.0, "petit": 10, "gros": 9,
              "boites": _boites_yolo},
 }
+
+# Piscines : les mêmes réseaux, classe « swimming pool », dans une passe à
+# eux. Mesuré sur Gordes (G) et Carcassonne (C), le 2026-09-30, chaque boîte
+# regardée une à une.
+#
+# `tuile_px` : l'échelle native de l'orthophoto (1 024 px pour COTE). Une
+# piscine, dix fois plus grande qu'une voiture, n'a pas besoin d'être
+# agrandie, et le compte ne dépend guère de la tuile :
+#
+#   tuile (px)              1024   768   640   512   320
+#   rtmdet, seuil 0,1   G     15    16    14    17    14
+#                       C     10    10    10    16    11
+#   yolo, seuil 0,2     G      9     9     9     8     8
+#                       C      8     6     5     5     4
+#   temps                   0,5 s  0,8 s 1,5 s 2,5 s  6 s
+#
+# `recouvrement_px` : 128 px, 25 m, plus que la plus longue piscine vue (17 m).
+#
+# `seuil` : bas pour rtmdet, qui annonce juste même à 0,1. Ses 25 boîtes des
+# deux lieux sont de l'eau : 23 piscines franches, dont des bassins verts ou
+# sombres, et deux petits bassins de 4 à 5 m dont on ne peut jurer. Dès 0,3 il
+# en perd sept. Les 17 de yolo sont toutes des piscines ; en dessous de 0,2
+# son compte ne bouge plus.
+#
+# Contre-épreuve par la couleur : des 21 taches bleues de plus de 8 m² des
+# deux orthophotos, toutes des piscines, rtmdet en couvre 20 et yolo 17 ;
+# celle qui échappe à rtmdet est vue de yolo.
+#
+# Trois de ces boîtes tombent ensuite sur un bâtiment de la scène et sont
+# écartées, dont un bassin de 17 m de Gordes que la BD TOPO porte comme un
+# bâtiment de 4,8 m : la scène y dessine déjà un volume.
+PISCINES = {
+    "rtmdet": {"tuile_px": 1024, "recouvrement_px": 128, "seuil": 0.1, "classe": 13},
+    "yolo": {"tuile_px": 1024, "recouvrement_px": 128, "seuil": 0.2, "classe": 14},
+}
+# Gabarit d'une piscine, en mètres. Boîtes vues : de 4,2 à 16,8 m de long, de
+# 3,1 à 9,4 m de large ; les bornes vont du bassin hors sol au bassin
+# olympique.
+PISCINE_LONGUEUR_M = (3.0, 55.0)
+PISCINE_LARGEUR_M = (2.0, 30.0)
 
 # Une boîte à moins de BORD_PX pixels du bord d'une tuile est tenue pour
 # coupée par lui.
@@ -266,6 +314,55 @@ def _couleur(rgb, cx, cy, lo, la, angle):
     return (r << 16) | (g << 8) | b
 
 
+def _annonces(image, session, lire_boites, tuile, recouvrement, seuil, classes):
+    """Boîtes qu'un réseau annonce sur l'image, tuile après tuile.
+
+    Args:
+        image: PIL, à RESOLUTION_M par pixel.
+        tuile, recouvrement: en pixels de l'image ; la tuile est agrandie
+            (ou réduite) à COTE avant d'être présentée au réseau.
+        classes: indices des classes gardées. La classe la plus probable doit
+            en être : une boîte que le réseau prend d'abord pour un bateau
+            n'est pas un véhicule.
+
+    Returns:
+        [(cx, cy, longueur, largeur, angle, score, classe)] en pixels de
+        l'image, grand axe d'abord, doublons compris.
+    """
+    from PIL import Image
+    largeur, hauteur = image.size
+    echelle = tuile / COTE
+    entree = session.get_inputs()[0].name
+    annonces = []
+    for y0 in _origines(hauteur, tuile, recouvrement):
+        for x0 in _origines(largeur, tuile, recouvrement):
+            # Une tuile plus grande que l'image est complétée de noir, en bas
+            # à droite.
+            morceau = Image.new("RGB", (tuile, tuile))
+            morceau.paste(image.crop((x0, y0, min(x0 + tuile, largeur), min(y0 + tuile, hauteur))))
+            x = np.asarray(morceau.resize((COTE, COTE), Image.BICUBIC), dtype=np.float32)
+            x = np.ascontiguousarray(x.transpose(2, 0, 1)[None] / 255.0)
+            b, scores = lire_boites(session.run(None, {entree: x})[0])
+            classe = scores.argmax(axis=1)
+            score = scores[np.arange(len(classe)), classe]
+            # Bords de la tuile à l'intérieur de l'image : une boîte qui les
+            # touche est celle d'un objet coupé, que la tuile voisine voit
+            # entier.
+            gauche, haut = (x0 > 0) * BORD_PX, (y0 > 0) * BORD_PX
+            droite = tuile - (x0 + tuile < largeur) * BORD_PX
+            bas = tuile - (y0 + tuile < hauteur) * BORD_PX
+            for i in np.nonzero((score >= seuil) & np.isin(classe, classes))[0]:
+                cx, cy, lo, la = (float(v) * echelle for v in b[i, :4])
+                angle = float(b[i, 4])
+                if any(not (gauche <= px <= droite and haut <= py <= bas)
+                       for px, py in _coins(cx, cy, lo, la, angle)):
+                    continue
+                if la > lo:                       # grand axe d'abord
+                    lo, la, angle = la, lo, angle + math.pi / 2
+                annonces.append((cx + x0, cy + y0, lo, la, angle, float(score[i]), int(classe[i])))
+    return annonces
+
+
 def detecter(rgb, sessions, detecteurs=DETECTEURS):
     """Véhicules d'une orthophoto.
 
@@ -280,54 +377,43 @@ def detecter(rgb, sessions, detecteurs=DETECTEURS):
     """
     from PIL import Image
     image = Image.fromarray(rgb)
-    hauteur, largeur = rgb.shape[:2]
     toutes = []
     for nom, session in sessions.items():
         d = detecteurs[nom]
-        tuile = d["tuile_px"]
-        recouvrement = d["recouvrement_px"]
-        xs, ys = _origines(largeur, tuile, recouvrement), _origines(hauteur, tuile, recouvrement)
-        echelle = tuile / COTE
-        entree = session.get_inputs()[0].name
-        boites = []
-        for y0 in ys:
-            for x0 in xs:
-                # Une tuile plus grande que l'image (jamais sur une scène
-                # entière) est complétée de noir, en bas à droite.
-                morceau = Image.new("RGB", (tuile, tuile))
-                morceau.paste(image.crop((x0, y0, min(x0 + tuile, largeur),
-                                          min(y0 + tuile, hauteur))))
-                x = np.asarray(morceau.resize((COTE, COTE), Image.BICUBIC), dtype=np.float32)
-                x = np.ascontiguousarray(x.transpose(2, 0, 1)[None] / 255.0)
-                b, scores = d["boites"](session.run(None, {entree: x})[0])
-                classe = scores.argmax(axis=1)
-                score = scores[np.arange(len(classe)), classe]
-                # Bords de la tuile à l'intérieur de l'image : une boîte qui
-                # les touche est celle d'un véhicule coupé, que la tuile
-                # voisine voit entier.
-                gauche, haut = (x0 > 0) * BORD_PX, (y0 > 0) * BORD_PX
-                droite = tuile - (x0 + tuile < largeur) * BORD_PX
-                bas = tuile - (y0 + tuile < hauteur) * BORD_PX
-                # La classe la plus probable doit être un véhicule : une boîte
-                # que le réseau prend d'abord pour un bateau n'en est pas un.
-                for i in np.nonzero((score >= d["seuil"])
-                                    & ((classe == d["petit"]) | (classe == d["gros"])))[0]:
-                    cx, cy, lo, la = (float(v) * echelle for v in b[i, :4])
-                    angle = float(b[i, 4])
-                    if any(not (gauche <= px <= droite and haut <= py <= bas)
-                           for px, py in _coins(cx, cy, lo, la, angle)):
-                        continue
-                    if la > lo:                       # grand axe d'abord
-                        lo, la, angle = la, lo, angle + math.pi / 2
-                    if lo * RESOLUTION_M > d["longueur_max_m"]:
-                        continue
-                    boites.append((cx + x0, cy + y0, lo, la, angle, float(score[i]),
-                                   int(classe[i] == d["gros"])))
+        boites = [(*a[:6], int(a[6] == d["gros"]))
+                  for a in _annonces(image, session, d["boites"], d["tuile_px"],
+                                     d["recouvrement_px"], d["seuil"], (d["petit"], d["gros"]))
+                  if a[2] * RESOLUTION_M <= d["longueur_max_m"]]
         boites = sans_doublons(boites, DOUBLON_IOU, DOUBLON_CENTRES_M / RESOLUTION_M)
         rayon2 = (DOUBLON_ENTRE_DETECTEURS_M / RESOLUTION_M) ** 2
         for b in boites:
             if all((b[0] - t[0]) ** 2 + (b[1] - t[1]) ** 2 >= rayon2 for t in toutes):
                 toutes.append([*b, _couleur(rgb, *b[:5]), nom])
+    return toutes
+
+
+def detecter_piscines(rgb, sessions, reglages=None):
+    """Piscines d'une orthophoto.
+
+    Returns:
+        [[cx, cy, longueur, largeur, angle, score, couleur, detecteur]] en
+        pixels de l'image, comme `detecter`. La couleur est celle de l'eau ce
+        jour-là : turquoise, verte, sombre sous une bâche.
+    """
+    from PIL import Image
+    reglages = reglages or PISCINES
+    image = Image.fromarray(rgb)
+    toutes = []
+    for nom, session in sessions.items():
+        r = reglages[nom]
+        boites = sans_doublons(
+            _annonces(image, session, DETECTEURS[nom]["boites"], r["tuile_px"],
+                      r["recouvrement_px"], r["seuil"], (r["classe"],)),
+            DOUBLON_IOU, DOUBLON_CENTRES_M / RESOLUTION_M)
+        for b in boites:
+            # D'un détecteur à l'autre : le centre de l'une dans la boîte de l'autre.
+            if all(not Polygon(_coins(*t[:5])).contains(Point(b[0], b[1])) for t in toutes):
+                toutes.append([*b[:6], _couleur(rgb, *b[:5]), nom])
     return toutes
 
 
@@ -344,10 +430,10 @@ def lecteur(mode=None, dossier=None):
     if not MODES[mode]:
         return None
     sessions = charger(mode, dossier or os.environ.get("VUE3D_MODELES", "/modeles"))
-    journal.info("Véhicules : mode %s (%s)", mode, ", ".join(sessions))
+    journal.info("Véhicules et piscines : mode %s (%s)", mode, ", ".join(sessions))
 
     def lire(west, south, east, north):
-        """Orthophoto à 0,2 m de l'emprise, et ses véhicules.
+        """Orthophoto à 0,2 m de l'emprise, ses véhicules et ses piscines.
 
         Raises:
             requests.RequestException si l'orthophoto n'a pas pu être lue.
@@ -356,7 +442,8 @@ def lecteur(mode=None, dossier=None):
         contenu, _, _ = fetch_ortho_jpeg(west, south, east, north, resolution_m=RESOLUTION_M)
         rgb = np.asarray(Image.open(io.BytesIO(contenu)).convert("RGB"))
         return {"largeur": rgb.shape[1], "hauteur": rgb.shape[0],
-                "boites": detecter(rgb, sessions)}
+                "boites": detecter(rgb, sessions),
+                "piscines": detecter_piscines(rgb, sessions)}
 
     lire.mode = mode
     return lire
@@ -379,23 +466,27 @@ def _zone(geojsons, kx, ky):
 
 
 def vehicules_pour_emprise(west, south, east, north, brut, mode, batiments=None, eau=None):
-    """Véhicules de l'emprise, prêts pour la vue.
+    """Véhicules et piscines de l'emprise, prêts pour la vue.
 
     Args:
         brut: détections de `lecteur(...)`, en pixels de l'orthophoto.
         mode: celui du lecteur, inscrit dans la couche.
         batiments: GeoJSON des bâtiments de la scène ; un « véhicule » sur un
-            toit est une lucarne ou une verrière.
+            toit est une lucarne ou une verrière, une « piscine » une
+            véranda.
         eau: eau de la scène (vue3d/eau.py) ; un « véhicule » sur l'eau est
-            une barque.
+            une barque, et une « piscine » y est un bassin que la BD TOPO
+            dessine déjà.
 
     Returns:
-        dict(version, mode, vehicules), la liste vide si l'emprise n'en a
-        aucun : la vue lit toujours le mode.
+        dict(version, mode, vehicules, piscines), les listes vides si
+        l'emprise n'en a aucun : la vue lit toujours le mode.
         `vehicules` : [[lon, lat, longueur_m, largeur_m, cap, couleur]] — cap
         du grand axe en degrés depuis le nord vers l'est, de 0 à 180 (l'avant
         et l'arrière ne sont pas distingués) ; couleur 0xRRGGBB lue sur
         l'orthophoto.
+        `piscines` : de même ; la boîte est celle du bassin, qu'il soit
+        rectangulaire ou non.
     """
     brut = brut or {}
     largeur, hauteur = brut.get("largeur") or 1, brut.get("hauteur") or 1
@@ -412,28 +503,41 @@ def vehicules_pour_emprise(west, south, east, north, brut, mode, batiments=None,
     # retrait) et la boîte d'un véhicule coupé par le cadre n'est pas fiable.
     marge_x, marge_y = DECOUPE_RETRAIT_M / kx, DECOUPE_RETRAIT_M / ky
 
-    vehicules, ecartes = [], {"gabarit": 0, "bord": 0, "bâti ou eau": 0}
-    for cx, cy, lo, la, angle, _score, _gros, couleur, _detecteur in brut.get("boites", []):
-        # Longueur et largeur en mètres : la boîte est tournée, chaque demi-axe
-        # se mesure avec les deux pas.
-        c, s = math.cos(angle), math.sin(angle)
-        longueur = lo * math.hypot(c * px, s * py)
-        travers = la * math.hypot(s * px, c * py)
-        if longueur < LONGUEUR_MIN_M or not LARGEUR_M[0] <= travers <= LARGEUR_M[1]:
-            ecartes["gabarit"] += 1
-            continue
-        lon, lat = west + cx * px / kx, north - cy * py / ky
-        if not (west + marge_x <= lon <= east - marge_x
-                and south + marge_y <= lat <= north - marge_y):
-            ecartes["bord"] += 1
-            continue
-        if any(z.contains(Point(lon * kx, lat * ky)) for z in interdit):
-            ecartes["bâti ou eau"] += 1
-            continue
-        # Dans l'image, y descend vers le sud : vers l'est c·px, vers le nord −s·py.
-        cap = math.degrees(math.atan2(c * px, -s * py)) % 180.0
-        vehicules.append([round(lon, DECIMALES), round(lat, DECIMALES), round(longueur, 1),
-                          round(travers, 1), round(cap, 1), couleur])
-    journal.info("Véhicules (%s) : %d gardé(s) ; écartés : %s", mode, len(vehicules),
-                 ", ".join(f"{n} {cle}" for cle, n in ecartes.items()))
-    return {"version": VEHICULES_VERSION, "mode": mode, "vehicules": vehicules}
+    def poser(boites, nom, longueurs, largeurs):
+        """Boîtes (cx, cy, longueur, largeur, angle, couleur) en pixels ->
+        objets de la couche, ceux hors gabarit ou mal placés écartés."""
+        gardes, ecartes = [], {"gabarit": 0, "bord": 0, "bâti ou eau": 0}
+        for cx, cy, lo, la, angle, couleur in boites:
+            # Longueur et largeur en mètres : la boîte est tournée, chaque
+            # demi-axe se mesure avec les deux pas.
+            c, s = math.cos(angle), math.sin(angle)
+            longueur = lo * math.hypot(c * px, s * py)
+            travers = la * math.hypot(s * px, c * py)
+            if not (longueurs[0] <= longueur <= longueurs[1]
+                    and largeurs[0] <= travers <= largeurs[1]):
+                ecartes["gabarit"] += 1
+                continue
+            lon, lat = west + cx * px / kx, north - cy * py / ky
+            if not (west + marge_x <= lon <= east - marge_x
+                    and south + marge_y <= lat <= north - marge_y):
+                ecartes["bord"] += 1
+                continue
+            if any(z.contains(Point(lon * kx, lat * ky)) for z in interdit):
+                ecartes["bâti ou eau"] += 1
+                continue
+            # Dans l'image, y descend vers le sud : vers l'est c·px, vers le
+            # nord −s·py.
+            cap = math.degrees(math.atan2(c * px, -s * py)) % 180.0
+            gardes.append([round(lon, DECIMALES), round(lat, DECIMALES), round(longueur, 1),
+                           round(travers, 1), round(cap, 1), couleur])
+        journal.info("%s (%s) : %d gardé(s) ; écartés : %s", nom, mode, len(gardes),
+                     ", ".join(f"{n} {cle}" for cle, n in ecartes.items()))
+        return gardes
+
+    # La longueur maximale d'un véhicule est déjà celle de son détecteur.
+    vehicules = poser([(*b[:5], b[7]) for b in brut.get("boites", [])], "Véhicules",
+                      (LONGUEUR_MIN_M, math.inf), LARGEUR_M)
+    piscines = poser([(*b[:5], b[6]) for b in brut.get("piscines", [])], "Piscines",
+                     PISCINE_LONGUEUR_M, PISCINE_LARGEUR_M)
+    return {"version": VEHICULES_VERSION, "mode": mode, "vehicules": vehicules,
+            "piscines": piscines}

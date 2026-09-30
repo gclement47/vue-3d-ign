@@ -1,4 +1,5 @@
-"""Couche des véhicules (vue3d/vehicules.py) : tuiles, doublons, filtres.
+"""Couche des véhicules et des piscines (vue3d/vehicules.py) : tuiles,
+doublons, filtres.
 
 Aucun réseau de neurones n'est chargé : les sessions d'inférence sont des
 doublures qui rendent des boîtes écrites à la main, dans la disposition de
@@ -11,8 +12,8 @@ import numpy as np
 import pytest
 
 from vue3d import vehicules
-from vue3d.vehicules import (COTE, VehiculesMalConfigures, detecter, mode_demande,
-                             sans_doublons, vehicules_pour_emprise)
+from vue3d.vehicules import (COTE, VehiculesMalConfigures, detecter, detecter_piscines,
+                             mode_demande, sans_doublons, vehicules_pour_emprise)
 
 
 # --- Configuration ------------------------------------------------------------
@@ -98,10 +99,12 @@ def test_une_boite_tronquee_au_meme_endroit_est_un_doublon():
 
 class FauxReseau:
     """Session d'inférence qui rend, tuile après tuile, les boîtes données :
-    [(cx, cy, l, h, angle, classe, score)], en pixels de la tuile agrandie."""
+    [(cx, cy, l, h, angle, classe, score)], en pixels de la tuile agrandie,
+    dans la disposition de l'export de RTMDet-R ou de celui d'Ultralytics."""
 
-    def __init__(self, par_tuile):
+    def __init__(self, par_tuile, ultralytics=False):
         self.par_tuile = list(par_tuile)
+        self.ultralytics = ultralytics
         self.entrees = []
 
     def get_inputs(self):
@@ -115,6 +118,9 @@ class FauxReseau:
         for i, (cx, cy, l, h, angle, classe, score) in enumerate(boites):
             sortie[0, i, :5] = cx, cy, l, h, angle
             sortie[0, i, 5 + classe] = score
+        if self.ultralytics:          # (1, 20, N) : les scores avant l'angle
+            sortie = np.concatenate([sortie[:, :, :4], sortie[:, :, 5:], sortie[:, :, 4:5]],
+                                    axis=2).transpose(0, 2, 1)
         return [sortie]
 
 
@@ -174,6 +180,59 @@ def test_en_mode_tous_le_second_detecteur_n_ajoute_que_ce_que_le_premier_n_a_pas
                           (700, 700, 44, 20, 0.0, PETIT, 0.3)]])         # une autre
     boites = detecter(rgb, {"yolo": yolo, "rtmdet": rtmdet}, UNE_TUILE)
     assert [(round(b[0]), b[8]) for b in boites] == [(200, "yolo"), (350, "rtmdet")]
+
+
+# --- Piscines -------------------------------------------------------------------
+
+PISCINE_RTMDET, PISCINE_YOLO = 13, 14
+# Une tuile de 512 px à l'échelle native : une image de 512 px y tient entière.
+NATIF = {"rtmdet": {"tuile_px": 512, "recouvrement_px": 128, "seuil": 0.1, "classe": PISCINE_RTMDET},
+         "yolo": {"tuile_px": 512, "recouvrement_px": 128, "seuil": 0.2, "classe": PISCINE_YOLO}}
+
+
+def test_les_piscines_ont_leur_classe_et_leur_seuil_dans_chaque_reseau():
+    assert vehicules.PISCINES["rtmdet"]["classe"] == 13 and vehicules.PISCINES["yolo"]["classe"] == 14
+    # Un seuil bas pour rtmdet, qui annonce juste même peu sûr de lui.
+    assert vehicules.PISCINES["rtmdet"]["seuil"] < vehicules.PISCINES["yolo"]["seuil"]
+
+
+def test_une_piscine_est_lue_avec_la_couleur_de_son_eau():
+    rgb = np.zeros((512, 512, 3), dtype=np.uint8)
+    rgb[80:120, 170:230] = (90, 200, 210)
+    reseau = FauxReseau([[(400, 200, 100, 50, 0.0, PISCINE_RTMDET, 0.15),      # 10 m sur 5 m
+                          (800, 800, 44, 20, 0.0, PETIT, 0.9),                 # une voiture : pas ici
+                          (600, 600, 100, 50, 0.0, PISCINE_RTMDET, 0.05)]])    # sous le seuil
+    (cx, cy, lo, la, angle, score, couleur, nom), = detecter_piscines(rgb, {"rtmdet": reseau}, NATIF)
+    assert (cx, cy, lo, la) == pytest.approx((200, 100, 50, 25)) and nom == "rtmdet"
+    assert couleur == (90 << 16) | (200 << 8) | 210
+
+
+def test_une_piscine_vue_des_deux_detecteurs_n_est_gardee_qu_une_fois():
+    """Les boîtes d'un même bassin diffèrent d'un réseau à l'autre : c'est le
+    centre de l'une dans la boîte de l'autre qui fait le doublon."""
+    rgb = np.zeros((512, 512, 3), dtype=np.uint8)
+    rtmdet = FauxReseau([[(400, 200, 100, 50, 0.0, PISCINE_RTMDET, 0.6)]])
+    yolo = FauxReseau([[(412, 206, 90, 44, 0.1, PISCINE_YOLO, 0.8),            # la même, à 2,7 m
+                        (400, 320, 100, 50, 0.0, PISCINE_YOLO, 0.5)]],         # le bassin voisin
+                      ultralytics=True)
+    boites = detecter_piscines(rgb, {"rtmdet": rtmdet, "yolo": yolo}, NATIF)
+    assert [(round(b[1]), b[7]) for b in boites] == [(100, "rtmdet"), (160, "yolo")]
+
+
+def test_les_piscines_passent_les_memes_filtres_que_les_vehicules():
+    brut = {"largeur": 1000, "hauteur": 1000, "boites": [], "piscines": [
+        [500, 500, 50, 25, 0.0, 0.4, 0x5AC8D2, "rtmdet"],       # 10 m sur 5 m, au centre
+        [550, 300, 50, 25, 0.0, 0.4, 0x5AC8D2, "rtmdet"],       # sur un bâtiment : une véranda
+        [300, 700, 50, 25, 0.0, 0.4, 0x5AC8D2, "rtmdet"],       # sur une eau de la BD TOPO
+        [700, 700, 10, 8, 0.0, 0.4, 0x5AC8D2, "rtmdet"],        # 2 m : une bâche
+        [700, 300, 400, 200, 0.0, 0.4, 0x5AC8D2, "rtmdet"]]}    # 80 m : pas une piscine
+    batiments = {"features": [{"type": "Feature", "properties": {}, "geometry": _carre(5, 35, 15, 45)}]}
+    eau = {"surfaces": [{"geometrie": _carre(-50, -50, -30, -30)}], "cours": []}
+    couche = vehicules_pour_emprise(*BBOX, brut, "rtmdet", batiments, eau)
+    assert couche["vehicules"] == []
+    (lon, lat, longueur, largeur, cap, couleur), = couche["piscines"]
+    assert (lon, lat) == pytest.approx((LON, LAT), abs=1e-6)
+    assert (longueur, largeur, cap, couleur) == (10.0, 5.0, 90.0, 0x5AC8D2)
 
 
 # --- De la boîte au véhicule ------------------------------------------------------
@@ -243,5 +302,6 @@ def test_au_ras_du_cadre_la_boite_est_ecartee():
 
 def test_sans_vehicule_la_couche_dit_quand_meme_son_mode():
     assert vehicules_pour_emprise(*BBOX, _brut(), "yolo") == {
-        "version": vehicules.VEHICULES_VERSION, "mode": "yolo", "vehicules": []}
-    assert vehicules_pour_emprise(*BBOX, None, "yolo")["vehicules"] == []
+        "version": vehicules.VEHICULES_VERSION, "mode": "yolo", "vehicules": [], "piscines": []}
+    vide = vehicules_pour_emprise(*BBOX, None, "yolo")
+    assert vide["vehicules"] == [] and vide["piscines"] == []

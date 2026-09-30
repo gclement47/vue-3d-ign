@@ -5,7 +5,7 @@
     GET /api/ortho?lat=…&lon=…     l'orthophoto de la scène, en JPEG
     GET /api/monuments?lat=…&lon=…   la couche des monuments OSM, JSON gzippé
     GET /api/ouvrages?lat=…&lon=…    la couche des ouvrages BD TOPO, JSON gzippé
-    GET /api/vehicules?lat=…&lon=…   la couche des véhicules, si le service a un détecteur
+    GET /api/vehicules?lat=…&lon=…   la couche des véhicules et des piscines, si le service a un détecteur
     GET /api/avancement?lat=…&lon=…  l'étape de la construction en cours
     GET /api/sante                 contrôle de vie, pour Docker
 
@@ -142,11 +142,11 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
 
     @app.get("/api/vehicules")
     def vehicules():
-        """Les véhicules de l'orthophoto, demandés par la page une fois la
-        scène affichée. Sans détecteur, la réponse le dit (`mode: aucun`) et
+        """Les véhicules et les piscines de l'orthophoto, demandés par la
+        page une fois la scène affichée. Sans détecteur, la réponse le dit (`mode: aucun`) et
         la page ne montre pas la couche : ce n'est pas une erreur."""
         if not cache.lire_vehicules:
-            reponse = jsonify({"mode": MODE_PAR_DEFAUT, "vehicules": []})
+            reponse = jsonify({"mode": MODE_PAR_DEFAUT, "vehicules": [], "piscines": []})
             # Jamais gardée : le service peut être relancé avec un détecteur.
             reponse.headers["Cache-Control"] = "no-store"
             return reponse

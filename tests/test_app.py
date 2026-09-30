@@ -48,7 +48,8 @@ def client_vehicules(tmp_path):
         if south < 46:
             raise ConnectionError("Read timed out")
         return {"largeur": 1173, "hauteur": 1781,
-                "boites": [[586.5, 890.5, 22, 10, 0.0, 0.6, 0, 0xC81E28, "rtmdet"]]}
+                "boites": [[586.5, 890.5, 22, 10, 0.0, 0.6, 0, 0xC81E28, "rtmdet"]],
+                "piscines": [[300, 400, 50, 25, 0.0, 0.3, 0x5AC8D2, "rtmdet"]]}
 
     lire_vehicules.mode = "rtmdet"
     appli = module_app.creer_app(str(tmp_path), construire=construire,
@@ -133,7 +134,8 @@ def test_une_panne_des_ouvrages_rend_503_sans_toucher_la_scene(client):
 def test_sans_detecteur_la_couche_des_vehicules_le_dit(client):
     """Ni erreur ni fichier : la page lit le mode et ne montre pas la couche."""
     r = client.get("/api/vehicules?lat=48.8049&lon=2.1204")
-    assert r.status_code == 200 and r.get_json() == {"mode": "aucun", "vehicules": []}
+    assert r.status_code == 200
+    assert r.get_json() == {"mode": "aucun", "vehicules": [], "piscines": []}
     # Le service peut être relancé avec un détecteur : jamais gardée.
     assert r.headers["Cache-Control"] == "no-store"
 
@@ -145,6 +147,7 @@ def test_la_couche_des_vehicules_est_servie_a_part(client_vehicules):
     assert couche["mode"] == "rtmdet"
     (lon, lat, longueur, largeur, cap, couleur), = couche["vehicules"]
     assert (round(lat, 4), round(lon, 4)) == (48.8049, 2.1204) and couleur == 0xC81E28
+    assert [p[2:] for p in couche["piscines"]] == [[10.0, 5.0, 90.0, 0x5AC8D2]]
     assert client_vehicules.get("/api/vehicules").status_code == 400
     assert client_vehicules.get("/api/vehicules?lat=40&lon=2").status_code == 422
 

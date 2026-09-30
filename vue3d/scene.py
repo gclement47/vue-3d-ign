@@ -27,8 +27,8 @@ vue3d/ouvrages.py) suivent le même chemin (`Cache.obtenir_ouvrages`) : rien de
 ce qu'ils décrivent n'entre dans un calcul de la scène, qui n'a donc pas à
 échouer avec eux ni à être reconstruite quand leur format change.
 
-Les véhicules de l'orthophoto (vue3d/vehicules.py) sont une troisième couche à
-part, la seule optionnelle : elle n'existe que si le service a été lancé avec
+Les véhicules et les piscines de l'orthophoto (vue3d/vehicules.py) sont une
+troisième couche à part, la seule optionnelle : elle n'existe que si le service a été lancé avec
 un détecteur (`Cache.obtenir_vehicules`, `VUE3D_VEHICULES`).
 
 La construction coûte une vingtaine à une trentaine de secondes, dont la moitié

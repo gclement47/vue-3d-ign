@@ -134,6 +134,7 @@
                 <button class="toggle on" id="t-constructions" hidden title="Réservoirs, torchères, cheminées, antennes et mâts de la BD TOPO">Réservoirs, mâts</button>
                 <button class="toggle on" id="t-ouvrages" hidden title="Murs, ponts, voies ferrées et terrains de sport de la BD TOPO">Murs, ponts, rails</button>
                 <button class="toggle on" id="t-vehicules" hidden title="Véhicules vus sur l'orthophoto, le jour de la prise de vue">Véhicules</button>
+                <button class="toggle on" id="t-piscines" hidden title="Piscines vues sur l'orthophoto">Piscines</button>
                 <button class="toggle" id="t-moi">Ma position</button>
             </div>
             <div class="row">
@@ -1051,6 +1052,7 @@ function majCiblesSurvol() {
     if (groupeConstructions && groupeConstructions.visible) ciblesSurvol.push(...constructionsSurvol);
     if (groupeOuvrages && groupeOuvrages.visible) ciblesSurvol.push(...ouvragesSurvol);
     if (groupeVehicules && groupeVehicules.visible) ciblesSurvol.push(...groupeVehicules.children);
+    if (groupePiscines && groupePiscines.visible) ciblesSurvol.push(...groupePiscines.children);
 }
 
 /** Point dans polygone par lancer de rayon. Coordonnées en degrés (lon, lat). */
@@ -2331,6 +2333,7 @@ function appliquerExageration() {
     if (constructionsPosees && constructionsPosees.length) placerConstructions();
     if (ouvragesPoses && ouvragesPoses.length) placerOuvrages();
     if (vehiculesPoses && vehiculesPoses.length) placerVehicules();
+    if (piscinesPosees) placerPiscines();
     // Le grand plan gris sert de fond au-delà de l'emprise, et sous les trous
     // de l'anneau : on le glisse sous le point le plus bas du terrain pour
     // qu'il ne le traverse pas.
@@ -3343,7 +3346,8 @@ document.getElementById('t-ouvrages').addEventListener('click', e => {
 
 // --- Véhicules de l'orthophoto ---------------------------------------------------
 // Une couche à part et optionnelle (/api/vehicules, vue3d/vehicules.py) : le
-// serveur ne la calcule que s'il a été lancé avec un détecteur. Chaque véhicule
+// serveur ne la calcule que s'il a été lancé avec un détecteur. Elle porte
+// aussi les piscines, dessinées plus bas. Chaque véhicule
 // est une boîte orientée lue sur l'orthophoto à 0,2 m — position, longueur,
 // largeur, cap du grand axe, couleur. Tout le reste est convention : la
 // hauteur (aucune source ne la donne, le LiDAR ne retient pas les véhicules),
@@ -3446,8 +3450,9 @@ function repereVehicule(est, nord, longueur, largeur, yAvant, yArriere, yGauche,
 function construireVehicules() {
     if (!VEHICULES || !reliefRegle || vehiculesConstruits) return;
     vehiculesConstruits = true;
+    construirePiscines();
     const parGabarit = { voiture: [], fourgon: [], car: [] };
-    for (const [lon, lat, longueur, largeur, cap, couleur] of VEHICULES.vehicules) {
+    for (const [lon, lat, longueur, largeur, cap, couleur] of VEHICULES.vehicules || []) {
         const gabarit = Object.keys(GABARITS_VEHICULE).find(g => longueur < GABARITS_VEHICULE[g].longueurMax);
         parGabarit[gabarit].push({ lon, lat, longueur, largeur, cap, couleur, gabarit });
     }
@@ -3485,7 +3490,7 @@ function construireVehicules() {
     placerVehicules();
     const bouton = document.getElementById('t-vehicules');
     bouton.hidden = !vehiculesPoses.length;
-    bouton.title = `${VEHICULES.vehicules.length} véhicule(s) vus sur l'orthophoto, le jour de la prise de vue `
+    bouton.title = `${(VEHICULES.vehicules || []).length} véhicule(s) vus sur l'orthophoto, le jour de la prise de vue `
         + `(détecteur : ${VEHICULES.mode})`;
     majCiblesSurvol();
 }
@@ -3519,7 +3524,7 @@ function placerVehicules() {
 async function chargerVehicules(essai = 1) {
     // Au premier essai seulement : ensuite l'indicateur est déjà affiché.
     const retard = setTimeout(
-        () => etatCouche('etat-vehicules', 'Véhicules : détection sur l\'orthophoto…', true),
+        () => etatCouche('etat-vehicules', 'Véhicules et piscines : détection sur l\'orthophoto…', true),
         essai === 1 ? RETARD_ETAT_MONUMENTS_MS : 0);
     try {
         const r = await fetch(URL_VEHICULES);
@@ -3527,17 +3532,17 @@ async function chargerVehicules(essai = 1) {
         const v = await r.json();
         clearTimeout(retard);
         etatCouche('etat-vehicules', null);
-        // Service lancé sans détecteur, ou aucun véhicule sur l'emprise.
-        if (!v || !v.vehicules || !v.vehicules.length) return;
+        // Service lancé sans détecteur, ou rien à montrer sur l'emprise.
+        if (!v || !((v.vehicules || []).length + (v.piscines || []).length)) return;
         VEHICULES = v;
         construireVehicules();
     } catch (e) {
         clearTimeout(retard);
         if (essai >= ESSAIS_MONUMENTS) {
-            etatCouche('etat-vehicules', 'Véhicules indisponibles : recharger la page pour réessayer.');
+            etatCouche('etat-vehicules', 'Véhicules et piscines indisponibles : recharger la page pour réessayer.');
             return;
         }
-        etatCouche('etat-vehicules', `Véhicules indisponibles : nouvel essai dans ${ATTENTE_MONUMENTS_S} s.`, true);
+        etatCouche('etat-vehicules', `Véhicules et piscines indisponibles : nouvel essai dans ${ATTENTE_MONUMENTS_S} s.`, true);
         setTimeout(() => chargerVehicules(essai + 1), ATTENTE_MONUMENTS_S * 1000);
     }
 }
@@ -3545,6 +3550,89 @@ async function chargerVehicules(essai = 1) {
 document.getElementById('t-vehicules').addEventListener('click', e => {
     groupeVehicules.visible = !groupeVehicules.visible;
     e.currentTarget.classList.toggle('on', groupeVehicules.visible);
+    majCiblesSurvol();
+});
+
+// --- Piscines de l'orthophoto -----------------------------------------------------
+// Lues par les mêmes réseaux que les véhicules, dans la même couche : la BD
+// TOPO n'a pas les piscines des particuliers. Une boîte orientée par bassin,
+// et la couleur de l'eau ce jour-là. La boîte est dessinée telle quelle, même
+// pour un bassin rond.
+//
+// L'eau d'un bassin est de niveau : celui du sol au centre de la boîte, et la
+// cuve descend jusqu'au sol le plus bas sous ses coins. Trois poses essayées
+// sur les pentes de Gordes, où un bassin tient sur une terrasse :
+// - drapée sur le relief, comme l'eau de la BD TOPO : la boîte déborde la
+//   terrasse et la nappe coule le long du mur de soutènement ;
+// - de niveau au sol le plus haut : une cuve de plusieurs mètres de haut ;
+// - de niveau au sol du centre : le mur de la terrasse côté aval, et côté
+//   amont le terrain qui reprend au-dessus de l'eau. C'est la pose retenue.
+const PISCINE_MARGELLE = 0.3;          // convention : le rebord, autour de la boîte
+const PISCINE_REBORD = 0.12;           // de l'eau au-dessus du sol du centre
+const MAT_MARGELLE = new THREE.MeshStandardMaterial({ color: 0xd9d2c3, roughness: 0.9 });
+const MAT_PISCINE = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.1 });
+var groupePiscines = new THREE.Group();
+scene.add(groupePiscines);
+var piscinesPosees = null;      // { cuves, eaux, liste }
+
+function construirePiscines() {
+    const liste = (VEHICULES.piscines || []).map(([lon, lat, longueur, largeur, cap, couleur]) =>
+        ({ lon, lat, longueur, largeur, cap, couleur }));
+    if (!liste.length) return;
+    const cuve = new THREE.BoxGeometry(1, 1, 1);
+    cuve.translate(0, 0.5, 0);                          // pied à y = 0
+    const nappe = new THREE.PlaneGeometry(1, 1);
+    nappe.rotateX(-Math.PI / 2);                        // à plat, tournée vers le ciel
+    const cuves = new THREE.InstancedMesh(cuve, MAT_MARGELLE, liste.length);
+    const eaux = new THREE.InstancedMesh(nappe, MAT_PISCINE, liste.length);
+    const teinte = new THREE.Color();
+    liste.forEach((p, i) => eaux.setColorAt(i, teinte.setHex(p.couleur)));
+    cuves.castShadow = true; cuves.receiveShadow = true; eaux.receiveShadow = true;
+    for (const m of [cuves, eaux]) {
+        m.userData = { piscines: liste };
+        groupePiscines.add(m);
+    }
+    piscinesPosees = { cuves, eaux, liste };
+    placerPiscines();
+    const bouton = document.getElementById('t-piscines');
+    bouton.hidden = false;
+    bouton.title = `${liste.length} piscine(s) vues sur l'orthophoto (détecteur : ${VEHICULES.mode})`;
+}
+
+/** L'eau de niveau sur le sol exagéré du centre, la cuve jusqu'au plus bas. */
+function placerPiscines() {
+    const matrice = new THREE.Matrix4();
+    const axe = new THREE.Vector3(), haut = new THREE.Vector3(), travers = new THREE.Vector3();
+    const { cuves, eaux, liste } = piscinesPosees;
+    liste.forEach((p, i) => {
+        const cap = p.cap * Math.PI / 180, est = Math.sin(cap), nord = Math.cos(cap);
+        const [x, y] = toLocal(p.lon, p.lat);
+        // Le sol au centre et aux quatre coins de la boîte.
+        const sols = [[0, 0], [1, 1], [1, -1], [-1, -1], [-1, 1]].map(([u, v]) => ySol(...toLonLat(
+            x + u * est * p.longueur / 2 + v * nord * p.largeur / 2,
+            y + u * nord * p.longueur / 2 - v * est * p.largeur / 2)));
+        const niveau = sols[0] + PISCINE_REBORD, pied = Math.min(...sols) - ENFONCEMENT;
+        const { X, Y, Z } = repereVehicule(est, nord, 1, 1, 0, 0, 0, 0);       // à plat
+        matrice.makeBasis(axe.fromArray(X).multiplyScalar(p.longueur + 2 * PISCINE_MARGELLE),
+                          haut.fromArray(Y).multiplyScalar(niveau - pied),
+                          travers.fromArray(Z).multiplyScalar(p.largeur + 2 * PISCINE_MARGELLE));
+        matrice.setPosition(x, pied, -y);
+        cuves.setMatrixAt(i, matrice);
+        // L'eau affleure, deux centimètres au-dessus de la margelle.
+        matrice.makeBasis(axe.fromArray(X).multiplyScalar(p.longueur), haut.fromArray(Y),
+                          travers.fromArray(Z).multiplyScalar(p.largeur));
+        matrice.setPosition(x, niveau + 0.02, -y);
+        eaux.setMatrixAt(i, matrice);
+    });
+    for (const m of [cuves, eaux]) {
+        m.instanceMatrix.needsUpdate = true;
+        m.computeBoundingSphere();
+    }
+}
+
+document.getElementById('t-piscines').addEventListener('click', e => {
+    groupePiscines.visible = !groupePiscines.visible;
+    e.currentTarget.classList.toggle('on', groupePiscines.visible);
     majCiblesSurvol();
 });
 
@@ -4378,6 +4466,17 @@ renderer.domElement.addEventListener('pointermove', e => {
             + `<br>boîte de ${enMetres(v.longueur)} sur ${enMetres(v.largeur)}, lue sur l'orthophoto`
             + '<br><i>là où il était le jour de la prise de vue</i>'
             + '<br><i>hauteur et forme de convention, avant et arrière non distingués</i>';
+        tip.style.display = 'block';
+        tip.style.left = (e.clientX - r.left + 14) + 'px';
+        tip.style.top = (e.clientY - r.top + 14) + 'px';
+        return;
+    }
+
+    if (touche && touche.object.userData.piscines && touche.instanceId != null) {
+        const p = touche.object.userData.piscines[touche.instanceId];
+        tip.innerHTML = '<b>Piscine</b>'
+            + `<br>boîte de ${enMetres(p.longueur)} sur ${enMetres(p.largeur)}, lue sur l'orthophoto`
+            + '<br><i>dessinée en rectangle, quelle que soit sa forme ; couleur de l\'eau ce jour-là</i>';
         tip.style.display = 'block';
         tip.style.left = (e.clientX - r.left + 14) + 'px';
         tip.style.top = (e.clientY - r.top + 14) + 'px';
