@@ -71,10 +71,12 @@ des scènes construites en septembre 2026 ; ils suivent les mises à jour de l'I
 | [Chamonix, église](http://localhost:8080/?lat=45.9232&lon=6.8733) | Fond de vallée : l'anneau monte de 624 m sur les pentes alentour |
 | [Abbaye du Mont-Saint-Michel](http://localhost:8080/?lat=48.6360&lon=-1.5114) | Le rocher et sa baie. Hors LiDAR HD : l'abbaye est reprise au modèle 3D d'OpenStreetMap, flèche comprise |
 | [Saint-Malo, cathédrale](http://localhost:8080/?lat=48.6495&lon=-2.0256) | Ville close dense (249 toits mesurés) ; la mer laisse un tiers de l'anneau vide |
-| [Cité de Carcassonne](http://localhost:8080/?lat=43.2065&lon=2.3640) | Remparts et 291 bâtiments serrés sur 44 m de relief |
+| [Cité de Carcassonne](http://localhost:8080/?lat=43.2065&lon=2.3640) | 30 murs de rempart, de 3 à 25 m, et 291 bâtiments serrés sur 44 m de relief |
 | [Notre-Dame de Paris](http://localhost:8080/?lat=48.8530&lon=2.3499) | L'île de la Cité, et 1 172 arbres des quais et des squares |
 | [Cathédrale de Strasbourg](http://localhost:8080/?lat=48.5819&lon=7.7510) | Tissu médiéval en plaine : toits LiDAR à plusieurs corps, et la cathédrale reprise à OpenStreetMap |
 | [Château de Chambord](http://localhost:8080/?lat=47.6162&lon=1.5171) | Le château isolé dans son domaine boisé : 477 houppiers |
+| [Pont du Gard](http://localhost:8080/?lat=43.9475&lon=4.5350) | Deux ponts réduits à leur tablier, faute d'arches dans la BD TOPO : l'aqueduc à 48 m du Gardon, le pont routier à 21 m |
+| [Raffinerie de Feyzin, parc de stockage](http://localhost:8080/?lat=45.6734&lon=4.8409) | 30 citernes à leur hauteur BD TOPO, dont 14 que le LiDAR ne voit pas ; hors du sursol, elles ne se couvrent plus de faux arbres (82 houppiers et masses, contre 545) |
 
 Chaque premier chargement construit la scène, en 20 à 40 secondes.
 
@@ -107,6 +109,19 @@ Chaque premier chargement construit la scène, en 20 à 40 secondes.
   des parties. Elles arrivent après la scène : OpenStreetMap répond de 0,6 s à
   plus de 100 s, la vue ne l'attend pas et réessaie s'il ne répond pas ; une
   roue tourne en haut de la vue tant que la couche est attendue.
+- **Les réservoirs et les constructions élevées** de la BD TOPO : citernes et
+  châteaux d'eau montés à leur hauteur, torchères, cheminées, antennes et mâts
+  d'éclairage. La hauteur est celle de la BD TOPO, à défaut celle que le LiDAR
+  mesure ; l'infobulle dit laquelle. Une construction dont ni l'une ni l'autre
+  ne donne la hauteur n'est pas dessinée, et un réservoir sans hauteur reste
+  pâle, comme un bâtiment sous les arbres.
+- **Les murs, les ponts, les voies ferrées et les terrains de sport** : les
+  remparts de Carcassonne à la hauteur de leurs courtines, les tabliers des
+  ponts à leur altitude, les voies ferrées et tramways en rubans de ballast,
+  les terrains, pistes et bassins en aplats. Cette couche arrive après la
+  scène, comme les monuments OSM, et se débraye par le bouton **Murs, ponts,
+  rails** ; les masses de sursol qu'un mur ou un tablier explique lui laissent
+  alors la place.
 - **L'eau** : lacs, retenues, bassins et rivières larges en nappes, ruisseaux en
   rubans de la largeur de leur classe, posés sur le relief.
 - **Les routes**, en rubans sur le relief, à leur largeur de chaussée.
@@ -139,6 +154,8 @@ Toutes servies sans clé par la Géoplateforme de l'IGN, sous
 | BD Forêt v2 | WFS `LANDCOVER.FORESTINVENTORY.V2:formation_vegetale` | Essence dominante d'un massif, pour la couleur des arbres |
 | BD TOPO, routes | WFS `BDTOPO_V3:troncon_de_route` | Les routes, et le point de vue Street View posé sur la rue |
 | BD TOPO, réseau électrique | WFS `ligne_electrique`, `pylone` | Lignes à haute tension et hauteur des pylônes |
+| BD TOPO, réservoirs et constructions ponctuelles | WFS `reservoir`, `construction_ponctuelle` | Citernes et châteaux d'eau ; torchères, cheminées, antennes, mâts |
+| BD TOPO, ouvrages | WFS `construction_lineaire`, `construction_surfacique`, `troncon_de_voie_ferree`, `terrain_de_sport` | Murs et ponts, par l'altitude de leurs sommets ; voies ferrées ; terrains de sport |
 | LiDAR HD, MNH | WMS, grille BIL à 0,5 m | Hauteur de tout ce qui dépasse du sol : toits et arbres |
 | MNS − MNT | WMS, repli photogrammétrique | Le même, hors couverture LiDAR HD, en moins net |
 | RGE ALTI | WMS, grille BIL | Le relief du terrain, et l'anneau alentour |
@@ -206,6 +223,26 @@ principales :
   au-dessus du terrain médian de l'emprise, d'où se comptent ses hauteurs.
   Sans cela, 15 toits sur 104 passaient sous le rocher au Mont-Saint-Michel,
   13 sur 139 à Rocamadour ; relevés, 1 et 3.
+- **Réservoirs et constructions ponctuelles.** Hors de toute emprise bâtie,
+  une citerne est du sursol comme un autre : sur quatre scènes de raffinerie,
+  2 426 houppiers et masses sur 5 400 étaient posés sur l'un des 156
+  réservoirs. Leurs emprises, dilatées de 2 m, rejoignent donc le masque bâti
+  de la segmentation — c'est pourquoi ils sont dans la scène et non dans une
+  couche chargée après coup. Leur hauteur est celle de la BD TOPO : le LiDAR
+  la confirme à 0,5 m près quand il voit le réservoir, mais sa classification
+  en ignore beaucoup (14 citernes sur 30 à Feyzin, à zéro d'un bord à
+  l'autre). Pour une torchère ou une cheminée, c'est l'inverse : la BD TOPO
+  donne rarement la hauteur (15 torchères sur 86) et le LiDAR la mesure une
+  fois sur deux, avec le rayon de la construction. Un point dans une emprise
+  bâtie est laissé au toit mesuré du bâtiment.
+- **Murs et ponts.** La BD TOPO ne leur donne pas de hauteur, mais leurs
+  sommets portent l'altitude du haut de l'ouvrage : l'aqueduc du Pont du Gard
+  y est à 47,8 m du Gardon pour 48 m réels. La hauteur est cette altitude
+  moins le relief — deux sources, 1,4 m d'écart médian avec le LiDAR sur les
+  remparts de Carcassonne —, d'où un seuil à 2 m, et l'abandon des murs de
+  soutènement, qui ne sont qu'une marche du relief. Les masses de sursol à
+  moins de 2 m d'un mur dessiné, ou sous un tablier, sont retirées : 236 sur
+  2 130 à Carcassonne. Mesure : `python outils/mesure_constructions.py [lat lon]`.
 - **Monuments OSM.** OSM et la BD TOPO ne découpent pas le bâti pareil : au
   Mont-Saint-Michel, l'union brute des parties ne couvre les emprises BD TOPO
   du complexe abbatial qu'à 29-100 %. La même union dilatée de 5 m couvre
@@ -235,6 +272,14 @@ principales :
   et son morceau est mesuré seul — trop petit, il retombe sur les hauteurs BD
   TOPO. En bord de mer ou de frontière, ses parties hors
   couverture RGE ALTI restent vides.
+- **Un pont n'est que son tablier.** La BD TOPO ne décrit ni piles ni arches :
+  le Pont du Gard est un ruban à 48 m de la rivière. Un pont en ligne prend la
+  largeur de la chaussée qu'il porte, à défaut 3 m.
+- **Toutes les constructions de la BD TOPO ne sont pas dessinées** : ni les
+  éoliennes (leur hauteur ne dit pas si elle compte les pales), ni les croix
+  et calvaires (jamais de hauteur), ni les clochers, déjà portés par le toit
+  mesuré de leur église. Une antenne ou un mât que le LiDAR ne voit pas prend
+  une largeur de convention.
 - **Les monuments OSM valent ce que les contributeurs y ont mis** : des
   parties sans hauteur (La Merveille, Le Châtelet) reçoivent celle de la BD
   TOPO, et l'infobulle le dit. La couche vient d'Overpass, le seul service
@@ -251,7 +296,8 @@ principales :
 | `GET /api/scene?lat=…&lon=…` | La scène, en JSON gzippé |
 | `GET /api/ortho?lat=…&lon=…` | L'orthophoto de la scène, en JPEG |
 | `GET /api/monuments?lat=…&lon=…` | La couche des monuments OSM, en JSON gzippé (`null` sans partie), que la page demande une fois la scène affichée |
-| `GET /api/avancement?lat=…&lon=…` | L'étape de la construction en cours (16 au total), que la page affiche pendant l'attente |
+| `GET /api/ouvrages?lat=…&lon=…` | La couche des murs, ponts, voies ferrées et terrains de sport, en JSON gzippé (`null` sans ouvrage), demandée elle aussi après la scène |
+| `GET /api/avancement?lat=…&lon=…` | L'étape de la construction en cours (18 au total), que la page affiche pendant l'attente |
 | `GET /api/sante` | `{"ok": true}` |
 
 Codes d'erreur : 400 sans coordonnées valides, 422 hors de France métropolitaine,

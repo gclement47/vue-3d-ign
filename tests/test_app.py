@@ -23,8 +23,15 @@ def client(tmp_path):
             raise ConnectionError("Overpass injoignable : 504")
         return {"elements": []}
 
+    def lire_ouvrages(west, south, east, north):
+        # Au sud de 46° : l'IGN en panne sur ces couches.
+        if south < 46:
+            raise ConnectionError("HTTP 504 sur construction_lineaire")
+        return {"lineaires": {"features": []}, "surfaciques": {"features": []},
+                "voies": {"features": []}, "terrains": {"features": []}}
+
     appli = module_app.creer_app(str(tmp_path), construire=construire,
-                                 lire_monuments=lire_monuments)
+                                 lire_monuments=lire_monuments, lire_ouvrages=lire_ouvrages)
     return appli.test_client()
 
 
@@ -84,6 +91,21 @@ def test_une_panne_osm_rend_503_sans_toucher_la_scene(client):
     assert client.get("/api/scene?lat=45.5&lon=2").status_code == 200
     r = client.get("/api/monuments?lat=45.5&lon=2")
     assert r.status_code == 503 and "OpenStreetMap" in r.get_json()["erreur"]
+
+
+def test_la_couche_des_ouvrages_est_servie_a_part(client):
+    """Aucun ouvrage sur l'emprise : la couche vaut null, et se met en cache."""
+    r = client.get("/api/ouvrages?lat=48.8049&lon=2.1204")
+    assert r.status_code == 200 and r.headers["Content-Encoding"] == "gzip"
+    assert json.loads(gzip.decompress(r.data)) is None
+
+
+def test_une_panne_des_ouvrages_rend_503_sans_toucher_la_scene(client):
+    """La scène reste servie ; seule la couche attend un nouvel essai."""
+    assert client.get("/api/scene?lat=45.5&lon=2").status_code == 200
+    r = client.get("/api/ouvrages?lat=45.5&lon=2")
+    assert r.status_code == 503 and "IGN" in r.get_json()["erreur"]
+    assert client.get("/api/scene?lat=45.5&lon=2").status_code == 200
 
 
 def test_sante(client):

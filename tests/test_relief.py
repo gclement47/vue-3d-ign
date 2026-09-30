@@ -53,3 +53,13 @@ def test_l_anneau_garde_ses_trous_et_les_elargit(bil):
 def test_l_anneau_entierement_hors_couverture_est_absent(bil):
     bil(np.full((8, 8), RELIEF_NODATA))
     assert relief.fetch_relief_anneau(2, 48, 2.1, 48.1, taille=8) is None
+
+
+def test_l_echantillonneur_relit_le_relief_comme_la_vue(bil):
+    """Nœuds aux bords de l'emprise, ligne 0 au nord, bilinéaire entre eux."""
+    bil(np.array([[100.0, 102.0], [110.0, 112.0]]))
+    alt = relief.echantillonneur(relief.fetch_relief(2, 48, 2.1, 48.1, taille=2))
+    assert alt(2, 48.1) == pytest.approx(100.0) and alt(2.1, 48) == pytest.approx(112.0)
+    assert alt(2.05, 48.05) == pytest.approx(106.0)
+    assert alt(2.2, 48.05) is None
+    assert relief.echantillonneur(None) is None

@@ -165,3 +165,38 @@ def fetch_relief_anneau(west, south, east, north, taille=ANNEAU_TAILLE):
         return None
     return _quantifier(grille, trous, west, south, east, north)
 
+
+def echantillonneur(relief):
+    """Altitude du relief embarqué en un point, telle que la vue la lit.
+
+    Même interpolation bilinéaire que la page (nœuds de la grille aux bords de
+    l'emprise, ligne 0 au nord) : une hauteur comptée ici au-dessus du relief
+    est celle que la vue dessinera.
+
+    Returns:
+        fonction (lon, lat) -> altitude en mètres, ou None hors de la grille
+        et près d'un trou ; None si la scène n'a pas de relief.
+    """
+    if not relief or not relief.get("altitudes"):
+        return None
+    largeur, hauteur = relief["width"], relief["height"]
+    quant = np.frombuffer(base64.b64decode(relief["altitudes"]), dtype="<i2")
+    if quant.size != largeur * hauteur:
+        return None
+    alt = relief["zero_m"] + quant.reshape(hauteur, largeur).astype(np.float64) * relief["pas_m"]
+    alt[quant.reshape(hauteur, largeur) == RELIEF_SENTINELLE] = np.nan
+    west, south, east, north = relief["bbox"]
+
+    def altitude(lon, lat):
+        fx = (lon - west) / (east - west) * (largeur - 1)
+        fy = (north - lat) / (north - south) * (hauteur - 1)
+        if not (0 <= fx <= largeur - 1 and 0 <= fy <= hauteur - 1):
+            return None
+        x0, y0 = int(fx), int(fy)
+        x1, y1 = min(x0 + 1, largeur - 1), min(y0 + 1, hauteur - 1)
+        ax, ay = fx - x0, fy - y0
+        a = ((alt[y0, x0] * (1 - ax) + alt[y0, x1] * ax) * (1 - ay)
+             + (alt[y1, x0] * (1 - ax) + alt[y1, x1] * ax) * ay)
+        return None if np.isnan(a) else float(a)
+
+    return altitude

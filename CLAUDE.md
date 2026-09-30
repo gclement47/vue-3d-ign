@@ -20,7 +20,7 @@ npm install puppeteer-core && node outils/essai-navigateur.mjs "http://localhost
 
 ```
 vue3d/
-  app.py        Flask : /, /api/scene, /api/ortho, /api/monuments, /api/avancement, /api/sante
+  app.py        Flask : /, /api/scene, /api/ortho, /api/monuments, /api/ouvrages, /api/avancement, /api/sante
   scene.py      assemblage d'une scène, cache disque par point arrondi
   couches.py    lecture WFS (bâtiments, végétation, BD Forêt, routes)
   batiments.py  bâtiments découpés sur l'emprise, en retrait du bord
@@ -28,11 +28,13 @@ vue3d/
   toits.py      gouttière, faîtage, corps de toit, surface du toit, bâtiments sous les arbres
   pans.py       toit en pans : plans ajustés au MNH, volume fermé et vérifié
   houppiers.py  segmentation des arbres sur la grille à 0,5 m
+  constructions.py  réservoirs et constructions ponctuelles BD TOPO, retirés du sursol des houppiers
   ortho.py      indice de verdure ExG, mosaïque d'orthophoto
   relief.py     RGE ALTI quantifié au décimètre, anneau de relief alentour
   eau.py        étendues et cours d'eau BD TOPO, découpés sur l'emprise
   lignes.py     lignes à haute tension et hauteur de leurs supports
   monuments.py  parties de monuments OSM (building:part), seule source hors IGN
+  ouvrages.py   murs, ponts, voies ferrées, terrains de sport : couche à part, chargée après la scène
   geopf.py      GET avec reprise sur la Géoplateforme
   static/index.html   la page entière : HTML, CSS et JavaScript (three.js r160)
 ```
@@ -57,6 +59,10 @@ fichier statique qui lit le point dans son URL.
 - **La grille MNH à 0,5 m est lue une fois** et passée aux toitures et aux
   houppiers ; elle n'est jamais embarquée dans la scène (1,9 Mo d'entrée de
   calcul).
+- **Ce qui touche au MNH ou aux houppiers va dans la scène ; le reste peut
+  être une couche à part.** Une couche chargée après la scène (monuments,
+  ouvrages) a son fichier de cache, sa version, et la même règle : écrite
+  entière ou pas du tout. Elle ne lit de la scène que ses résultats.
 - **Un toit en pans est fermé ou n'est pas publié.** `pans.py` vérifie le
   volume transmis, après quantification : chaque arête portée par exactement
   deux triangles, en sens opposés. Sinon il rend None et le toit garde sa

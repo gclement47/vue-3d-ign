@@ -6,6 +6,9 @@ carré de ±0,0016° (environ 356 m de côté) :
 - les bâtiments BD TOPO, découpés sur l'emprise, et leurs toitures mesurées
   au LiDAR HD ;
 - les houppiers et masses de sursol segmentés sur le MNH LiDAR HD à 0,5 m ;
+- les réservoirs et constructions ponctuelles de la BD TOPO (citernes,
+  torchères, cheminées, antennes), qui sortent du sursol avant la
+  segmentation ;
 - les routes, pour orienter Street View ;
 - le relief RGE ALTI, quantifié au décimètre ;
 - un anneau de relief grossier sur 2 km de côté, pour que la scène ne flotte
@@ -18,6 +21,11 @@ demande une fois la scène affichée. OpenStreetMap répond de 0,6 s à plus de
 100 s et tombe parfois : la scène ne l'attend pas, et n'échoue pas avec lui.
 La lecture d'Overpass part pourtant dès la demande de la scène, en tâche de
 fond, pour que la couche soit souvent prête quand la vue la demande.
+
+Les ouvrages de la BD TOPO (murs, ponts, voies ferrées, terrains de sport,
+vue3d/ouvrages.py) suivent le même chemin (`Cache.obtenir_ouvrages`) : rien de
+ce qu'ils décrivent n'entre dans un calcul de la scène, qui n'a donc pas à
+échouer avec eux ni à être reconstruite quand leur format change.
 
 La construction coûte une vingtaine à une trentaine de secondes, dont la moitié
 à télécharger la grille MNH. Le résultat est donc mis en cache sur disque, par
@@ -44,6 +52,8 @@ import threading
 import time
 
 from .batiments import decouper_batiments
+from .constructions import (COUCHE_PONCTUELLES, COUCHE_RESERVOIRS,
+                            constructions_pour_emprise)
 from .couches import (COUCHE_BATIMENTS, COUCHE_FORET, COUCHE_ROUTES,
                       COUCHE_VEGETATION, lire_couche)
 from .eau import COUCHE_COURS_EAU, COUCHE_SURFACES_EAU, eau_pour_emprise
@@ -52,6 +62,7 @@ from .houppiers import houppiers_pour_emprise
 from .mnh import fetch_mnh_grid, fetch_sol_grid
 from .monuments import fetch_monuments, monuments_pour_emprise
 from .ortho import fetch_exg_grid, fetch_ortho_jpeg
+from .ouvrages import OUVRAGES_VERSION, fetch_ouvrages, ouvrages_pour_emprise
 from .relief import fetch_relief, fetch_relief_anneau
 from .toits import TOITS_RESOLUTION_M, toits_pour_emprise
 
@@ -67,7 +78,9 @@ journal = logging.getLogger(__name__)
 # 8 : toits en pans (vue3d/pans.py), préférés à la surface mesurée.
 # 9 : monuments OSM hors de la scène, en couche à part (NOM_MONUMENTS).
 # 10 : bâtiments découpés sur l'emprise (vue3d/batiments.py).
-SCENE_VERSION = 10
+# 11 : réservoirs et constructions ponctuelles (vue3d/constructions.py),
+#      retirés du sursol des houppiers.
+SCENE_VERSION = 11
 # Demi-côté de l'emprise, en degrés : ~178 m de part et d'autre du point.
 SCENE_DELTA = 0.0016
 # Demi-côté de l'anneau, en mètres et non en degrés : carré sur le terrain.
@@ -77,14 +90,16 @@ ANNEAU_DEMI_M = 1000
 # Arrondi du point pour la clé de cache : 4 décimales, une dizaine de mètres.
 SCENE_ARRONDI = 4
 # Étapes d'une construction, que la page affiche pendant l'attente : les
-# quatorze lectures de construire(), puis les toitures et les houppiers
+# seize lectures de construire(), puis les toitures et les houppiers
 # d'assembler(). Un compteur plutôt qu'un pourcentage : les étapes sont très
 # inégales (moins d'une seconde pour la plupart des lectures, plusieurs pour
 # la grille MNH et les deux calculs), une part du temps serait fausse.
-ETAPES_SCENE = 16
+ETAPES_SCENE = 18
 NOM_SCENE = "scene.json.gz"
 NOM_ORTHO = "ortho.jpg"
 NOM_MONUMENTS = "monuments.json.gz"
+# La version de la couche est dans son nom : la changer ne refait qu'elle.
+NOM_OUVRAGES = f"ouvrages-v{OUVRAGES_VERSION}.json.gz"
 
 # Le service couvre la France. Au-delà, les couches répondent vide et la scène
 # n'aurait rien à montrer : mieux vaut le dire tout de suite.
@@ -102,6 +117,11 @@ class HorsEmprise(ValueError):
 class MonumentsIndisponibles(RuntimeError):
     """Overpass n'a pas répondu : la couche OSM n'est pas mise en cache, la
     scène reste affichée sans elle, réessayer plus tard."""
+
+
+class OuvragesIndisponibles(RuntimeError):
+    """Une couche d'ouvrages de l'IGN n'a pas répondu : rien n'est mis en
+    cache, la scène reste affichée sans eux, réessayer plus tard."""
 
 
 def point_normalise(lat, lon):
@@ -128,14 +148,15 @@ def emprise_anneau(lat, lon, demi_m=ANNEAU_DEMI_M):
 
 def assembler(west, south, east, north, batiments, vegetation, forets, routes,
               grille, exg, relief, anneau=None, sol=None, eau=None, lignes=None,
-              avancer=None):
+              avancer=None, constructions=None):
     """Contenu de la scène à partir des sources déjà obtenues.
 
     Séparée de `construire` pour être testable sans réseau. Les grilles MNH,
     ExG et de terrain ne sont PAS embarquées : ce sont des entrées de calcul
     de 1,9 Mo, 475 Ko et 1,4 Mo, sans usage une fois les toitures et les
     houppiers obtenus. `avancer`, s'il est donné, est appelé au début de
-    chacun des deux calculs, avec son libellé.
+    chacun des deux calculs, avec son libellé. `constructions` : les couches
+    BD TOPO (réservoirs, constructions ponctuelles), None sans elles.
     """
     avancer = avancer or (lambda libelle: None)
     avancer("toitures")
@@ -146,7 +167,13 @@ def assembler(west, south, east, north, batiments, vegetation, forets, routes,
     decoupes = decouper_batiments(batiments, west, south, east, north)
     toits = toits_pour_emprise(west, south, east, north, decoupes, grille, exg, sol)
     avancer("houppiers")
-    veg = houppiers_pour_emprise(west, south, east, north, batiments, vegetation,
+    # Réservoirs et constructions ponctuelles sortent du sursol avec les
+    # bâtiments : sans cela, une citerne se couvre de masses et de houppiers
+    # (vue3d/constructions.py).
+    construits, masque = constructions_pour_emprise(
+        west, south, east, north, *(constructions or (None, None)), batiments, grille)
+    bati = {"features": (batiments or {}).get("features", []) + masque["features"]}
+    veg = houppiers_pour_emprise(west, south, east, north, bati, vegetation,
                                  forets, grille, exg)
     return {
         "version": SCENE_VERSION,
@@ -154,6 +181,8 @@ def assembler(west, south, east, north, batiments, vegetation, forets, routes,
         "batiments": decoupes,
         "toits": toits,
         "routes": routes,
+        # Réservoirs découpés sur l'emprise et constructions ponctuelles.
+        "constructions": construits,
         "houppiers": veg.get("houppiers", []),
         "masses": veg.get("masses", []),
         "vegetation": {cle: veg.get(cle) for cle in (
@@ -200,6 +229,10 @@ def construire(lat, lon, avancer=None):
     routes = lire("routes", lire_couche, COUCHE_ROUTES, west, south, east, north)
     eau = (lire("étendues d'eau", lire_couche, COUCHE_SURFACES_EAU, west, south, east, north),
            lire("cours d'eau", lire_couche, COUCHE_COURS_EAU, west, south, east, north))
+    constructions = (
+        lire("réservoirs", lire_couche, COUCHE_RESERVOIRS, west, south, east, north),
+        lire("constructions ponctuelles", lire_couche, COUCHE_PONCTUELLES,
+             west, south, east, north))
 
     # La grille à 0,5 m sert aux toitures ET aux houppiers : lue une fois.
     grille = lire("hauteurs du sursol", fetch_mnh_grid, west, south, east, north,
@@ -224,7 +257,8 @@ def construire(lat, lon, avancer=None):
     mosaique, _, _ = lire("mosaïque d'orthophoto", fetch_ortho_jpeg, west, south, east, north)
 
     scene = assembler(west, south, east, north, batiments, vegetation, forets,
-                      routes, grille, exg, relief, anneau, sol, eau, lignes, avancer)
+                      routes, grille, exg, relief, anneau, sol, eau, lignes, avancer,
+                      constructions)
     journal.info("Scène %.4f, %.4f : %d bâtiment(s), %d houppier(s), source %s",
                  lat, lon, len(scene["batiments"].get("features", [])),
                  len(scene["houppiers"]), grille.get("source"))
@@ -239,11 +273,11 @@ class Cache:
     pour rien. L'écriture passe par un fichier temporaire renommé : une scène
     lue est toujours une scène entière.
 
-    La couche des monuments OSM se range à côté de la scène, sous la même
-    règle : écrite entière, ou pas du tout.
+    Les couches à part — monuments OSM, ouvrages BD TOPO — se rangent à côté
+    de la scène, sous la même règle : écrites entières, ou pas du tout.
     """
 
-    def __init__(self, dossier, lire_monuments=fetch_monuments):
+    def __init__(self, dossier, lire_monuments=fetch_monuments, lire_ouvrages=fetch_ouvrages):
         self.dossier = dossier
         os.makedirs(dossier, exist_ok=True)
         self._verrous = {}
@@ -251,12 +285,19 @@ class Cache:
         # Constructions en cours, par point : en mémoire, comme les verrous —
         # le service tourne en un seul processus (Dockerfile).
         self._avancements = {}
-        # Lectures d'Overpass lancées en tâche de fond, par point (Future) ;
-        # injectable pour les tests, qui n'appellent pas le réseau.
+        # Lectures lancées en tâche de fond, par couche et par point (Future) ;
+        # les lecteurs sont injectables pour les tests, qui n'appellent pas le
+        # réseau. Un bassin de fils par source : Overpass peut tenir les siens
+        # plus de 100 s, l'IGN n'a pas à attendre derrière lui.
         self.lire_monuments = lire_monuments
-        self._overpass = {}
-        self._taches = concurrent.futures.ThreadPoolExecutor(max_workers=2,
-                                                             thread_name_prefix="overpass")
+        self.lire_ouvrages = lire_ouvrages
+        self._lectures = {}
+        self._taches = {
+            NOM_MONUMENTS: concurrent.futures.ThreadPoolExecutor(
+                max_workers=2, thread_name_prefix="overpass"),
+            NOM_OUVRAGES: concurrent.futures.ThreadPoolExecutor(
+                max_workers=2, thread_name_prefix="ouvrages"),
+        }
 
     def _ecrire(self, dossier, nom, octets):
         """Écrit d'un bloc : un fichier temporaire, renommé une fois complet."""
@@ -323,6 +364,54 @@ class Cache:
                 # Succès ou échec, la construction n'est plus en cours.
                 self._avancements.pop((lat, lon), None)
 
+    def _prelire(self, nom, lat, lon, lire):
+        """Lance en tâche de fond la lecture d'une couche à part, si elle
+        n'est ni en cache ni déjà demandée pour ce point."""
+        lat, lon = point_normalise(lat, lon)
+        if os.path.exists(self.chemin(lat, lon, nom)):
+            return
+        with self._verrou_global:
+            if (nom, lat, lon) not in self._lectures:
+                self._lectures[(nom, lat, lon)] = self._taches[nom].submit(
+                    lire, *emprise(lat, lon))
+
+    def _obtenir_couche(self, nom, lat, lon, construire, lire, indisponible, assembler):
+        """Chemin du dossier où la couche `nom` du point est écrite.
+
+        La couche lit la scène, qui est donc construite d'abord au besoin. La
+        réponse de la source est celle de la tâche de fond si elle a été
+        lancée, sinon elle est lue ici.
+
+        Args:
+            lire: lecture de la source sur une emprise.
+            indisponible: exception levée, à partir du message, si la source
+                n'a pas répondu — rien n'est alors écrit.
+            assembler: (emprise, réponse de la source, scène) -> couche.
+        """
+        dossier = self.obtenir(lat, lon, construire=construire)
+        lat, lon = point_normalise(lat, lon)
+        chemin = os.path.join(dossier, nom)
+        if os.path.exists(chemin):
+            return dossier
+        with self._verrou((nom, lat, lon)):
+            if os.path.exists(chemin):          # écrite pendant l'attente
+                return dossier
+            with self._verrou_global:
+                tache = self._lectures.pop((nom, lat, lon), None)
+            try:
+                brut = tache.result() if tache else lire(*emprise(lat, lon))
+            except Exception as exc:
+                raise indisponible(str(exc)) from exc
+            with gzip.open(os.path.join(dossier, NOM_SCENE), "rt", encoding="utf-8") as f:
+                scene = json.load(f)
+            couche = assembler(emprise(lat, lon), brut, scene)
+            self._ecrire(dossier, nom,
+                         gzip.compress(json.dumps(couche, separators=(",", ":")).encode(), 6))
+            # Une lecture relancée entre-temps (page rechargée) ne sert plus.
+            with self._verrou_global:
+                self._lectures.pop((nom, lat, lon), None)
+            return dossier
+
     def prelire_monuments(self, lat, lon):
         """Lance la lecture d'Overpass en tâche de fond, si la couche OSM du
         point n'est ni en cache ni déjà demandée.
@@ -331,49 +420,45 @@ class Cache:
         réponse arrive pendant la construction, et la couche est souvent prête
         quand la vue la demande.
         """
-        lat, lon = point_normalise(lat, lon)
-        if os.path.exists(self.chemin(lat, lon, NOM_MONUMENTS)):
-            return
-        with self._verrou_global:
-            if (lat, lon) not in self._overpass:
-                self._overpass[(lat, lon)] = self._taches.submit(
-                    self.lire_monuments, *emprise(lat, lon))
+        self._prelire(NOM_MONUMENTS, lat, lon, self.lire_monuments)
 
     def obtenir_monuments(self, lat, lon, construire=construire):
         """Chemin du dossier où la couche OSM du point est écrite.
 
         La couche lit les bâtiments de la scène — les hauteurs de repli des
-        parties, les bâtiments qu'elles remplacent — qui est donc construite
-        d'abord au besoin. La réponse d'Overpass est celle de la tâche de fond
-        si elle a été lancée, sinon elle est lue ici.
+        parties, les bâtiments qu'elles remplacent.
 
         Raises:
             MonumentsIndisponibles si Overpass n'a pas répondu : rien n'est
             écrit, la demande suivante réessaie.
         """
-        dossier = self.obtenir(lat, lon, construire=construire)
-        lat, lon = point_normalise(lat, lon)
-        chemin = os.path.join(dossier, NOM_MONUMENTS)
-        if os.path.exists(chemin):
-            return dossier
-        with self._verrou(("monuments", lat, lon)):
-            if os.path.exists(chemin):          # écrite pendant l'attente
-                return dossier
-            with self._verrou_global:
-                tache = self._overpass.pop((lat, lon), None)
-            try:
-                brut = tache.result() if tache else self.lire_monuments(*emprise(lat, lon))
-            except Exception as exc:
-                raise MonumentsIndisponibles(f"monuments OSM illisibles : {exc}") from exc
-            with gzip.open(os.path.join(dossier, NOM_SCENE), "rt", encoding="utf-8") as f:
-                batiments = json.load(f).get("batiments") or {"features": []}
-            # Parties OSM et bâtiments BD TOPO qu'elles remplacent
-            # (vue3d/monuments.py). None si l'emprise n'en a aucune — le cas de
-            # presque partout, qui est un fait et se met en cache comme tel.
-            couche = monuments_pour_emprise(*emprise(lat, lon), brut, batiments)
-            self._ecrire(dossier, NOM_MONUMENTS,
-                         gzip.compress(json.dumps(couche, separators=(",", ":")).encode(), 6))
-            # Une lecture relancée entre-temps (page rechargée) ne sert plus.
-            with self._verrou_global:
-                self._overpass.pop((lat, lon), None)
-            return dossier
+        # Parties OSM et bâtiments BD TOPO qu'elles remplacent
+        # (vue3d/monuments.py). None si l'emprise n'en a aucune — le cas de
+        # presque partout, qui est un fait et se met en cache comme tel.
+        return self._obtenir_couche(
+            NOM_MONUMENTS, lat, lon, construire, self.lire_monuments,
+            lambda message: MonumentsIndisponibles(f"monuments OSM illisibles : {message}"),
+            lambda bbox, brut, scene: monuments_pour_emprise(
+                *bbox, brut, scene.get("batiments") or {"features": []}))
+
+    def prelire_ouvrages(self, lat, lon):
+        """Lance la lecture des couches d'ouvrages en tâche de fond : quatre
+        petites lectures WFS, finies bien avant la scène."""
+        self._prelire(NOM_OUVRAGES, lat, lon, self.lire_ouvrages)
+
+    def obtenir_ouvrages(self, lat, lon, construire=construire):
+        """Chemin du dossier où la couche des ouvrages du point est écrite.
+
+        La couche lit le relief de la scène (la hauteur d'un mur est
+        l'altitude de son sommet moins le relief), ses masses de sursol
+        (celles qu'un ouvrage explique) et ses routes (la largeur d'un pont).
+
+        Raises:
+            OuvragesIndisponibles si une couche de l'IGN n'a pas répondu :
+            rien n'est écrit, la demande suivante réessaie.
+        """
+        return self._obtenir_couche(
+            NOM_OUVRAGES, lat, lon, construire, self.lire_ouvrages,
+            lambda message: OuvragesIndisponibles(f"ouvrages illisibles : {message}"),
+            lambda bbox, brut, scene: ouvrages_pour_emprise(
+                *bbox, brut, scene.get("relief"), scene.get("masses"), scene.get("routes")))

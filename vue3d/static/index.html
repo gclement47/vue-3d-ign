@@ -45,19 +45,20 @@
         #haut-gauche { position:absolute; left:12px; top:12px; z-index:2; max-width:calc(100% - 110px);
                        display:flex; flex-direction:column; align-items:flex-start; gap:6px;
                        pointer-events:none; }
-        #hint, #etat-monuments { background:rgba(31,35,40,.88); color:#e8eaed; font-size:11px;
-                                 padding:6px 10px; border-radius:5px; }
+        #hint, .etat-couche { background:rgba(31,35,40,.88); color:#e8eaed; font-size:11px;
+                              padding:6px 10px; border-radius:5px; }
         /* Sur la vue, pas dans le panneau : la couche OSM peut mettre plus de
-           100 s à venir, et c'est la scène qu'on regarde en l'attendant. */
-        #etat-monuments { display:flex; align-items:center; gap:8px; }
-        #etat-monuments[hidden] { display:none; }
-        #etat-monuments .roue { display:none; flex:none; box-sizing:border-box; width:12px; height:12px;
-                                border-radius:50%; border:2px solid rgba(255,255,255,.25);
-                                border-top-color:var(--accent); animation:tourner .8s linear infinite; }
-        #etat-monuments.en-cours .roue { display:block; }
+           100 s à venir, et c'est la scène qu'on regarde en l'attendant. Un
+           indicateur par couche chargée après la scène. */
+        .etat-couche { display:flex; align-items:center; gap:8px; }
+        .etat-couche[hidden] { display:none; }
+        .etat-couche .roue { display:none; flex:none; box-sizing:border-box; width:12px; height:12px;
+                             border-radius:50%; border:2px solid rgba(255,255,255,.25);
+                             border-top-color:var(--accent); animation:tourner .8s linear infinite; }
+        .etat-couche.en-cours .roue { display:block; }
         @keyframes tourner { to { transform:rotate(360deg); } }
         /* Ralentie plutôt qu'arrêtée : immobile, la roue ne dirait plus « en cours ». */
-        @media (prefers-reduced-motion: reduce) { #etat-monuments .roue { animation-duration:3s; } }
+        @media (prefers-reduced-motion: reduce) { .etat-couche .roue { animation-duration:3s; } }
         #boussole { position:absolute; top:14px; right:14px; z-index:3; width:64px; height:64px;
                     border-radius:50%; background:rgba(31,35,40,.85); border:1px solid var(--line);
                     pointer-events:none; }
@@ -130,6 +131,8 @@
                 <button class="toggle on" id="t-eau">Eau</button>
                 <button class="toggle on" id="t-routes">Routes</button>
                 <button class="toggle on" id="t-lignes">Lignes HT</button>
+                <button class="toggle on" id="t-constructions" hidden title="Réservoirs, torchères, cheminées, antennes et mâts de la BD TOPO">Réservoirs, mâts</button>
+                <button class="toggle on" id="t-ouvrages" hidden title="Murs, ponts, voies ferrées et terrains de sport de la BD TOPO">Murs, ponts, rails</button>
                 <button class="toggle" id="t-moi">Ma position</button>
             </div>
             <div class="row">
@@ -220,7 +223,8 @@
     <div id="scene">
         <div id="haut-gauche">
             <div id="hint">Glisser pour pivoter · molette pour zoomer · survol pour mesurer · clic sur un bâtiment pour sa fiche</div>
-            <div id="etat-monuments" role="status" hidden><i class="roue"></i><span></span></div>
+            <div id="etat-monuments" class="etat-couche" role="status" hidden><i class="roue"></i><span></span></div>
+            <div id="etat-ouvrages" class="etat-couche" role="status" hidden><i class="roue"></i><span></span></div>
         </div>
         <div id="attente" hidden></div>
         <div id="boussole" title="Orientation">
@@ -908,6 +912,8 @@ function majCiblesSurvol() {
         ...groupeVegetation.children.filter(o => o.userData.vegetation));
     // Déclarés en `var` plus bas : undefined tant que ce bloc n'est pas évalué.
     if (groupeLignes && groupeLignes.visible) ciblesSurvol.push(...pylonesSurvol);
+    if (groupeConstructions && groupeConstructions.visible) ciblesSurvol.push(...constructionsSurvol);
+    if (groupeOuvrages && groupeOuvrages.visible) ciblesSurvol.push(...ouvragesSurvol);
 }
 
 /** Point dans polygone par lancer de rayon. Coordonnées en degrés (lon, lat). */
@@ -1367,12 +1373,13 @@ const ATTENTE_MONUMENTS_S = 30;
 const RETARD_ETAT_MONUMENTS_MS = 300;
 
 /** Indicateur posé sur la vue ; la roue tourne tant qu'une réponse est attendue. */
-function etatMonuments(texte, enCours = false) {
-    const etat = document.getElementById('etat-monuments');
+function etatCouche(id, texte, enCours = false) {
+    const etat = document.getElementById(id);
     etat.hidden = !texte;
     etat.classList.toggle('en-cours', enCours);
     etat.querySelector('span').textContent = texte || '';
 }
+const etatMonuments = (texte, enCours = false) => etatCouche('etat-monuments', texte, enCours);
 
 async function chargerMonuments(essai = 1) {
     // Au premier essai seulement : ensuite l'indicateur est déjà affiché.
@@ -1590,6 +1597,7 @@ chargerScene()
         // ce chaînage plutôt qu'un chargement en parallèle.
         activerVegetation();
         chargerMonuments();
+        chargerOuvrages();
     })
     .catch(err => {
         note.textContent = 'Chargement impossible : ' + err.message;
@@ -2191,6 +2199,8 @@ function appliquerExageration() {
     if (anneauRelief) deplacerAnneau();
     if (drapes.length) placerDrapes();
     if (lignesElec.length) placerLignes();
+    if (constructionsPosees && constructionsPosees.length) placerConstructions();
+    if (ouvragesPoses && ouvragesPoses.length) placerOuvrages();
     // Le grand plan gris sert de fond au-delà de l'emprise, et sous les trous
     // de l'anneau : on le glisse sous le point le plus bas du terrain pour
     // qu'il ne le traverse pas.
@@ -2281,6 +2291,9 @@ async function chargerRelief() {
         construireEau();            // à plat, faute de terrain
         construireRoutes();
         construireLignes();
+        construireConstructions();
+        reliefRegle = true;
+        construireOuvrages();
         return;
     }
 
@@ -2328,6 +2341,9 @@ async function chargerRelief() {
     construireEau();
     construireRoutes();
     construireLignes();
+    construireConstructions();
+    reliefRegle = true;
+    construireOuvrages();
     sourceRelief = source.nom;
     majCredits();
 
@@ -2787,6 +2803,412 @@ document.getElementById('t-eau').addEventListener('click', e => {
     groupeEau.visible = !groupeEau.visible;
     e.currentTarget.classList.toggle('on', groupeEau.visible);
 });
+// --- Réservoirs et constructions ponctuelles --------------------------------
+// Citernes, châteaux d'eau, torchères, cheminées, antennes et mâts de la BD
+// TOPO (vue3d/constructions.py), dans la scène parce que le serveur les retire
+// du sursol avant de segmenter les houppiers. Un réservoir est son emprise,
+// montée à sa hauteur. Une construction ponctuelle n'est qu'un point et une
+// hauteur : son rayon est celui de sa tache dans le MNH quand le LiDAR la voit
+// (2,8 m en médiane sur 52 d'entre elles), sinon une convention par nature.
+const MAT_RESERVOIR = new THREE.MeshStandardMaterial({ color: 0xd4d8db, roughness: 0.5, metalness: 0.3 });
+const MAT_CHEMINEE = new THREE.MeshStandardMaterial({ color: 0xb3a79b, roughness: 0.9 });
+// `var` : majCiblesSurvol() et appliquerExageration() les lisent avant que ce
+// bloc soit évalué.
+var groupeConstructions = new THREE.Group();
+scene.add(groupeConstructions);
+var constructionsPosees = [];     // { objet, contour } ou { objet, lon, lat }
+var constructionsSurvol = [];
+const SOURCES_HAUTEUR = { bdtopo: 'BD TOPO', lidar_hd: 'mesurée au LiDAR',
+                          mns_mnt: 'estimée par photogrammétrie' };
+const enMetres = v => v.toFixed(1).replace('.', ',') + ' m';
+
+/** Volume d'une construction ponctuelle, pied à y = 0, et son matériau. */
+function volumeConstruction(p) {
+    const borne = (v, min, max) => Math.min(Math.max(v, min), max);
+    let geo, materiau = MAT_PYLONE;
+    if (p.nature === 'Cheminée') {
+        // Fût légèrement conique. Sans mesure, un quatorzième de la hauteur :
+        // le rapport médian de neuf cheminées de 30 à 57 m que le LiDAR voit
+        // (1,1 à 3,9 m de rayon).
+        const r = p.r ?? borne(p.h / 14, 0.8, 4);
+        geo = new THREE.CylinderGeometry(r * 0.7, r, p.h, 16);
+        materiau = MAT_CHEMINEE;
+    } else if (p.r != null) {
+        // Vue par le LiDAR : un volume plein, du rayon de sa tache.
+        geo = new THREE.CylinderGeometry(p.r, p.r, p.h, 12);
+    } else if (p.nature === 'Torchère') {
+        // Que le LiDAR ne voit pas : un tube nu, d'un mètre par convention.
+        geo = new THREE.CylinderGeometry(0.5, 0.5, p.h, 8);
+    } else {
+        // Antenne, mât d'éclairage : un treillis que le MNH ne retient pas,
+        // dessiné dans les proportions du fût d'un pylône (construireLignes).
+        const r = borne(p.h / 20, 0.3, 1.8);
+        geo = new THREE.CylinderGeometry(r * 0.2, r, p.h, 4);
+    }
+    geo.translate(0, p.h / 2, 0);
+    return [geo, materiau];
+}
+
+function construireConstructions() {
+    const c = ARTEFACT && ARTEFACT.constructions;
+    if (!c || constructionsPosees.length) return;
+    const source = s => SOURCES_HAUTEUR[s] || s;
+    for (const r of c.reservoirs || []) {
+        if (!r.contour || r.contour.length < 4) continue;
+        // Hauteur inconnue — ni déclarée, ni vue du LiDAR : un étage, pâle,
+        // comme un bâtiment sous les arbres.
+        const h = r.h ?? HAUTEUR_PAR_ETAGE;
+        const geo = new THREE.ExtrudeGeometry(anneauVersShape(r.contour, r.trous || []),
+                                              { depth: h, bevelEnabled: false });
+        geo.rotateX(-Math.PI / 2);
+        // Robe lissée (24 côtés, 15° entre deux), arête du toit vive.
+        const mesh = new THREE.Mesh(toCreasedNormals(geo, ANGLE_PLI_TOIT),
+                                    r.h == null ? MAT_INCONNU : MAT_RESERVOIR);
+        mesh.castShadow = true; mesh.receiveShadow = true;
+        mesh.userData = { infobulle: `<b>${r.nom || r.nature || 'Réservoir'}</b>`
+            + (r.nom && r.nature ? `<br>${r.nature}` : '')
+            + (r.h == null
+                ? `<br><b>hauteur inconnue</b> : ni la BD TOPO ni le LiDAR ne la donnent`
+                  + `<br>dessiné à ${h.toFixed(0)} m`
+                : `<br>${enMetres(r.h)} <i>(${source(r.source)})</i>`)
+            + (r.coupe ? '<br><i>coupé au bord de la scène</i>' : '') };
+        groupeConstructions.add(mesh);
+        constructionsPosees.push({ objet: mesh, contour: r.contour });
+        constructionsSurvol.push(mesh);
+    }
+    for (const p of c.ponctuelles || []) {
+        const [geo, materiau] = volumeConstruction(p);
+        const mesh = new THREE.Mesh(geo, materiau);
+        mesh.castShadow = true;
+        const [x, y] = toLocal(p.lon, p.lat);
+        mesh.position.set(x, 0, -y);
+        mesh.userData = { infobulle: `<b>${p.nom || p.detail || p.nature}</b>`
+            + ((p.nom || p.detail) ? `<br>${p.nature}` : '')
+            + `<br>${enMetres(p.h)} <i>(${source(p.source)})</i>`
+            + (p.r != null ? `<br>emprise de ${enMetres(2 * p.r)} mesurée au LiDAR`
+                           : `<br><i>le LiDAR ne la voit pas : largeur de convention</i>`) };
+        groupeConstructions.add(mesh);
+        constructionsPosees.push({ objet: mesh, lon: p.lon, lat: p.lat });
+        constructionsSurvol.push(mesh);
+    }
+    document.getElementById('t-constructions').hidden = !constructionsPosees.length;
+    placerConstructions();
+    majCiblesSurvol();
+}
+
+/** Pieds sur le sol exagéré, hauteurs réelles : la règle des bâtiments. */
+function placerConstructions() {
+    for (const c of constructionsPosees) {
+        c.objet.position.y = c.contour ? baseBatiment(c.contour)
+            : (relief && terrain ? ySol(c.lon, c.lat) - ENFONCEMENT : 0);
+    }
+}
+
+document.getElementById('t-constructions').addEventListener('click', e => {
+    groupeConstructions.visible = !groupeConstructions.visible;
+    e.currentTarget.classList.toggle('on', groupeConstructions.visible);
+    majCiblesSurvol();
+});
+
+// --- Ouvrages : murs, ponts, voies ferrées, terrains de sport ------------------
+// Une couche à part (/api/ouvrages, vue3d/ouvrages.py), demandée une fois la
+// scène affichée, comme les monuments OSM : rien de ce qu'elle décrit n'entre
+// dans un calcul de la scène.
+//
+// Voies au sol et terrains sont drapés sur le relief, comme les routes. Murs,
+// ponts et voies sur ouvrage sont des volumes : la BD TOPO donne l'ALTITUDE du
+// haut de l'ouvrage à chaque sommet, le pied ou le dessous se comptent depuis
+// le relief de la scène. Un pont n'est que son tablier : ni piles ni arches ne
+// sont décrites, et l'aqueduc du Pont du Gard est un ruban à 48 m du Gardon.
+const URL_OUVRAGES = `api/ouvrages?${REQUETE}`;
+// Un sommet tous les 2 m le long d'un ouvrage : la maille du terrain, que le
+// pied d'un mur doit suivre.
+const OUVRAGE_PAS = 2;
+// Conventions : la BD TOPO ne donne l'épaisseur ni d'un mur, ni d'un tablier,
+// ni d'un ballast.
+const MUR_EPAISSEUR = 1;
+const TABLIER_EPAISSEUR = 1;
+const BALLAST_EPAISSEUR = 0.3;
+// Sous les routes (ROUTE_DECALAGE) pour les terrains, entre routes et eau pour
+// les voies : un passage à niveau montre la voie, un terrain ne couvre rien.
+// Les terrains s'étagent d'un centimètre par nature, la plus étendue dessous :
+// une piste d'athlétisme entoure son terrain de football, et deux aplats à la
+// même hauteur scintilleraient l'un dans l'autre.
+const TERRAIN_SPORT_DECALAGE = 0.04;
+const TERRAIN_SPORT_ETAGE = 0.01;
+const VOIE_DECALAGE = 0.12;
+// Un tablier ne passe jamais sous le relief : à ses culées, l'altitude BD TOPO
+// et le RGE ALTI diffèrent d'un mètre ou deux, dans un sens ou dans l'autre.
+const TABLIER_PLANCHER = 0.15;
+const MAT_MUR = new THREE.MeshStandardMaterial({ color: 0xa79d8e, roughness: 0.95, flatShading: true });
+const MAT_TABLIER = new THREE.MeshStandardMaterial({ color: 0x8b8f95, roughness: 0.9, flatShading: true });
+const MAT_BALLAST_VOLUME = new THREE.MeshStandardMaterial({ color: 0x6a5f58, roughness: 1, flatShading: true });
+const MAT_BALLAST = MAT_ROUTE.clone();
+MAT_BALLAST.color.set(0x6a5f58);
+// L'orthophoto montre déjà le terrain : l'aplat s'y superpose, translucide, et
+// le dit encore sur le Plan IGN.
+const COULEURS_TERRAIN = {
+    'Grand terrain de sport': 0x4f8f4a, 'Petit terrain multi-sports': 0x5d8f77,
+    'Terrain de tennis': 0xb5673f, 'Piste de sport': 0xa8503c, 'Bassin de natation': 0x3f8fbf,
+};
+const MATS_TERRAIN = new Map();
+function materiauTerrain(nature) {
+    if (!MATS_TERRAIN.has(nature)) {
+        const m = MAT_ROUTE.clone();
+        m.color.set(COULEURS_TERRAIN[nature] || 0x6f9f6a);
+        m.opacity = 0.5;
+        MATS_TERRAIN.set(nature, m);
+    }
+    return MATS_TERRAIN.get(nature);
+}
+let OUVRAGES = null;
+var groupeOuvrages = new THREE.Group();
+scene.add(groupeOuvrages);
+var ouvragesPoses = [];        // volumes : { mesh, alts, hauts }
+var ouvragesSurvol = [];
+// Le relief a répondu, ou a fini d'échouer : les ouvrages peuvent être posés.
+var reliefRegle = false;
+let ouvragesConstruits = false;
+// Murs et ponts dessinés : les masses du MNH qu'ils expliquent sont retirées.
+let ouvragesEnVolume = false;
+
+/**
+ * Stations d'une ligne [lon, lat, z], tous les `pas` mètres : position en
+ * mètres locaux, altitude interpolée, normale unitaire à gauche du sens de
+ * parcours.
+ */
+function stationsLeLong(ligne, pas) {
+    const brut = ligne.map(([lo, la, z]) => [...toLocal(lo, la), z]);
+    const pts = [brut[0]];
+    for (let i = 1; i < brut.length; i++) {
+        const [ax, ay, az] = brut[i - 1], [bx, by, bz] = brut[i];
+        const d = Math.hypot(bx - ax, by - ay);
+        if (d === 0) continue;                  // sommet doublé : pas de normale
+        const n = Math.ceil(d / pas);
+        for (let k = 1; k <= n; k++) pts.push([ax + (bx - ax) * k / n, ay + (by - ay) * k / n, az + (bz - az) * k / n]);
+    }
+    return pts.map((p, i) => {
+        const a = pts[Math.max(i - 1, 0)], b = pts[Math.min(i + 1, pts.length - 1)];
+        const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1;
+        return { x: p[0], y: p[1], z: p[2], nx: -dy / l, ny: dx / l };
+    });
+}
+
+/**
+ * Volume fermé le long de stations : une section rectangulaire de `largeur`,
+ * entre deux niveaux. `haut` et `bas` donnent, pour une station, le niveau de
+ * ses sommets : { z, dz } — altitude absolue (null : le sol) et décalage.
+ * Triangles orientés vers l'extérieur, en mètres locaux.
+ */
+function prismeLeLong(stations, largeur, haut, bas) {
+    const coin = (s, cote, niveau) => ({ x: s.x + cote * s.nx * largeur / 2,
+                                         y: s.y + cote * s.ny * largeur / 2, ...niveau(s) });
+    const tris = [];
+    const quad = (a, b, c, d) => tris.push([a, b, c], [a, c, d]);
+    for (let i = 0; i < stations.length - 1; i++) {
+        const s = stations[i], t = stations[i + 1];
+        const gb0 = coin(s, 1, bas), gh0 = coin(s, 1, haut), db0 = coin(s, -1, bas), dh0 = coin(s, -1, haut);
+        const gb1 = coin(t, 1, bas), gh1 = coin(t, 1, haut), db1 = coin(t, -1, bas), dh1 = coin(t, -1, haut);
+        quad(gh0, dh0, dh1, gh1);                                  // dessus
+        quad(gb0, gb1, db1, db0);                                  // dessous
+        quad(gb0, gh0, gh1, gb1);                                  // flanc gauche
+        quad(db0, db1, dh1, dh0);                                  // flanc droit
+        if (i === 0) quad(gb0, db0, dh0, gh0);                     // about de départ
+        if (i === stations.length - 2) quad(gb1, gh1, dh1, db1);   // about d'arrivée
+    }
+    return tris;
+}
+
+/**
+ * Dalle fermée sur un contour [lon, lat, z] et ses trous : dessus à l'altitude
+ * des sommets, dessous `epaisseur` plus bas, chants entre les deux.
+ */
+function dalle(contour, trous, epaisseur) {
+    const local = a => a.map(([lo, la, z]) => { const [x, y] = toLocal(lo, la); return { x, y, z }; });
+    const plans = a => a.map(p => new THREE.Vector2(p.x, p.y));
+    const anneaux = [local(contour), ...trous.map(local)];
+    const traces = anneaux.map(plans);
+    // triangulateShape retire les sommets de fermeture en place : les index
+    // renvoyés portent sur les tableaux ainsi raccourcis.
+    const faces = THREE.ShapeUtils.triangulateShape(traces[0], traces.slice(1));
+    const ouverts = anneaux.map((a, i) => a.slice(0, traces[i].length));
+    const pts = ouverts.flat();
+    const dessus = p => ({ ...p, dz: 0 }), dessous = p => ({ ...p, dz: -epaisseur });
+    const tris = [];
+    for (const [a, b, c] of faces) {
+        const [p, q, r] = [pts[a], pts[b], pts[c]];
+        const aire = (q.x - p.x) * (r.y - p.y) - (r.x - p.x) * (q.y - p.y);
+        const [u, v, w] = aire >= 0 ? [p, q, r] : [p, r, q];        // trigonométrique vu du ciel
+        tris.push([dessus(u), dessus(v), dessus(w)], [dessous(u), dessous(w), dessous(v)]);
+    }
+    ouverts.forEach((a, n) => {
+        // Matière à gauche du parcours : le contour en sens trigonométrique,
+        // un trou dans le sens des aiguilles.
+        let aire = 0;
+        for (let i = 0; i < a.length; i++) { const p = a[i], q = a[(i + 1) % a.length]; aire += p.x * q.y - q.x * p.y; }
+        const tour = (aire >= 0) === (n === 0) ? a : a.slice().reverse();
+        for (let i = 0; i < tour.length; i++) {
+            const p = tour[i], q = tour[(i + 1) % tour.length];
+            tris.push([dessous(p), dessous(q), dessus(q)], [dessous(p), dessus(q), dessus(p)]);
+        }
+    });
+    return tris;
+}
+
+/** Altitude du terrain sous un point local, ramené dans l'emprise (maillageDrape). */
+function altSolBorne(x, y) {
+    if (!terrain) return null;
+    const [lo, la] = toLonLat(x, y);
+    return terrain.alt(Math.min(Math.max(lo, BORNES.o), BORNES.e),
+                       Math.min(Math.max(la, BORNES.s), BORNES.n));
+}
+
+/**
+ * Un volume posé sur le relief, à partir de triangles de sommets
+ * { x, y, z, dz }. Sa hauteur au-dessus du sol est fixée ici, une fois : z − sol
+ * (au moins `plancher`), ou 0 si z est null, plus dz. placerOuvrages() n'a plus
+ * qu'à suivre l'exagération du relief.
+ */
+function maillagePose(tris, materiau, plancher) {
+    const n = tris.length * 3;
+    const positions = new Float32Array(n * 3);
+    const alts = new Float64Array(n), hauts = new Float32Array(n);
+    let k = 0;
+    for (const t of tris) {
+        for (const s of t) {
+            positions[k * 3] = s.x; positions[k * 3 + 2] = -s.y;
+            const a = altSolBorne(s.x, s.y);
+            alts[k] = a == null ? NaN : a;
+            hauts[k] = (s.z == null || a == null ? 0 : Math.max(s.z - a, plancher)) + s.dz;
+            k++;
+        }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const mesh = new THREE.Mesh(geo, materiau);
+    mesh.castShadow = true; mesh.receiveShadow = true;
+    groupeOuvrages.add(mesh);
+    ouvragesPoses.push({ mesh, alts, hauts });
+    return mesh;
+}
+
+/** Même règle que le terrain : le sol suit l'exagération, les hauteurs restent vraies. */
+function placerOuvrages() {
+    for (const { mesh, alts, hauts } of ouvragesPoses) {
+        const pos = mesh.geometry.attributes.position;
+        for (let k = 0; k < pos.count; k++) {
+            const a = alts[k];
+            pos.setY(k, (relief && terrain && !Number.isNaN(a) ? (a - altitudeRef) * exagVert : 0) + hauts[k]);
+        }
+        pos.needsUpdate = true;
+        mesh.geometry.computeVertexNormals();
+        mesh.geometry.computeBoundingSphere();
+    }
+}
+
+function construireOuvrages() {
+    if (!OUVRAGES || !reliefRegle || ouvragesConstruits) return;
+    ouvragesConstruits = true;
+    const polygones = g => g.type === 'Polygon' ? [g.coordinates]
+                         : g.type === 'MultiPolygon' ? g.coordinates : [];
+    // Un maillage par matériau plutôt que par objet, comme les routes.
+    const ballast = [];
+    for (const v of OUVRAGES.voies) if (v.au_sol) ballast.push(...trianglesRuban(v.ligne, v.largeur_m));
+    if (ballast.length) maillageDrape(ballast, MAT_BALLAST, groupeOuvrages, VOIE_DECALAGE);
+    const parNature = new Map();
+    for (const t of OUVRAGES.terrains) {
+        if (!parNature.has(t.nature)) parNature.set(t.nature, []);
+        for (const p of polygones(t.geometrie)) parNature.get(t.nature).push(...subdiviser(trianglesPolygone(p), EAU_MAILLE));
+    }
+    const aire = tris => tris.reduce((somme, [a, b, c]) =>
+        somme + Math.abs((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])) / 2, 0);
+    [...parNature].filter(([, tris]) => tris.length)
+        .sort((u, v) => aire(v[1]) - aire(u[1]))
+        .forEach(([nature, tris], rang) => maillageDrape(
+            tris, materiauTerrain(nature), groupeOuvrages,
+            TERRAIN_SPORT_DECALAGE + TERRAIN_SPORT_ETAGE * rang));
+    placerDrapes();
+
+    // Les volumes se comptent depuis le relief : sans lui, ni mur ni pont.
+    if (terrain) {
+        const auSol = () => ({ z: null, dz: -ENFONCEMENT });
+        const sommet = dz => s => ({ z: s.z, dz });
+        for (const m of OUVRAGES.murs) {
+            const stations = stationsLeLong(m.ligne, OUVRAGE_PAS);
+            if (stations.length < 2) continue;
+            const mesh = maillagePose(prismeLeLong(stations, MUR_EPAISSEUR, sommet(0), auSol), MAT_MUR, 0);
+            mesh.userData = { infobulle: `<b>${m.nom || m.detail || m.nature}</b>`
+                + `<br>haut de ${enMetres(m.h)} <i>(altitude BD TOPO de son sommet, moins le relief)</i>` };
+            ouvragesSurvol.push(mesh);
+        }
+        for (const p of OUVRAGES.ponts) {
+            let tris;
+            if (p.ligne) {
+                const stations = stationsLeLong(p.ligne, OUVRAGE_PAS);
+                if (stations.length < 2) continue;
+                tris = prismeLeLong(stations, p.largeur_m, sommet(0), sommet(-TABLIER_EPAISSEUR));
+            } else {
+                tris = dalle(p.contour, p.trous || [], TABLIER_EPAISSEUR);
+            }
+            const mesh = maillagePose(tris, MAT_TABLIER, TABLIER_PLANCHER);
+            mesh.userData = { infobulle: `<b>${p.nom || p.detail || p.nature}</b>`
+                + ((p.nom || p.detail) ? `<br>${p.nature}` : '')
+                + `<br>tablier jusqu'à ${enMetres(p.h)} du sol <i>(altitude BD TOPO, moins le relief)</i>`
+                + (p.ligne ? `<br>large de ${enMetres(p.largeur_m)} `
+                             + (p.largeur_mesuree ? '<i>(chaussée BD TOPO)</i>' : '<i>(convention)</i>') : '')
+                + '<br><i>piles et arches ne sont pas décrites</i>' };
+            ouvragesSurvol.push(mesh);
+        }
+        // Voies sur ouvrage : un ballast posé à leur altitude, sur le tablier.
+        const ballastHaut = [];
+        for (const v of OUVRAGES.voies) {
+            if (v.au_sol) continue;
+            const stations = stationsLeLong(v.ligne, OUVRAGE_PAS);
+            if (stations.length >= 2) ballastHaut.push(...prismeLeLong(stations, v.largeur_m, sommet(BALLAST_EPAISSEUR), sommet(0)));
+        }
+        if (ballastHaut.length) maillagePose(ballastHaut, MAT_BALLAST_VOLUME, TABLIER_PLANCHER);
+        ouvragesEnVolume = ouvragesSurvol.length > 0;
+        placerOuvrages();
+    }
+    document.getElementById('t-ouvrages').hidden = !groupeOuvrages.children.length;
+    majCiblesSurvol();
+    // Les masses qu'un mur ou un tablier explique quittent la végétation.
+    if (ouvragesEnVolume && vegPrete) construireVegetation();
+}
+
+async function chargerOuvrages(essai = 1) {
+    // Au premier essai seulement : ensuite l'indicateur est déjà affiché.
+    const retard = setTimeout(
+        () => etatCouche('etat-ouvrages', 'Ouvrages BD TOPO : chargement…', true),
+        essai === 1 ? RETARD_ETAT_MONUMENTS_MS : 0);
+    try {
+        const r = await fetch(URL_OUVRAGES);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const o = await r.json();
+        clearTimeout(retard);
+        etatCouche('etat-ouvrages', null);
+        if (!o) return;                       // aucun ouvrage sur l'emprise
+        OUVRAGES = o;
+        construireOuvrages();
+    } catch (e) {
+        clearTimeout(retard);
+        if (essai >= ESSAIS_MONUMENTS) {
+            etatCouche('etat-ouvrages', 'Ouvrages BD TOPO indisponibles : recharger la page pour réessayer.');
+            return;
+        }
+        // La roue reste : un nouvel essai est prévu, le chargement n'est pas fini.
+        etatCouche('etat-ouvrages', `Ouvrages BD TOPO indisponibles : nouvel essai dans ${ATTENTE_MONUMENTS_S} s.`, true);
+        setTimeout(() => chargerOuvrages(essai + 1), ATTENTE_MONUMENTS_S * 1000);
+    }
+}
+
+document.getElementById('t-ouvrages').addEventListener('click', e => {
+    groupeOuvrages.visible = !groupeOuvrages.visible;
+    e.currentTarget.classList.toggle('on', groupeOuvrages.visible);
+    majCiblesSurvol();
+    if (ouvragesEnVolume && vegPrete) construireVegetation();
+});
+
 // --- Végétation et sursol (MNH LiDAR HD) ---------------------------------
 // La BD TOPO dit OÙ est la végétation mais jamais sa hauteur : `zone_de_vegetation`
 // n'expose que la nature et la géométrie. La hauteur vient du MNH LiDAR HD, une
@@ -3338,9 +3760,16 @@ var vegElements = [];   // houppiers et masses reçus du serveur, en local
  */
 function construireVegetation() {
     groupeVegetation.clear();
+    // Un rempart ou un tablier est, pour le MNH, du sursol non végétal : les
+    // masses qu'un ouvrage affiché explique lui laissent la place
+    // (vue3d/ouvrages.py), comme un bâtiment à ses parties OSM.
+    const expliquees = ouvragesEnVolume && groupeOuvrages.visible
+        ? new Set(OUVRAGES.masses_expliquees) : null;
+    const dessines = expliquees
+        ? vegElements.filter(e => e.masse == null || !expliquees.has(e.masse)) : vegElements;
     for (const [genre, elements, mat] of [
-            ['houppier', vegElements.filter(e => e.classe === 'vegetation'), MAT_FEUILLAGE],
-            ['masse', vegElements.filter(e => e.classe !== 'vegetation'), MAT_MASSE]]) {
+            ['houppier', dessines.filter(e => e.classe === 'vegetation'), MAT_FEUILLAGE],
+            ['masse', dessines.filter(e => e.classe !== 'vegetation'), MAT_MASSE]]) {
         if (!elements.length) continue;
         const tampon = nouveauTampon();
         const facesDebut = [];
@@ -3445,9 +3874,12 @@ async function chargerVegetation() {
     }
 
     // lon/lat conservés : c'est par eux qu'on interroge l'altitude du terrain.
-    vegElements = [...(res.houppiers || []), ...(res.masses || [])].map(el => {
+    // `masse` : rang dans les masses de la scène, par lequel la couche des
+    // ouvrages désigne celles qu'elle explique.
+    const nHouppiers = (res.houppiers || []).length;
+    vegElements = [...(res.houppiers || []), ...(res.masses || [])].map((el, i) => {
         const [x, y] = toLocal(el.lon, el.lat);
-        return { ...el, x, y };
+        return { ...el, x, y, masse: i >= nHouppiers ? i - nHouppiers : null };
     });
     vegPrete = true;
     construireVegetation();
@@ -3595,6 +4027,14 @@ renderer.domElement.addEventListener('pointermove', e => {
             + (u.gestionnaire ? `<br>${u.gestionnaire}` : '')
             + `<br>pylône ${u.h.toFixed(1)} m `
             + (u.mesuree ? '<i>(BD TOPO)</i>' : '<i>(hauteur typique de la tension)</i>');
+        tip.style.display = 'block';
+        tip.style.left = (e.clientX - r.left + 14) + 'px';
+        tip.style.top = (e.clientY - r.top + 14) + 'px';
+        return;
+    }
+
+    if (touche && touche.object.userData.infobulle) {
+        tip.innerHTML = touche.object.userData.infobulle;
         tip.style.display = 'block';
         tip.style.left = (e.clientX - r.left + 14) + 'px';
         tip.style.top = (e.clientY - r.top + 14) + 'px';

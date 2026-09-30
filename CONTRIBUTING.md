@@ -66,11 +66,12 @@ En conteneur : `docker compose up -d --build`, sur le port 8080 (ou
 flowchart LR
     P["Page<br/>static/index.html<br/>three.js"] -->|"GET /api/scene"| A["app.py<br/>Flask"]
     P -.->|"GET /api/avancement<br/>toutes les 0,5 s"| A
-    P -.->|"GET /api/monuments<br/>après la scène"| A
+    P -.->|"GET /api/monuments<br/>GET /api/ouvrages<br/>après la scène"| A
     A --> C{"Cache<br/>scene.py"}
-    C -->|"déjà construite"| D[("cache/vN/lat_lon/<br/>scene.json.gz · ortho.jpg<br/>monuments.json.gz")]
-    C -->|"absente : verrou par point"| B["construire()<br/>14 lectures"]
+    C -->|"déjà construite"| D[("cache/vN/lat_lon/<br/>scene.json.gz · ortho.jpg<br/>monuments.json.gz<br/>ouvrages-vM.json.gz")]
+    C -->|"absente : verrou par point"| B["construire()<br/>16 lectures"]
     C -.->|"tâche de fond"| OSM[("Overpass<br/>OpenStreetMap")]
+    C -.->|"tâche de fond :<br/>ouvrages"| G
     B --> G["geopf.get_avec_reprise<br/>3 essais"]
     G --> IGN[("Géoplateforme IGN<br/>WFS · WMS")]
     B --> S["assembler()"]
@@ -88,12 +89,14 @@ Le trajet d'une demande, dans l'ordre :
    la même scène. Si elle est déjà sur disque, elle est servie telle quelle.
 3. Sinon, un verrou par point garantit qu'une seule construction a lieu, même
    si plusieurs visiteurs demandent le même lieu en même temps. `construire()`
-   lit alors quatorze sources de l'IGN, l'une après l'autre, et annonce chaque
-   étape pour la barre d'avancement de la page. Pendant ce temps, une tâche de
-   fond interroge Overpass pour les monuments OSM.
+   lit alors seize sources de l'IGN, l'une après l'autre, et annonce chaque
+   étape pour la barre d'avancement de la page. Pendant ce temps, deux tâches
+   de fond lisent les couches à part : Overpass pour les monuments OSM, quatre
+   couches BD TOPO pour les ouvrages.
 4. `assembler()` fait les deux calculs longs : les toitures (`toits.py`, et
    `pans.py` pour les toits que le résumé manque), puis les arbres
-   (`houppiers.py`). La scène est compressée et écrite sur disque de façon
+   (`houppiers.py`), une fois réservoirs et constructions ponctuelles retirés
+   du sursol (`constructions.py`). La scène est compressée et écrite sur disque de façon
    atomique : l'orthophoto d'abord, la scène ensuite, chacune par un fichier
    temporaire renommé.
 5. La page reçoit un seul JSON et construit tout de son côté : bâtiments et
@@ -104,6 +107,10 @@ Le trajet d'une demande, dans l'ordre :
    à côté d'elle ; à son arrivée, la page reconstruit les bâtiments. Si
    Overpass ne répond pas, la page réessaie toutes les 30 s, et la scène reste
    affichée sans ses monuments.
+7. Elle demande de même `/api/ouvrages` : murs, ponts, voies ferrées et
+   terrains de sport, calculés sur les quatre couches lues en tâche de fond,
+   le relief de la scène (la hauteur d'un mur est l'altitude de son sommet
+   moins le relief) et ses masses de sursol (celles qu'un ouvrage explique).
 
 L'emprise d'une scène est un carré de ±0,0016° autour du point : environ
 ±178 m du nord au sud, et ±115 à 130 m d'est en ouest selon la latitude. Un
@@ -114,7 +121,7 @@ anneau de relief grossier s'étend au-delà, sur 2 km de côté.
 | Module | Rôle | À savoir |
 |---|---|---|
 | `app.py` | Routes Flask | `creer_app(dossier_cache, construire)` : la construction est injectable, c'est ainsi que les tests évitent le réseau |
-| `scene.py` | Construction et cache | `SCENE_VERSION` (format), `ETAPES_SCENE` (suivi), `SceneIncomplete`, `Cache` et son verrou par point |
+| `scene.py` | Construction et cache | `SCENE_VERSION` (format), `ETAPES_SCENE` (suivi), `SceneIncomplete`, `Cache` et son verrou par point ; les couches à part y passent par le même chemin (`_prelire`, `_obtenir_couche`) |
 | `geopf.py` | GET avec reprise | 3 essais espacés de 3 s, sur **tout** échec, refus 4xx compris |
 | `batiments.py` | Bâtiments découpés sur l'emprise | Le WFS les rend entiers ; coupés à 1,25 m du bord pour que la grille MNH les encadre, ils portent `coupe` |
 | `couches.py` | Lecture des couches WFS | Le serveur renvoie parfois une erreur Java avec un code 200 : c'est le contenu qui tranche |
@@ -123,10 +130,12 @@ anneau de relief grossier s'étend au-delà, sur 2 km de côté.
 | `toits.py` | Profil de chaque toit | Gouttière, faîtage, corps de toit, bâtiments sous les arbres, choix entre toit résumé, pans et surface |
 | `pans.py` | Toits en pans | Plans ajustés au MNH, volume fermé vérifié, refusé sinon |
 | `houppiers.py` | Arbres, un par un | Bassins de la grille lissée descendus depuis les sommets ; profil radial de chaque arbre |
-| `relief.py` | Relief RGE ALTI et anneau | Quantifié au décimètre ; le service rend −99999 hors couverture |
+| `constructions.py` | Réservoirs et constructions ponctuelles | Hauteur BD TOPO, à défaut LiDAR ; rend aussi le masque qui les retire du sursol des houppiers, jamais embarqué |
+| `relief.py` | Relief RGE ALTI et anneau | Quantifié au décimètre ; le service rend −99999 hors couverture ; `echantillonneur` le relit côté serveur comme la page |
 | `eau.py` | Étendues et cours d'eau | Découpés sur l'emprise ; les axes « fictifs » des rivières larges sont écartés |
 | `lignes.py` | Lignes à haute tension | Hauteur des pylônes BD TOPO, à défaut médiane par tension |
 | `monuments.py` | Parties de monuments OSM | Seule source hors IGN, et la plus lente ; extrait embarqué pour les lieux d'exemple ; règle de remplacement aux deux tiers, enveloppes |
+| `ouvrages.py` | Murs, ponts, voies ferrées, terrains de sport | Couche à part, versionnée par `OUVRAGES_VERSION` ; hauteur d'un mur ou d'un pont = altitude de ses sommets − relief de la scène |
 | `static/index.html` | La page entière | HTML, CSS et JavaScript dans un seul fichier, three.js r160 |
 
 Chaque module commence par une docstring qui dit **pourquoi** il est fait
@@ -135,7 +144,7 @@ code.
 
 ## La page
 
-`vue3d/static/index.html` est un fichier statique d'environ 3 800 lignes, sans
+`vue3d/static/index.html` est un fichier statique d'environ 4 450 lignes, sans
 framework ni build. three.js r160 est chargé depuis jsDelivr par un
 `importmap`. Le fichier est découpé en sections repérées par des commentaires
 `// --- Titre ---` ; les principales, dans l'ordre :
@@ -148,6 +157,8 @@ framework ni build. three.js r160 est chargé depuis jsDelivr par un
 | Bâtiment visé, Chargement des bâtiments | La fiche du bâtiment ; l'arrivée de la scène |
 | Relief, Anneau de relief | Maillage du terrain, fond cartographique drapé |
 | Eau de surface, Routes, Lignes à haute tension | Les couches posées sur le relief |
+| Réservoirs et constructions ponctuelles | Citernes extrudées, torchères, cheminées, antennes et mâts |
+| Ouvrages | La couche `/api/ouvrages` : rubans et aplats drapés, murs et tabliers en volumes fermés (`prismeLeLong`, `dalle`) |
 | Végétation | Rendu des houppiers mesurés |
 | Ma position | Géolocalisation et recentrage |
 | Interactions, Boutons, Soleil et ombres portées | Survol, clics, bascules, course du soleil |
@@ -185,6 +196,7 @@ niveau :
 | `batiments` | La couche BD TOPO (GeoJSON), découpée sur l'emprise : un bâtiment coupé est en 2D et porte `coupe` = `{part, largeur_m}` |
 | `toits` | `{source, resolution_m, ortho, grille, toits: {cleabs: profil}}` |
 | `routes` | Tronçons de route BD TOPO : rubans sur le relief, et point de vue Street View |
+| `constructions` | `{reservoirs, ponctuelles}` : emprises découpées `{nature, nom, h, source, coupe, contour, trous}` et points `{lon, lat, nature, detail, nom, h, source, r}` ; `source` dit d'où vient la hauteur (`bdtopo`, ou celle de la grille MNH), `r` est le rayon mesuré au LiDAR ou `null` |
 | `houppiers`, `masses` | Arbres segmentés, et masses de sursol indéterminées |
 | `vegetation` | Métadonnées : source, couverture, seuils |
 | `relief`, `anneau` | Grilles RGE ALTI quantifiées ; `null` hors couverture |
@@ -193,6 +205,16 @@ niveau :
 Les monuments OSM n'en font pas partie : `/api/monuments` les sert à part,
 `{parties, remplaces}`, ou `null` quand l'emprise n'a aucune partie, le cas le
 plus courant.
+
+Les ouvrages non plus : `/api/ouvrages` rend `{version, murs, ponts, voies,
+terrains, masses_expliquees}`, ou `null` sans ouvrage. Un mur est une `ligne`
+de sommets `[lon, lat, z]`, z étant l'altitude de son sommet ; un pont, une
+`ligne` et sa `largeur_m`, ou un `contour` et ses `trous` ; une voie, une
+`ligne` en `[lon, lat]` au sol (`au_sol`), en `[lon, lat, z]` sur un ouvrage ;
+un terrain, une `geometrie` GeoJSON. `masses_expliquees` liste les rangs, dans
+`masses`, de celles que la page retire quand la couche est affichée. La couche
+a sa propre version, `OUVRAGES_VERSION`, inscrite dans le nom de son fichier :
+la changer ne reconstruit aucune scène.
 
 Le profil d'un toit (`toits.toits[cleabs]`) porte `gouttiere`, `faitage`,
 `denivele`, `fiable`, `axe_deg`, éventuellement `corps` (un toit par corps pour
@@ -211,7 +233,7 @@ LiDAR), et au plus l'une des deux formes mesurées :
 
 **Toute modification du format impose d'incrémenter `SCENE_VERSION`** dans
 `scene.py`, avec une ligne de commentaire qui dit ce qui a changé. Le numéro
-fait partie du chemin du cache (`cache/v10/…`) : l'incrémenter invalide toutes
+fait partie du chemin du cache (`cache/v11/…`) : l'incrémenter invalide toutes
 les scènes d'un coup.
 
 ## Les invariants : ce qu'il ne faut jamais défaire
@@ -313,6 +335,28 @@ Trois autres habitudes complètent celle-ci :
 6. Créditez la source : tableau des sources du README, et crédits de la page si
    sa licence l'exige.
 
+### Dans la scène, ou dans une couche à part ?
+
+Une source dont dépend un calcul de la scène — le masque du sursol, une
+hauteur lue dans la grille MNH, qui n'existe que pendant la construction — va
+dans la scène : c'est le cas des réservoirs, dont les emprises sortent du
+sursol avant la segmentation des houppiers. Une source qui ne fait que
+s'ajouter au dessin peut être une couche à part, servie par sa propre route
+après la scène, comme les ouvrages : la scène ne l'attend pas, n'échoue pas
+avec elle, et n'est pas reconstruite quand son format change. Pour en ajouter
+une :
+
+1. Un module avec une lecture (`fetch_…`, qui laisse remonter l'échec) et une
+   fonction pure (`…_pour_emprise`) qui reçoit la réponse brute et ce qu'elle
+   lit de la scène.
+2. Dans `scene.py`, un nom de fichier versionné, une exception
+   « indisponible », et deux méthodes du `Cache` sur `_prelire` et
+   `_obtenir_couche`, avec un bassin de fils à elle dans `_taches`.
+3. Dans `app.py`, la route, le lecteur injectable de `creer_app`, la lecture
+   anticipée à la demande de la scène, et le 503.
+4. Dans la page, le chargement après la scène, avec reprise et indicateur
+   (`etatCouche`), sur le modèle de `chargerOuvrages`.
+
 ### Changer un seuil
 
 Relancez l'outil de mesure concerné (voir [Outils de mesure](#outils-de-mesure))
@@ -361,10 +405,13 @@ La suite ne touche **jamais** le réseau. Les sources sont remplacées de trois
 façons :
 
 - **Construction injectée.** `creer_app(dossier, construire=faux,
-  lire_monuments=faux)` et `Cache(dossier, lire_monuments=faux)` acceptent une
-  fausse construction et une fausse lecture d'Overpass. La signature de la
-  construction est `(lat, lon, avancer=None)`, celle de la lecture
-  `(ouest, sud, est, nord)`.
+  lire_monuments=faux, lire_ouvrages=faux)` et `Cache(dossier,
+  lire_monuments=faux, lire_ouvrages=faux)` acceptent une fausse construction
+  et de fausses lectures d'Overpass et des couches d'ouvrages. La signature de
+  la construction est `(lat, lon, avancer=None)`, celle des lectures
+  `(ouest, sud, est, nord)`. Une application de test qui sert `/api/scene`
+  doit injecter les deux lectures : la demande de la scène les lance en tâche
+  de fond.
 - **Grilles synthétiques.** Les tests de toitures fabriquent des grilles MNH à
   partir d'une fonction de hauteur (voir `_grille` dans `test_pans.py` ou
   `_grille_surface` dans `test_toits.py`) : un toit à deux pans, une marche, un
@@ -384,6 +431,7 @@ direct. Ils écrivent leurs sorties dans `cache/mesures/`, ignoré par git.
 |---|---|
 | `essai-navigateur.mjs` | Charge un lieu dans Chrome, clique le bâtiment visé, change de saison, relève toute erreur |
 | `mesure_pans.py` | Toits en pans sur des lieux réels, par le vrai chemin de la scène |
+| `mesure_constructions.py` | Réservoirs, constructions ponctuelles et ouvrages sur des lieux réels : hauteurs, effet du masque sur les houppiers, masses expliquées |
 | `prototype_plans.py` | Couverture de la segmentation en plans selon les tolérances |
 | `prototype_brep.py` | Étanchéité des volumes, avec export OBJ et visionneuse 3D |
 | `mesure_redressement.py` | Part du terrain dans les défauts des surfaces de toit |
@@ -398,9 +446,10 @@ Les scripts de prototype figent en en-tête les résultats obtenus lors de leur
 - **Le cache** est dans `VUE3D_CACHE`, rangé en
   `v{SCENE_VERSION}/{lat}_{lon}/scene.json.gz` et `ortho.jpg`. Supprimez le
   dossier d'un lieu pour le reconstruire seul.
-- **Lire une scène** (10 est la `SCENE_VERSION` actuelle) :
-  `gunzip -c cache/v10/43.9116_5.2003/scene.json.gz | python -m json.tool | less`.
-  La couche OSM est à côté, dans `monuments.json.gz`.
+- **Lire une scène** (11 est la `SCENE_VERSION` actuelle) :
+  `gunzip -c cache/v11/43.9116_5.2003/scene.json.gz | python -m json.tool | less`.
+  Les couches à part sont à côté : `monuments.json.gz`, `ouvrages-v1.json.gz`.
+  Supprimer l'un de ces fichiers refait la seule couche.
 - **Suivre une construction** : `curl 'localhost:8080/api/avancement?lat=…&lon=…'`
   renvoie l'étape en cours. `VUE3D_LOG=DEBUG` rend les journaux du serveur plus
   bavards.
@@ -450,6 +499,20 @@ Des chantiers mesurés, prêts à être repris :
   (134 446 `building:part` au 27 septembre 2026, 10 à 20 Mo compressé),
   publié en fichier de release plutôt que dans l'historique git, supprimerait
   cette attente.
+- **Ponts.** La BD TOPO ne décrit que le tablier : le Pont du Gard est un
+  ruban à 48 m du Gardon, sans arches. Les routes et voies qu'un pont porte
+  ont elles aussi des sommets en 3D et pourraient être dessinées à leur
+  altitude plutôt qu'écartées ; les monuments OSM (`bridge:structure`,
+  `building:part`) sont une autre piste pour les ouvrages d'art remarquables.
+- **Constructions non dessinées.** Éoliennes (300 lues, hauteur renseignée 45
+  fois, sans dire si elle compte les pales), croix et calvaires, murs de
+  soutènement (une marche du relief, que le RGE ALTI lisse). Les réservoirs
+  sont des cylindres à toit plat : sphères de gaz et toits flottants ne sont
+  pas distingués, alors que le MNH les montre là où il les voit.
+- **Tuyauterie des sites industriels.** Une fois les citernes retirées du
+  sursol, il reste 2 660 houppiers et masses sur quatre parcs de stockage,
+  pour l'essentiel des portiques et des tuyaux ; la couche `canalisation` de
+  la BD TOPO (327 tronçons autour de douze lieux) n'en donne que l'axe.
 - **Bâtiments sous les arbres.** La règle est sévère dans les tissus denses et
   arborés, où l'orthophoto décale les feuillages sur les emprises voisines.
 - **Couverture LiDAR HD.** Environ 77 % des bâtiments tirés au hasard sont

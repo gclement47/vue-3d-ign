@@ -182,6 +182,95 @@ def test_overpass_repond_pendant_que_la_scene_se_construit(tmp_path):
     assert pendant == [True] and len(appels) == 1
 
 
+def _scene_avec_relief(lat, lon, avancer=None):
+    """Scène minimale : un relief plat à 100 m, une masse de sursol au centre."""
+    import gzip
+    import json
+    import numpy as np
+    from vue3d import relief
+    g = np.full((8, 8), 100.0)
+    scene_ = {"relief": relief._quantifier(g, np.zeros(g.shape, dtype=bool), *emprise(lat, lon)),
+              "masses": [{"lon": lon, "lat": lat, "h": 9.0}], "routes": {"features": []}}
+    return gzip.compress(json.dumps(scene_).encode()), b"jpeg"
+
+
+def _mur(lat, lon, z):
+    d = 0.001
+    mur = {"type": "Feature", "properties": {"nature": "Mur"},
+           "geometry": {"type": "LineString", "coordinates": [[lon - d, lat, z], [lon + d, lat, z]]}}
+    vide = {"features": []}
+    return {"lineaires": {"features": [mur]}, "surfaciques": vide, "voies": vide, "terrains": vide}
+
+
+def test_la_couche_des_ouvrages_lit_le_relief_et_les_masses_de_la_scene(tmp_path):
+    """Un mur à 112 m sur un relief à 100 m : 12 m de haut, et la masse que
+    le MNH avait posée dessus est expliquée. Une seule lecture de l'IGN."""
+    import gzip
+    import json
+    appels = []
+
+    def lire(*bbox):
+        appels.append(bbox)
+        return _mur(48.8049, 2.1204, 112.0)
+
+    cache = Cache(str(tmp_path), lire_ouvrages=lire)
+    d1 = cache.obtenir_ouvrages(48.8049, 2.1204, construire=_scene_avec_relief)
+    d2 = cache.obtenir_ouvrages(48.8049, 2.1204, construire=_scene_avec_relief)
+    assert d1 == d2 and len(appels) == 1
+    couche = json.loads(gzip.decompress(open(os.path.join(d1, scene.NOM_OUVRAGES), "rb").read()))
+    assert couche["murs"][0]["h"] == 12 and couche["masses_expliquees"] == [0]
+    # La version de la couche est dans le nom du fichier, pas dans celui de la scène.
+    assert f"v{scene.OUVRAGES_VERSION}" in scene.NOM_OUVRAGES
+
+
+def test_une_panne_des_ouvrages_ne_met_rien_en_cache_et_epargne_la_scene(tmp_path):
+    en_panne = [True]
+
+    def lire(*bbox):
+        if en_panne[0]:
+            raise ConnectionError("HTTP 504 sur construction_lineaire")
+        return _mur(48.8049, 2.1204, 112.0)
+
+    cache = Cache(str(tmp_path), lire_ouvrages=lire)
+    with pytest.raises(scene.OuvragesIndisponibles):
+        cache.obtenir_ouvrages(48.8049, 2.1204, construire=_scene_avec_relief)
+    assert cache.present(48.8049, 2.1204)
+    assert not os.path.exists(cache.chemin(48.8049, 2.1204, scene.NOM_OUVRAGES))
+    en_panne[0] = False
+    cache.obtenir_ouvrages(48.8049, 2.1204, construire=_scene_avec_relief)
+    assert os.path.exists(cache.chemin(48.8049, 2.1204, scene.NOM_OUVRAGES))
+
+
+def test_les_ouvrages_sont_lus_pendant_que_la_scene_se_construit(tmp_path):
+    """Lecture anticipée, comme pour Overpass, et sans attendre derrière lui :
+    chaque source a ses fils."""
+    lu = threading.Event()
+    overpass_bloque = threading.Event()
+
+    def lire_ouvrages(*bbox):
+        lu.set()
+        return _mur(48.8049, 2.1204, 112.0)
+
+    def lire_monuments(*bbox):
+        overpass_bloque.wait(5)
+        return {"elements": []}
+
+    pendant = []
+
+    def construire(lat, lon, avancer=None):
+        pendant.append(lu.wait(timeout=5))
+        return _scene_avec_relief(lat, lon)
+
+    cache = Cache(str(tmp_path), lire_monuments=lire_monuments, lire_ouvrages=lire_ouvrages)
+    # Overpass tient ses deux fils : les ouvrages passent quand même.
+    cache.prelire_monuments(48.8049, 2.1204)
+    cache.prelire_monuments(48.9, 2.2)
+    cache.prelire_ouvrages(48.8049, 2.1204)
+    cache.obtenir_ouvrages(48.8049, 2.1204, construire=construire)
+    overpass_bloque.set()
+    assert pendant == [True]
+
+
 def test_une_scene_incomplete_n_est_pas_mise_en_cache(tmp_path):
     """Le cache ne périme pas : une scène figée pendant une panne resterait
     fausse pour toujours. Rien n'est écrit, la demande suivante réessaie."""
@@ -230,8 +319,8 @@ def test_assembler_n_embarque_pas_les_grilles():
                           {"features": []}, grille, np.full(H.shape, 20, dtype=np.int8), None)
     # Les monuments OSM n'y sont pas : couche à part (Cache.obtenir_monuments).
     assert set(art) == {"version", "bbox", "batiments", "toits", "routes",
-                        "houppiers", "masses", "vegetation", "relief", "anneau",
-                        "eau", "lignes"}
+                        "constructions", "houppiers", "masses", "vegetation",
+                        "relief", "anneau", "eau", "lignes"}
     assert len(art["houppiers"]) == 1
     charge = json.dumps(art)
     assert '"values"' not in charge and '"exg"' not in charge
