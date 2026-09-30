@@ -37,7 +37,7 @@ vue3d/
   lignes.py     lignes à haute tension et hauteur de leurs supports
   monuments.py  parties de monuments OSM (building:part), seule source hors IGN
   ouvrages.py   murs, ponts, voies ferrées, terrains de sport : couche à part, chargée après la scène
-  vehicules.py  véhicules lus sur l'orthophoto par un réseau ONNX : couche à part, optionnelle (VUE3D_VEHICULES)
+  vehicules.py  véhicules et piscines lus sur l'orthophoto par un réseau ONNX : couche à part, optionnelle (VUE3D_VEHICULES)
   geopf.py      GET avec reprise sur la Géoplateforme
   static/index.html   la page entière : HTML, CSS et JavaScript (three.js r160)
 ```

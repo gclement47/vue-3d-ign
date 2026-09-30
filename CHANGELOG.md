@@ -43,6 +43,13 @@ messages de commit et dans les commentaires des modules.
   et 140 pour `yolo` en 14 à 35 s, 169 et 188 pour les deux ensemble. Le
   LiDAR, lui, ne voit pas les véhicules (0,0 m sur un parking plein), et
   l'analyse d'image classique en retrouvait 8 sur 61.
+- **Les piscines avec.** La même option lit aussi les piscines de
+  l'orthophoto — la BD TOPO n'a pas celles des particuliers — et la vue les
+  pose en bassins, à la couleur de leur eau : 13 à Gordes et 9 à Carcassonne
+  pour `rtmdet`, 8 et 8 pour `yolo`, 14 et 10 pour les deux, en une
+  demi-seconde de plus. Des 21 taches bleues des deux orthophotos, toutes
+  des piscines, `rtmdet` en couvre 20. La couche passe en version 2 : elle
+  est recalculée à la première ouverture de chaque lieu, les scènes non.
 - `outils/exporter_vehicules.py` convertit les réseaux en ONNX à la
   construction de l'image — leurs poids ne sont pas dans le dépôt —, et
   `outils/mesure_vehicules.py` rejoue la mesure sur des lieux réels.

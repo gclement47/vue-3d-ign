@@ -45,27 +45,28 @@ docker compose up -d --build
 `-v` supprime le volume `scenes` : chaque lieu sera reconstruit à sa première
 ouverture.
 
-### Les véhicules, en option
+### Les véhicules et les piscines, en option
 
-L'orthophoto montre des véhicules ; un réseau de neurones peut les y lire, et
-la vue les pose en volume. C'est une option de construction de l'image,
-désactivée par défaut :
+L'orthophoto montre des véhicules et des piscines ; un réseau de neurones
+peut les y lire, et la vue les pose en volume. C'est une option de
+construction de l'image, désactivée par défaut :
 
 ```bash
 VUE3D_VEHICULES=rtmdet docker compose up -d --build
 ```
 
-| `VUE3D_VEHICULES` | Détecteur | Gordes | Carcassonne | Calcul par lieu |
-|---|---|---|---|---|
-| `aucun` (défaut) | — | — | — | — |
-| `rtmdet` | RTMDet-R s (MMRotate, Apache-2.0) | 91 véhicules, 22 des 61 d'un parking serré | 178 | 3 à 6 s |
-| `yolo` | YOLO11s-OBB (Ultralytics, **AGPL-3.0**) | 146, 48 des 61 | 140 | 14 à 35 s |
-| `tous` | l'union des deux | 169, 49 des 61 | 188 | 17 à 41 s |
+| `VUE3D_VEHICULES` | Détecteur | Véhicules à Gordes | à Carcassonne | Piscines | Calcul par lieu |
+|---|---|---|---|---|---|
+| `aucun` (défaut) | — | — | — | — | — |
+| `rtmdet` | RTMDet-R s (MMRotate, Apache-2.0) | 91, dont 22 des 61 d'un parking serré | 178 | 13 et 9 | 3 à 6 s |
+| `yolo` | YOLO11s-OBB (Ultralytics, **AGPL-3.0**) | 146, dont 48 des 61 | 140 | 8 et 8 | 14 à 35 s |
+| `tous` | l'union des deux | 169, dont 49 des 61 | 188 | 14 et 10 | 17 à 41 s |
 
 Temps mesurés sur un Mac à dix cœurs, hors conteneur puis dans le conteneur ;
 ils s'ajoutent après l'affichage de la scène, qui n'attend pas les véhicules.
 Aucun des deux réseaux ne suffit partout : `rtmdet` lit mal un parking serré,
-`yolo` est meilleur là et moins bon ailleurs.
+`yolo` est meilleur là et moins bon ailleurs ; pour les piscines, c'est
+`rtmdet` qui voit le mieux.
 
 À savoir avant de choisir :
 
@@ -81,6 +82,9 @@ Aucun des deux réseaux ne suffit partout : `rtmdet` lit mal un parking serré,
   `.env` à côté de `docker-compose.yml`.
 - **Ce sont les véhicules du jour de la prise de vue**, et seulement ceux que
   le réseau a reconnus : voir [Limites](#limites).
+- **La variable s'appelle `VUE3D_VEHICULES` et apporte aussi les piscines** :
+  la même lecture de l'orthophoto, une demi-seconde de plus. Chacune a son
+  bouton dans la page.
 
 Sans Docker, **avec Python 3.12**, celui de l'image Docker :
 
@@ -192,6 +196,10 @@ Chaque premier chargement construit la scène, en 20 à 40 secondes.
   de vue, posés sur la pente. Longueur, largeur et orientation sont lues sur
   la photo ; la hauteur et la forme sont de convention, en trois gabarits
   (voiture, fourgon, autocar).
+- **Les piscines**, avec la même option : celles que l'orthophoto montre,
+  dans la couleur de leur eau ce jour-là. La BD TOPO n'a pas celles des
+  particuliers. L'eau est de niveau, au sol du centre du bassin ; sur une
+  pente, la cuve descend côté aval comme le mur d'une terrasse.
 - **Le soleil**, à l'heure et au jour choisis : un curseur pour l'heure, un
   autre pour la saison, avec des crans aux solstices et à l'équinoxe. Les ombres
   portées suivent. Le panneau chiffre le **masque solaire au sud**, l'élévation
@@ -222,7 +230,7 @@ Toutes servies sans clé par la Géoplateforme de l'IGN, sous
 
 three.js est chargé depuis jsDelivr. Le lien Street View ouvre Google Maps.
 
-La couche optionnelle des véhicules n'ajoute pas de source : elle relit
+La couche optionnelle des véhicules et des piscines n'ajoute pas de source : elle relit
 l'orthophoto, à 0,2 m par pixel, avec un réseau de neurones — RTMDet-R
 ([MMRotate](https://github.com/open-mmlab/mmrotate)) ou YOLO11-OBB
 ([Ultralytics](https://github.com/ultralytics/ultralytics)), au choix de qui
@@ -378,6 +386,12 @@ principales :
   toit, que l'emprise du bâtiment écarte, et deux boîtes longues fausses (un
   muret, trois voitures en file) que la limite de 7 m de `rtmdet` écarte. L'avant et l'arrière ne sont pas distingués, et il
   n'y a pas de vérité terrain annotée : les comptes ont été jugés à l'œil.
+- **Une piscine est un rectangle**, celui de la boîte que le réseau pose sur
+  le bassin, rond ou en haricot. Sur deux lieux, toutes les boîtes regardées
+  sont de l'eau, à deux petits bassins près dont on ne peut jurer ; une
+  piscine que la BD TOPO porte comme un bâtiment reste un bâtiment. Sur une
+  pente raide, où le relief lisse les terrasses, la cuve peut descendre de
+  plusieurs mètres côté aval, et le terrain recouvrir l'eau côté amont.
 - **Au pied des falaises, des arbres trop hauts.** En forêt, la hauteur d'un
   arbre accroché à une paroi se compte depuis le pied de celle-ci : 7 houppiers
   de 42 à 60 m à Rocamadour. Hors forêt, le plafond de 40 m efface aussi ce
@@ -396,7 +410,7 @@ principales :
 | `GET /api/ortho?lat=…&lon=…` | L'orthophoto de la scène, en JPEG |
 | `GET /api/monuments?lat=…&lon=…` | La couche des monuments OSM, en JSON gzippé (`null` sans partie), que la page demande une fois la scène affichée |
 | `GET /api/ouvrages?lat=…&lon=…` | La couche des murs, ponts, voies ferrées et terrains de sport, en JSON gzippé (`null` sans ouvrage), demandée elle aussi après la scène |
-| `GET /api/vehicules?lat=…&lon=…` | La couche des véhicules, en JSON gzippé, demandée après la scène ; `{"mode": "aucun", "vehicules": []}` si le service n'a pas de détecteur |
+| `GET /api/vehicules?lat=…&lon=…` | La couche des véhicules et des piscines, en JSON gzippé, demandée après la scène ; `{"mode": "aucun", "vehicules": [], "piscines": []}` si le service n'a pas de détecteur |
 | `GET /api/avancement?lat=…&lon=…` | L'étape de la construction en cours (18 au total), que la page affiche pendant l'attente |
 | `GET /api/sante` | `{"ok": true}` |
 
