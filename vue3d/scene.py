@@ -83,7 +83,9 @@ journal = logging.getLogger(__name__)
 #      retirés du sursol des houppiers.
 # 12 : sursol plafonné à 40 m hors forêt (houppiers.SURSOL_HAUTEUR_MAX_M), et
 #      retiré des étendues d'eau (eau.masque_eau).
-SCENE_VERSION = 12
+# 13 : bâtiments à deux niveaux (toits.py) : forme mesurée plutôt que le
+#      résumé du niveau bas.
+SCENE_VERSION = 13
 # Demi-côté de l'emprise, en degrés : ~178 m de part et d'autre du point.
 SCENE_DELTA = 0.0016
 # Demi-côté de l'anneau, en mètres et non en degrés : carré sur le terrain.

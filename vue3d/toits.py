@@ -905,6 +905,25 @@ def toits_pour_emprise(west, south, east, north, batiments_geojson, grille, exg,
             resultat["toits"][cleabs] = qualifier_couvert({"fiable": False, "n": 0}, part)
             continue
         profil = qualifier_couvert(profil, part)
+        if (profil["mode_bas"] and part is not None and part < TOITS_ARBRES_PART_VERTE):
+            # Deux niveaux, pas un arbre : le « mode haut » d'une emprise que
+            # l'orthophoto ne voit pas verte est le bâtiment lui-même — tours
+            # et lanternes d'un château, corps principal au-dessus d'une cour.
+            # Le château de Chambord (33 % de l'emprise au-dessus des
+            # terrasses, 7 % de vert) était ainsi dessiné comme ses seules
+            # terrasses, sous cinq corps de toit ; un immeuble d'Annecy de
+            # 22,5 m, à 3,7 m, la hauteur de sa cour. Seule la forme mesurée
+            # peut dire deux niveaux ; le résumé du niveau bas reste le repli.
+            #
+            # Mesuré sur 1 516 bâtiments de dix lieux : 123 profils relus en
+            # mode bas, dont 50 à moins de TOITS_ARBRES_PART_VERTE de vert. De
+            # ceux-là, 26 y gagnent leur forme — 16 en pans, 10 en surface, à
+            # 3 à 12 m du résumé du niveau bas pour les plus grands —, 16
+            # gardent ce résumé (niveau haut trop petit pour s'en écarter de
+            # 0,7 m, emprise en morceaux) et 8 restent rejetés. Les 73 autres,
+            # sous les arbres, ne changent pas.
+            profil["mode_bas"] = False
+            profil["deux_niveaux"] = True
         # Seulement là où le profil est un toit : sous un arbre (mode bas),
         # la grille décrirait le feuillage autant que la toiture.
         # D'un seul tenant aussi : la vue pose chaque morceau d'une emprise

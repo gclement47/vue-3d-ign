@@ -528,3 +528,46 @@ def test_la_pente_d_un_toit_coupe_se_juge_a_la_largeur_du_batiment_entier():
     assert toits_pour_emprise(*bbox, coupes, grille, None)["toits"]["TOIT"]["fiable"]
     sans = {"features": [{**morceau, "properties": {"cleabs": "TOIT"}}]}
     assert not toits_pour_emprise(*bbox, sans, grille, None)["toits"]["TOIT"]["fiable"]
+
+
+def _donjon(X, Y):
+    """20 × 12 m : une terrasse à 6 m, et sur sa moitié est un corps à 16 m.
+    Trop de dénivelé pour un toit (10 m sur 12 de large) : le profil est
+    rejeté, puis relu dans son niveau bas."""
+    return np.where((np.abs(X) <= 10) & (np.abs(Y) <= 6), np.where(X > 0, 16.0, 6.0), 0.0)
+
+
+def test_deux_niveaux_sans_arbre_recoivent_leur_forme_mesuree():
+    """Le château de Chambord : donjon et tours au-dessus des terrasses, 33 %
+    de l'emprise, et pas un arbre. Lu comme « un toit sous un arbre », il
+    gardait le résumé de ses terrasses ; l'orthophoto, qui n'y voit pas de
+    vert, dit que le niveau haut est le bâtiment."""
+    from vue3d.toits import toits_pour_emprise
+    bbox, grille, rectangle = _scene_60m(_donjon)
+    bats = {"features": [rectangle("DONJON", -10, -6, 10, 6)]}
+    gris = np.full((120, 120), -20, dtype=np.int8)
+    t = toits_pour_emprise(*bbox, bats, grille, gris)["toits"]["DONJON"]
+    assert t["deux_niveaux"] is True and t["mode_bas"] is False and t["fiable"] is True
+    # Le résumé reste celui du niveau bas ; la forme mesurée porte les deux.
+    assert t["faitage"] <= 6.5 and 0.4 <= t["part_haute"] <= 0.6
+    assert "pans" in t or "surface" in t
+    assert t["ecart_resume"] > 4
+
+
+def test_deux_niveaux_sous_un_arbre_restent_lus_dans_le_mode_bas():
+    """La même grille, mais l'orthophoto voit vert sur le niveau haut : c'est
+    un houppier, et la surface décrirait le feuillage."""
+    from vue3d.toits import toits_pour_emprise
+    bbox, grille, rectangle = _scene_60m(_donjon)
+    bats = {"features": [rectangle("REMISE", -10, -6, 10, 6)]}
+    xs = (np.arange(120) + 0.5) * 0.5 - 30
+    X, Y = np.meshgrid(xs, -xs)
+    # Un quart de l'emprise est vert : sous le tiers qui dit « sous couvert »,
+    # au-dessus du dixième sous lequel les arbres n'y sont pour rien.
+    vert = np.where((X > 5) & (np.abs(Y) <= 6), 20, -20).astype(np.int8)
+    t = toits_pour_emprise(*bbox, bats, grille, vert)["toits"]["REMISE"]
+    assert t["mode_bas"] is True and not t.get("deux_niveaux")
+    assert "pans" not in t and "surface" not in t
+    # Sans orthophoto, rien ne dit que ce n'est pas un arbre : mode bas aussi.
+    t = toits_pour_emprise(*bbox, bats, grille, None)["toits"]["REMISE"]
+    assert t["mode_bas"] is True and "surface" not in t and "pans" not in t
