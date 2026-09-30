@@ -46,9 +46,12 @@ messages de commit et dans les commentaires des modules.
 
 ### Ajouté
 
-- **Un lien « Recentrer la scène sur ce bâtiment » dans la fiche** d'un
-  bâtiment cliqué : la scène est toujours cadrée sur son point, et un
-  bâtiment coupé par le bord se lit mieux au centre de la sienne.
+- **Un lien « Recentrer la scène sur ce bâtiment »** : la scène est
+  toujours cadrée sur son point, et un bâtiment coupé par le bord se lit
+  mieux au centre de la sienne. Un clic sur un bâtiment épingle son
+  infobulle, qui ne suit plus la souris et porte ce lien et celui de Street
+  View, jusqu'au prochain clic sur la scène ; la fiche du panneau les a
+  aussi.
 - **Les véhicules de l'orthophoto, en option.** Lancé avec
   `VUE3D_VEHICULES=rtmdet`, `yolo` ou `tous`, le service lit les véhicules
   sur l'orthophoto à 0,2 m avec un réseau à boîtes orientées, et la vue les
