@@ -52,6 +52,7 @@ peut les y lire, et la vue les pose en volume. C'est une option de
 construction de l'image, désactivée par défaut :
 
 ```bash
+docker compose down -v
 VUE3D_VEHICULES=rtmdet docker compose up -d --build
 ```
 
