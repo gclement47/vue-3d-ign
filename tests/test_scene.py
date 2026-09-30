@@ -326,6 +326,25 @@ def test_assembler_n_embarque_pas_les_grilles():
     assert '"values"' not in charge and '"exg"' not in charge
 
 
+def test_assembler_ne_plante_pas_d_arbre_dans_l_eau():
+    """Entre deux quais, le MNH lit leur hauteur en pleine rivière, et l'eau
+    est verte à l'orthophoto : à Notre-Dame, 438 houppiers dans la Seine."""
+    import numpy as np
+    from tests.test_houppiers import _emprise, _grille, _polygone_m
+    H = _grille(arbres=[(20, 20, 8, 4)])
+    grille = _emprise(H)
+    grille.update({"couvert": True, "source": "lidar_hd", "resolution_m": 0.5})
+    vert = np.full(H.shape, 20, dtype=np.int8)
+    riviere = dict(_polygone_m(grille, 0, 5, 40, 35), properties={"persistance": "Permanent"})
+    args = (*grille["bbox"], {"features": []}, {"features": []}, None, {"features": []},
+            grille, vert, None)
+    assert len(scene.assembler(*args)["houppiers"]) == 1
+    art = scene.assembler(*args, eau=({"features": [riviere]}, {"features": []}))
+    assert art["houppiers"] == [] and art["masses"] == []
+    # L'eau, elle, est toujours dans la scène.
+    assert len(art["eau"]["surfaces"]) == 1
+
+
 def test_assembler_coupe_les_batiments_au_bord_de_la_scene():
     """Le WFS rend le bâtiment entier : la scène n'en garde que ce qui tient
     dans son emprise (vue3d/batiments.py), et le dit."""

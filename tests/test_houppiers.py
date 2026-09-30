@@ -100,6 +100,45 @@ def test_une_emprise_batie_est_retiree():
     assert res["hauteur_max"] == 0.0
 
 
+def _fleche_de_grue(H, hauteur=85.0):
+    """Une flèche de grue : une bande de 1,5 m de large, à `hauteur`, qui
+    traverse la grille d'ouest en est par-dessus ce qui s'y trouve."""
+    H = H.copy()
+    H[39:42, :] = hauteur
+    return H
+
+
+def test_hors_foret_ce_qui_depasse_quarante_metres_n_est_pas_dessine():
+    """À Notre-Dame, la flèche d'une grue au-dessus des arbres des quais
+    sortait en houppier de 88 m, plus haut que les tours. L'orthophoto est
+    verte dessous ; elle ne dit rien de ce qui passe au-dessus."""
+    H = _fleche_de_grue(_grille(arbres=[(20, 10, 12, 4)]))
+    grille = _emprise(H)
+    vert = np.full(H.shape, 20, dtype=np.int8)
+    for exg in (vert, -vert):                       # houppier, puis masse
+        res = segmenter_emprise(grille, exg, {"features": []}, {"features": []}, None)
+        assert max(e["h"] for e in res["houppiers"] + res["masses"]) < 13
+        assert res["hauteur_max"] < 13
+    # L'arbre sous la flèche reste, à sa hauteur.
+    res = segmenter_emprise(grille, vert, {"features": []}, {"features": []}, None)
+    assert [round(a["h"]) for a in res["houppiers"]] == [12]
+    # Un bois de ville n'y change rien : à Notre-Dame, la grue survole le square.
+    bois = {"features": [dict(_polygone_m(grille, 0, 0, 40, 40), properties={"nature": "Bois"})]}
+    res = segmenter_emprise(grille, vert, {"features": []}, bois, None)
+    assert max(a["h"] for a in res["houppiers"]) < 13
+
+
+def test_en_foret_un_arbre_de_plus_de_quarante_metres_reste_un_arbre():
+    """Sapins des Vosges à 43 m, douglas de plus de 60 m : en forêt BD TOPO,
+    rien n'est plafonné."""
+    H = _grille(arbres=[(20, 20, 45, 7)])
+    grille = _emprise(H)
+    foret = {"features": [dict(_polygone_m(grille, 0, 0, 40, 40),
+                               properties={"nature": "Forêt fermée de conifères"})]}
+    res = segmenter_emprise(grille, None, {"features": []}, foret, None)
+    assert len(res["houppiers"]) == 1 and abs(res["houppiers"][0]["h"] - 45) < 0.5
+
+
 def test_une_haie_est_allongee_et_orientee():
     H = _grille(arbres=[], haies=[(5, 20, 35, 20, 3.5, 1.2)])
     grille = _emprise(H)

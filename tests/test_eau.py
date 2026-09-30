@@ -51,3 +51,28 @@ def test_un_simple_contact_avec_l_emprise_ne_laisse_rien():
     eau = eau_pour_emprise(*EMPRISE, {"features": [_f(_carre(1, 0, 2, 1))]},
                            {"features": [_f(_ligne((1, 0.5), (2, 0.5)), fictif=False)]})
     assert eau == {"surfaces": [], "cours": []}
+
+
+def test_le_masque_d_eau_est_en_retrait_de_la_rive():
+    """Le feuillage des berges surplombe l'eau : les trois premiers mètres
+    restent au sursol, la nappe au-delà en sort."""
+    from shapely.geometry import Point, shape
+    from vue3d.eau import MASQUE_EAU_RETRAIT_M, masque_eau
+    metre = 1 / 111320                       # en degrés de latitude
+    riviere = _f(_carre(0, 0, 0.01, 40 * metre), nature="Ecoulement naturel", persistance="Permanent")
+    (m,) = masque_eau({"features": [riviere]}, 0, 40 * metre)["features"]
+    g = shape(m["geometry"])
+    assert not g.contains(Point(0.005, (MASQUE_EAU_RETRAIT_M - 1) * metre))
+    assert g.contains(Point(0.005, (MASQUE_EAU_RETRAIT_M + 1) * metre))
+    assert g.contains(Point(0.005, 20 * metre))
+
+
+def test_le_masque_d_eau_epargne_ruisseaux_etroits_mares_a_sec_et_canaux_couverts():
+    from vue3d.eau import masque_eau
+    metre = 1 / 111320
+    etroit = _f(_carre(0, 0, 0.01, 5 * metre), persistance="Permanent")       # 5 m de large
+    a_sec = _f(_carre(0, 0, 0.01, 40 * metre), persistance="Intermittent")
+    couvert = _f(_carre(0, 0, 0.01, 40 * metre), persistance="Permanent",
+                 position_par_rapport_au_sol="-1")
+    assert masque_eau({"features": [etroit, a_sec, couvert]}, 0, 40 * metre)["features"] == []
+    assert masque_eau(None, 0, 1)["features"] == []

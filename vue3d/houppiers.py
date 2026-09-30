@@ -24,7 +24,8 @@ Le classement d'une cellule reste celui de la vue : sous 2 m ignorée, dans
 une emprise bâtie ignorée, dans une zone de végétation BD TOPO végétation,
 sinon végétation si l'orthophoto est verte (ExG >= 4), sinon masse
 indéterminée (mur, véhicule, sol nu), segmentée de la même façon mais bridée
-à 3 m de rayon.
+à 3 m de rayon. Hors des forêts BD TOPO, une cellule de plus de 40 m n'est ni
+l'un ni l'autre, et n'est pas dessinée (SURSOL_HAUTEUR_MAX_M).
 """
 
 import logging
@@ -67,6 +68,31 @@ PROFIL_BINS = 6
 # Allongement maximal transmis : au-delà, une haie de 40 m est une ligne.
 ALLONGEMENT_MAX = 4.0
 FORET_LAYER = "LANDCOVER.FORESTINVENTORY.V2:formation_vegetale"
+# Hors forêt, plafond de ce qui peut être un arbre ou une masse. Le MNH garde
+# ce qui passe au-dessus du sol, et l'orthophoto ne dit que la couleur de ce
+# sol : à Notre-Dame de Paris, les flèches des deux grues du chantier, au-dessus
+# des arbres des quais, sortaient en houppiers de 52 à 88 m — plus hauts que
+# les tours (69 m) — et le débord des tours sur leur emprise en houppiers et en
+# masses de 60 à 66 m. Cellules de plus de 40 m hors de tout bâtiment, sur 22
+# lieux dont six forêts, par nature de zone BD TOPO :
+#
+#   forêt fermée     261   de vrais arbres : sapins des Vosges, jusqu'à 43,3 m
+#   bois              63   toutes sous une flèche de grue, à Notre-Dame
+#   haie, vigne        0
+#   hors zone     50 251   grues et débords de tours à Notre-Dame (542) et à la
+#                          Part-Dieu (75), toit du Stade de France au-delà de
+#                          son emprise (49 634)
+#
+# Hors forêt, le plus haut houppier plausible est à 35,4 m ; en forêt, 99
+# dépassent 35 m dans le Jura, 10 dépassent 40 m dans les Vosges. D'où 40 m,
+# hors des seules forêts BD TOPO : les arbres records du pays (douglas de plus
+# de 60 m) y sont, et rien n'y est plafonné. Ce qui dépasse n'est pas dessiné —
+# ni la grue, ni le toit d'un stade hors de son emprise, qui ne faisait qu'une
+# couronne de masses de 46 m. Reste, en forêt, l'artefact des falaises : à
+# Rocamadour, 7 houppiers de 42 à 60 m sur des chênes du causse, dont le MNH
+# compte la hauteur depuis le pied de la paroi.
+SURSOL_HAUTEUR_MAX_M = 40.0
+NATURES_FORET = "Forêt"
 
 
 # Fenêtre de lissage, en cellules de part et d'autre : 2 -> 5 × 5, soit
@@ -379,12 +405,16 @@ def segmenter_emprise(grille, exg, batiments, vegetation, forets):
     essences, noms_essence = _essences_par_cellule(
         (forets or {}).get("features", []), LON, LAT, "essence")
     vegetal = natures >= 0
+    # Ni arbre ni masse : une grue, le débord d'une tour (SURSOL_HAUTEUR_MAX_M).
+    en_foret = np.isin(natures, [k for k, nom in enumerate(noms_nature)
+                                 if nom and nom.startswith(NATURES_FORET)])
+    trop_haut = ~en_foret & (H > SURSOL_HAUTEUR_MAX_M)
     nb_ortho = 0
     if exg is not None:
         par_ortho = ~vegetal & (exg >= EXG_SEUIL)
-        nb_ortho = int((par_ortho & sursol & ~bati).sum())
+        nb_ortho = int((par_ortho & sursol & ~bati & ~trop_haut).sum())
         vegetal |= par_ortho
-    candidats = sursol & ~bati
+    candidats = sursol & ~bati & ~trop_haut
     masque_veg = candidats & vegetal
     masque_masse = candidats & ~vegetal
 

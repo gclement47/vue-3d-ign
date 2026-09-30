@@ -23,6 +23,9 @@ comme le sol. Les sommets de la BD TOPO portent bien une altitude, mais d'une
 autre source que le relief ; les mêler ferait flotter ou disparaître l'eau.
 """
 
+import math
+
+import shapely
 from shapely.geometry import box, mapping, shape
 from shapely.ops import unary_union
 
@@ -42,6 +45,18 @@ LARGEUR_PAR_CLASSE_M = {
 LARGEUR_PAR_DEFAUT_M = 2.5
 # Arrondi des coordonnées : 7 décimales, un centimètre.
 DECIMALES = 7
+# Retrait du masque d'eau sur la rive : les houppiers des berges surplombent
+# l'eau, et ce surplomb est du vrai feuillage. Houppiers dont le sommet est
+# sur l'eau, selon sa distance à la rive :
+#
+#                  0-3 m   3-6 m   au-delà
+#   Chambord         16       1       1
+#   Lyon (Saône)     16       1       3
+#   Annecy           27      16      23
+#   Notre-Dame       56      60     322     (le MNH interpolé, uniforme)
+#
+# Le surplomb tient dans les trois premiers mètres ; au-delà, c'est la nappe.
+MASQUE_EAU_RETRAIT_M = 3.0
 
 
 def _arrondir(geom):
@@ -112,3 +127,37 @@ def eau_pour_emprise(west, south, east, north, surfaces, cours):
             "geometrie": _arrondir(geom),
         })
     return out
+
+
+def masque_eau(surfaces, south, north):
+    """Étendues d'eau à retirer du sursol avant de segmenter les houppiers.
+
+    Le laser ne revient pas de l'eau. Entre deux quais hauts, le modèle de
+    surface est alors tendu d'une rive à l'autre pendant que le terrain suit
+    la nappe, et le MNH lit la hauteur des quais en pleine rivière : à
+    Notre-Dame de Paris, 67 % du bras de Seine dépasse 2 m, et 438 des 1 175
+    houppiers de la scène étaient plantés dans l'eau, qui est verte à
+    l'orthophoto. De même à Strasbourg (66 % de l'eau), à Lyon (54 %), au
+    Pont du Gard (102 houppiers) ; rien de tel à Bordeaux ni à Donges, où la
+    nappe est large et les rives basses.
+
+    Les surfaces permanentes sont donc retirées, en retrait de
+    MASQUE_EAU_RETRAIT_M sur la rive ; une étendue intermittente, à sec le
+    plus souvent, garde ce qui y pousse.
+
+    Returns:
+        GeoJSON des surfaces à joindre au masque bâti. Jamais embarqué.
+    """
+    kx, ky = 111320 * math.cos(math.radians((south + north) / 2)), 111320
+    out = []
+    for f in (surfaces or {}).get("features", []):
+        props = f.get("properties") or {}
+        if not f.get("geometry") or _sous_le_sol(props) or props.get("persistance") == "Intermittent":
+            continue
+        geom = shapely.force_2d(shape(f["geometry"])).buffer(0)
+        en_m = shapely.transform(geom, lambda c: c * [kx, ky]).buffer(-MASQUE_EAU_RETRAIT_M)
+        if en_m.is_empty:
+            continue
+        out.append({"type": "Feature", "properties": {},
+                    "geometry": mapping(shapely.transform(en_m, lambda c: c / [kx, ky]))})
+    return {"type": "FeatureCollection", "features": out}

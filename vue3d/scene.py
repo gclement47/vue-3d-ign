@@ -56,7 +56,8 @@ from .constructions import (COUCHE_PONCTUELLES, COUCHE_RESERVOIRS,
                             constructions_pour_emprise)
 from .couches import (COUCHE_BATIMENTS, COUCHE_FORET, COUCHE_ROUTES,
                       COUCHE_VEGETATION, lire_couche)
-from .eau import COUCHE_COURS_EAU, COUCHE_SURFACES_EAU, eau_pour_emprise
+from .eau import (COUCHE_COURS_EAU, COUCHE_SURFACES_EAU, eau_pour_emprise,
+                  masque_eau)
 from .lignes import COUCHE_LIGNES, COUCHE_PYLONES, lignes_pour_emprise
 from .houppiers import houppiers_pour_emprise
 from .mnh import fetch_mnh_grid, fetch_sol_grid
@@ -80,7 +81,9 @@ journal = logging.getLogger(__name__)
 # 10 : bâtiments découpés sur l'emprise (vue3d/batiments.py).
 # 11 : réservoirs et constructions ponctuelles (vue3d/constructions.py),
 #      retirés du sursol des houppiers.
-SCENE_VERSION = 11
+# 12 : sursol plafonné à 40 m hors forêt (houppiers.SURSOL_HAUTEUR_MAX_M), et
+#      retiré des étendues d'eau (eau.masque_eau).
+SCENE_VERSION = 12
 # Demi-côté de l'emprise, en degrés : ~178 m de part et d'autre du point.
 SCENE_DELTA = 0.0016
 # Demi-côté de l'anneau, en mètres et non en degrés : carré sur le terrain.
@@ -172,7 +175,11 @@ def assembler(west, south, east, north, batiments, vegetation, forets, routes,
     # (vue3d/constructions.py).
     construits, masque = constructions_pour_emprise(
         west, south, east, north, *(constructions or (None, None)), batiments, grille)
-    bati = {"features": (batiments or {}).get("features", []) + masque["features"]}
+    # L'eau aussi : entre deux quais, le MNH lit leur hauteur en pleine
+    # rivière (vue3d/eau.py).
+    nappes = masque_eau(eau[0], south, north) if eau else {"features": []}
+    bati = {"features": ((batiments or {}).get("features", []) + masque["features"]
+                         + nappes["features"])}
     veg = houppiers_pour_emprise(west, south, east, north, bati, vegetation,
                                  forets, grille, exg)
     return {

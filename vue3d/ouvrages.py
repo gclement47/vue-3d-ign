@@ -96,11 +96,11 @@ LARGEUR_PAR_VOIE_M = {"Normale": 4.0, "Large": 4.0, "Etroite": 3.0}
 # mètre, masses par mètre d'éloignement :
 #
 #   Carcassonne, murs (2 130 masses)      176, 57, 30, 23, 30, 29, 24, 29
-#   Pont du Gard, ponts (344 masses)       65, 50, 36, 17,  6,  6,  8,  5
+#   Pont du Gard, ponts (257 masses)       58, 46, 26, 18,  3,  5,  6,  1
 #
 # Le palier est le fond du tissu alentour : il commence à 2 m d'un mur, à 3 ou
 # 4 m de l'axe d'un pont de 3 à 5 m de large. Avec ces marges, 236 masses
-# expliquées à Carcassonne, 155 au Pont du Gard.
+# expliquées à Carcassonne, 135 au Pont du Gard.
 # Mesure : python outils/mesure_constructions.py
 MASSE_MUR_M = 2.0
 MASSE_PONT_MARGE_M = 1.5
