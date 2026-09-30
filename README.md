@@ -100,7 +100,7 @@ Chaque premier chargement construit la scène, en 20 à 40 secondes.
   bâtiment ouvre la sienne, avec un lien Street View orienté depuis la rue.
 - **Les monuments en 3D OpenStreetMap** (`building:part`), là où la vue ne
   sait pas faire mieux : sans LiDAR HD, l'abbaye du Mont-Saint-Michel n'était
-  qu'un prisme coiffé d'un toit inventé ; ses 37 parties OSM — flèche à 79 m,
+  qu'un prisme coiffé d'un toit inventé ; ses 31 parties OSM — flèche à 79 m,
   tour-lanterne, La Merveille — la remplacent. Là où le LiDAR mesure, il fait
   foi : seuls les bâtiments dont il ne sait rien (sous les arbres, profil
   rejeté) sont repris à OSM — la cathédrale de Strasbourg, que la règle

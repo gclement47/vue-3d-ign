@@ -5,7 +5,7 @@ La BD TOPO ne décrit un bâtiment que par son emprise et deux altitudes de
 toit ; sans LiDAR HD, un monument devient un prisme coiffé d'un toit inventé.
 Au Mont-Saint-Michel — où la dalle LiDAR livrée la plus proche est à 14 km —
 La Merveille (20 m × 67 m, 16 m entre gouttière et faîtage BD TOPO) sortait en
-toblerone. OpenStreetMap, lui, porte un vrai modèle 3D de l'abbaye : 37
+toblerone. OpenStreetMap, lui, porte un vrai modèle 3D de l'abbaye : 31
 parties (`building:part`) avec hauteurs et formes de toit, nef et flèche
 comprises.
 
@@ -14,7 +14,12 @@ Cette couche est la seule du projet hors données IGN : licence ODbL, créditée
 là où elle est plus riche ; partout ailleurs la scène l'ignore (aucune partie,
 la couche est nulle).
 
-Deux règles, mesurées sur l'abbaye du Mont-Saint-Michel :
+Trois règles, mesurées sur l'abbaye du Mont-Saint-Michel le 28 septembre 2026,
+sur 37 parties. Au 30, OSM n'en porte plus que 31 — la Porte du Roi et cinq
+parties sans nom, toutes sans hauteur, ont été retirées — et les mesures
+refaites donnent les mêmes règles : 8 bâtiments remplacés au lieu de 9, le
+trou entre l'îlot abbatial (94 % et plus) et le village (moins de 30 %) s'est
+élargi, la seule enveloppe reste l'église abbatiale.
 
 - **Remplacement.** OSM et la BD TOPO ne découpent pas le bâti pareil : les
   emprises BD TOPO du complexe abbatial ne sont couvertes qu'à 29-100 % par
@@ -22,7 +27,7 @@ Deux règles, mesurées sur l'abbaye du Mont-Saint-Michel :
   même union dilatée de 5 m couvre l'îlot abbatial à 86-100 %, et les maisons
   du village à 55 % au plus : un bâtiment BD TOPO est remplacé quand la
   dilatation en couvre au moins les deux tiers, seuil au milieu du trou.
-- **Hauteurs de repli.** 14 des 37 parties de l'abbaye n'ont pas de `height`,
+- **Hauteurs de repli.** 8 des 31 parties de l'abbaye n'ont pas de `height`,
   dont les grandes nommées (La Merveille, Le Châtelet…), et rien au-dessus
   d'elles n'en a : on prend alors la hauteur BD TOPO du bâtiment qui contient
   le centroïde de la partie — une mesure —, à défaut `building:levels` × 3 m
