@@ -89,6 +89,38 @@ Aucun des deux réseaux ne suffit partout : `rtmdet` lit mal un parking serré,
   la même lecture de l'orthophoto, une demi-seconde de plus. Chacune a son
   bouton dans la page.
 
+### Les panneaux solaires, en option
+
+Une seconde option, indépendante de la première, pose sur les toits les
+installations photovoltaïques du registre [OpenPVMapper](https://doi.org/10.5281/zenodo.19188878)
+de Gabriel Kasmi (Mines Paris-PSL) : DeepPVMapper, son détecteur, a été passé
+sur toute la France, et le résultat est publié sous CC-BY 4.0 — 471 449
+installations résidentielles en toiture, chacune avec son polygone, sa
+surface, sa puissance estimée et l'année de la photo. Ici aucun réseau ne
+tourne : la construction de l'image télécharge le registre (211 Mo) et en
+fait une base à index spatial (119 Mo), qu'une scène lit en quelques
+millisecondes.
+
+```bash
+VUE3D_PANNEAUX=oui docker compose up -d --build
+```
+
+Les deux options se combinent, chacune avec son image. Tout à la fois —
+véhicules des deux détecteurs, piscines et panneaux solaires :
+
+```bash
+VUE3D_VEHICULES=tous VUE3D_PANNEAUX=oui docker compose up -d --build
+```
+
+Pour garder ce choix d'un lancement à l'autre, écrire les deux lignes dans un
+fichier `.env` à côté de `docker-compose.yml`. Ce que la couche affirme, et ne dit pas : les
+installations que le registre connaît, sur des photos de 2018 à 2024 ; il en
+manque et il en invente, comme tout détecteur, et une installation peut être
+décalée d'un ou deux mètres par rapport à notre orthophoto, prise une autre
+année. Ni centrales au sol ni grandes toitures : le registre s'arrête à
+36 kWc. Le registre ne dit pas la hauteur : chaque polygone est posé sur le
+toit tel que la vue le dessine.
+
 Sans Docker, **avec Python 3.12**, celui de l'image Docker :
 
 ```bash
@@ -199,6 +231,9 @@ Chaque premier chargement construit la scène, en 20 à 40 secondes.
   de vue, posés sur la pente. Longueur, largeur et orientation sont lues sur
   la photo ; la hauteur et la forme sont de convention, en trois gabarits
   (voiture, fourgon, autocar).
+- **Les panneaux solaires**, avec une seconde option : les installations
+  du registre OpenPVMapper, posées sur les toits tels qu'ils sont dessinés,
+  avec leur surface, leur puissance estimée et l'année de la photo.
 - **Les piscines**, avec la même option : celles que l'orthophoto montre,
   dans la couleur de leur eau ce jour-là. La BD TOPO n'a pas celles des
   particuliers. L'eau est de niveau, au sol du centre du bassin ; sur une
@@ -233,7 +268,10 @@ Toutes servies sans clé par la Géoplateforme de l'IGN, sous
 
 three.js est chargé depuis jsDelivr. Le lien Street View ouvre Google Maps.
 
-La couche optionnelle des véhicules et des piscines n'ajoute pas de source : elle relit
+La couche optionnelle des panneaux solaires lit le registre
+[OpenPVMapper](https://doi.org/10.5281/zenodo.19188878) (G. Kasmi, CC-BY 4.0),
+téléchargé à la construction de l'image. La couche optionnelle des véhicules
+et des piscines n'ajoute pas de source : elle relit
 l'orthophoto, à 0,2 m par pixel, avec un réseau de neurones — RTMDet-R
 ([MMRotate](https://github.com/open-mmlab/mmrotate)) ou YOLO11-OBB
 ([Ultralytics](https://github.com/ultralytics/ultralytics)), au choix de qui
@@ -416,7 +454,8 @@ principales :
 | `GET /api/piscines?lat=…&lon=…` | Les piscines de l'orthophoto, en JSON gzippé, demandées après la scène ; `{"mode": "aucun", "piscines": []}` si le service n'a pas de détecteur |
 | `GET /api/vehicules?lat=…&lon=…&detecteur=…` | Les véhicules vus d'un détecteur du service (`rtmdet` ou `yolo`), en JSON gzippé ; la page les demande dans l'ordre que donne `/api/sante`, du rapide au lent, et les réunit ; 400 sans le paramètre ou avec un détecteur que le service n'a pas |
 | `GET /api/avancement?lat=…&lon=…` | L'étape de la construction en cours (18 au total), que la page affiche pendant l'attente |
-| `GET /api/sante` | `{"ok": true, "vehicules": {"mode": …, "detecteurs": […]}}` : le contrôle de vie, et les détecteurs du service, dans l'ordre où la page les demande |
+| `GET /api/panneaux?lat=…&lon=…` | Les panneaux solaires du registre, en JSON gzippé ; `{"actif": false, "panneaux": []}` si le service n'a pas de registre |
+| `GET /api/sante` | `{"ok": true, "vehicules": {"mode": …, "detecteurs": […]}, "panneaux": {"actif": …}}` : le contrôle de vie, et ce que le service sait détecter ou lire |
 
 Codes d'erreur : 400 sans coordonnées valides, 422 hors de France métropolitaine,
 503 si un service de l'IGN n'a pas répondu (rien n'est mis en cache, réessayer).
@@ -451,8 +490,11 @@ viennent d'OpenStreetMap (© contributeurs OSM, ODbL). Le dépôt embarque un
 extrait OpenStreetMap pour les lieux d'exemple ci-dessus, sous ODbL et non sous
 MIT : voir [vue3d/donnees/LICENCE.md](vue3d/donnees/LICENCE.md).
 
-Les réseaux de la couche optionnelle des véhicules ne sont ni dans le dépôt ni
-dans l'image par défaut. Construire l'image avec `VUE3D_VEHICULES` les y
+Le registre de la couche optionnelle des panneaux solaires est sous
+[CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/) (OpenPVMapper,
+Gabriel Kasmi) ; la page le crédite quand la couche est affichée. Les réseaux
+de la couche optionnelle des véhicules ne sont ni dans le dépôt ni dans
+l'image par défaut. Construire l'image avec `VUE3D_VEHICULES` les y
 télécharge, sous leurs licences : Apache-2.0 pour RTMDet-R, **AGPL-3.0** pour
 YOLO11-OBB, et pour les deux les conditions du jeu de données DOTA, réservé à
 un usage académique.

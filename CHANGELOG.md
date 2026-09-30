@@ -57,6 +57,15 @@ messages de commit et dans les commentaires des modules.
   et 140 pour `yolo` en 14 à 35 s, 169 et 188 pour les deux ensemble. Le
   LiDAR, lui, ne voit pas les véhicules (0,0 m sur un parking plein), et
   l'analyse d'image classique en retrouvait 8 sur 61.
+- **Les panneaux solaires, en option** (`VUE3D_PANNEAUX=oui`). Pas un
+  réseau de plus : le registre OpenPVMapper (G. Kasmi, CC-BY 4.0), où
+  DeepPVMapper a relevé 471 449 installations en toiture sur la BD ORTHO de
+  toute la France, est téléchargé à la construction de l'image et rangé
+  dans une base SQLite à index spatial (119 Mo). Chaque installation est
+  posée sur le toit tel que la vue le dessine, avec sa surface, sa puissance
+  et l'année de la photo. Les poids publiés du réseau lui-même ont été
+  essayés d'abord : 79 % d'exactitude sur leur propre jeu de test, rien de
+  trouvé sur Gordes ni Carcassonne — on lit le résultat des auteurs.
 - **Les piscines avec.** La même option lit aussi les piscines de
   l'orthophoto — la BD TOPO n'a pas celles des particuliers — et la vue les
   pose en bassins, à la couleur de leur eau : 13 à Gordes et 9 à Carcassonne

@@ -137,6 +137,7 @@ anneau de relief grossier s'étend au-delà, sur 2 km de côté.
 | `monuments.py` | Parties de monuments OSM | Seule source hors IGN, et la plus lente ; extrait embarqué pour les lieux d'exemple ; règle de remplacement aux deux tiers, enveloppes |
 | `ouvrages.py` | Murs, ponts, voies ferrées, terrains de sport | Couche à part, versionnée par `OUVRAGES_VERSION` ; hauteur d'un mur ou d'un pont = altitude de ses sommets − relief de la scène |
 | `vehicules.py` | Véhicules et piscines lus sur l'orthophoto | Couche à part et **optionnelle** (`VUE3D_VEHICULES`) : un réseau ONNX à boîtes orientées sur l'orthophoto à 0,2 m, une passe par objet, chacun à son échelle ; fichier de cache au nom du détecteur ; sans la variable, ni onnxruntime ni réseau ne sont chargés |
+| `panneaux.py` | Panneaux solaires du registre OpenPVMapper | Couche à part et **optionnelle** (`VUE3D_PANNEAUX`) : une base SQLite à index R-tree préparée à la construction de l'image ; projection EPSG:3035 → WGS84 écrite ici, vérifiée contre pyproj à 0,7 mm |
 | `static/index.html` | La page entière | HTML, CSS et JavaScript dans un seul fichier, three.js r160 |
 
 Chaque module commence par une docstring qui dit **pourquoi** il est fait
@@ -460,6 +461,7 @@ direct. Ils écrivent leurs sorties dans `cache/mesures/`, ignoré par git.
 | `mesure_constructions.py` | Réservoirs, constructions ponctuelles et ouvrages sur des lieux réels : hauteurs, effet du masque sur les houppiers, masses expliquées |
 | `mesure_vehicules.py` | Véhicules et piscines sur des lieux réels, par le vrai chemin de la couche : comptes selon le seuil, la tuile et son recouvrement, gabarits, accord entre les deux détecteurs, images annotées, planches de vignettes des piscines ; demande les réseaux exportés et `requirements-vehicules.txt` |
 | `exporter_vehicules.py` | Pas une mesure : télécharge les poids de RTMDet-R ou de YOLO11-OBB et les convertit en ONNX ; tourne dans l'étage `export` du Dockerfile |
+| `preparer_panneaux.py` | Pas une mesure : télécharge le registre OpenPVMapper et en fait la base SQLite de la couche des panneaux ; même étage du Dockerfile |
 | `prototype_plans.py` | Couverture de la segmentation en plans selon les tolérances |
 | `prototype_brep.py` | Étanchéité des volumes, avec export OBJ et visionneuse 3D |
 | `mesure_redressement.py` | Part du terrain dans les défauts des surfaces de toit |

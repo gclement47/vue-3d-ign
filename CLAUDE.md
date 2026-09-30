@@ -14,6 +14,7 @@ pytest                                           # tests Python (réseau jamais 
 VUE3D_CACHE=./cache flask --app vue3d.app run --port 8080   # serveur local
 docker compose up -d --build                     # conteneur, port 8080 (VUE3D_PORT)
 VUE3D_VEHICULES=rtmdet docker compose up -d --build   # avec la couche des véhicules (aucun | rtmdet | yolo | tous)
+VUE3D_PANNEAUX=oui docker compose up -d --build        # avec les panneaux solaires du registre OpenPVMapper (CC-BY 4.0)
 node outils/verifier-geometrie.mjs               # géométrie de la page, exécutée sous Node
 npm install puppeteer-core && node outils/essai-navigateur.mjs "http://localhost:8080/?lat=43.9116&lon=5.2003"
 ```
@@ -22,7 +23,7 @@ npm install puppeteer-core && node outils/essai-navigateur.mjs "http://localhost
 
 ```
 vue3d/
-  app.py        Flask : /, /api/scene, /api/ortho, /api/monuments, /api/ouvrages, /api/piscines, /api/vehicules, /api/avancement, /api/sante
+  app.py        Flask : /, /api/scene, /api/ortho, /api/monuments, /api/ouvrages, /api/piscines, /api/vehicules, /api/panneaux, /api/avancement, /api/sante
   scene.py      assemblage d'une scène, cache disque par point arrondi
   couches.py    lecture WFS (bâtiments, végétation, BD Forêt, routes)
   batiments.py  bâtiments découpés sur l'emprise, en retrait du bord
@@ -38,6 +39,7 @@ vue3d/
   monuments.py  parties de monuments OSM (building:part), seule source hors IGN
   ouvrages.py   murs, ponts, voies ferrées, terrains de sport : couche à part, chargée après la scène
   vehicules.py  véhicules et piscines lus sur l'orthophoto par un réseau ONNX : couche à part, optionnelle (VUE3D_VEHICULES)
+  panneaux.py   panneaux solaires du registre OpenPVMapper (SQLite R-tree) : couche à part, optionnelle (VUE3D_PANNEAUX)
   geopf.py      GET avec reprise sur la Géoplateforme
   static/index.html   la page entière : HTML, CSS et JavaScript (three.js r160)
 ```
@@ -45,9 +47,10 @@ vue3d/
 Pas de base de données, pas de clé d'API, pas de build front : la page est un
 fichier statique qui lit le point dans son URL.
 
-La couche des véhicules est la seule dépendance optionnelle : sans
-`VUE3D_VEHICULES`, ni onnxruntime ni réseau ne sont chargés, et les tests ne
-les demandent jamais. Les poids (RTMDet-R, Apache-2.0 ; YOLO11-OBB, AGPL-3.0 ;
+Les couches des véhicules et des panneaux sont les seules dépendances
+optionnelles : sans `VUE3D_VEHICULES`, ni onnxruntime ni réseau ne sont
+chargés ; sans `VUE3D_PANNEAUX`, aucune base n'est lue ; les tests ne
+demandent jamais ni l'un ni l'autre (`/donnees/` est ignoré par git). Les poids (RTMDet-R, Apache-2.0 ; YOLO11-OBB, AGPL-3.0 ;
 tous deux entraînés sur DOTA, usage académique) ne doivent **jamais** entrer
 dans le dépôt : ils sont exportés par `outils/exporter_vehicules.py` dans
 l'étage `export` du Dockerfile.
