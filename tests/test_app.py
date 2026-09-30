@@ -152,6 +152,26 @@ def test_la_couche_des_vehicules_est_servie_a_part(client_vehicules):
     assert client_vehicules.get("/api/vehicules?lat=40&lon=2").status_code == 422
 
 
+def test_la_couche_des_vehicules_est_revalidee_a_chaque_demande(client_vehicules):
+    """Le navigateur ne la garde pas un jour comme la scène : à la même
+    adresse, elle change avec le détecteur et la version. Le nom du fichier,
+    qui porte les deux, sert de validateur."""
+    from vue3d.scene import nom_vehicules
+    url = "/api/vehicules?lat=48.8049&lon=2.1204"
+    r = client_vehicules.get(url)
+    assert r.headers["Cache-Control"] == "no-cache"
+    assert r.headers["ETag"] == f'"{nom_vehicules("rtmdet")}"'
+    # Même fichier : 304, sans corps.
+    r2 = client_vehicules.get(url, headers={"If-None-Match": r.headers["ETag"]})
+    assert r2.status_code == 304 and r2.data == b"" and r2.headers["ETag"] == r.headers["ETag"]
+    # Le validateur d'un autre détecteur, ou d'une autre version : la couche entière.
+    r3 = client_vehicules.get(url, headers={"If-None-Match": f'"{nom_vehicules("yolo")}"'})
+    assert r3.status_code == 200 and json.loads(gzip.decompress(r3.data))["mode"] == "rtmdet"
+    # La scène, elle, ne change pas sous son adresse : gardée un jour.
+    assert client_vehicules.get("/api/scene?lat=48.8049&lon=2.1204").headers["Cache-Control"] \
+        == "public, max-age=86400"
+
+
 def test_une_panne_des_vehicules_rend_503_sans_toucher_la_scene(client_vehicules):
     assert client_vehicules.get("/api/scene?lat=45.5&lon=2").status_code == 200
     r = client_vehicules.get("/api/vehicules?lat=45.5&lon=2")

@@ -102,13 +102,23 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
                                 f"{exc}). Rien n'a été mis en cache : réessayez "
                                 "dans quelques instants.")
 
-    def servir_gzip(dossier, nom):
-        with open(os.path.join(dossier, nom), "rb") as f:
-            charge = f.read()
-        # Déjà gzippé : annoncé tel quel, le navigateur le décompresse.
-        reponse = app.response_class(charge, mimetype="application/json")
-        reponse.headers["Content-Encoding"] = "gzip"
-        reponse.headers["Cache-Control"] = "public, max-age=86400"
+    def servir_gzip(dossier, nom, a_revalider=False):
+        """`a_revalider` : le navigateur redemande à chaque fois, et le nom
+        du fichier sert de validateur — la réponse est alors un 304 sans
+        corps tant que le fichier est le même."""
+        if a_revalider and request.if_none_match.contains(nom):
+            reponse = app.response_class(status=304)
+        else:
+            with open(os.path.join(dossier, nom), "rb") as f:
+                charge = f.read()
+            # Déjà gzippé : annoncé tel quel, le navigateur le décompresse.
+            reponse = app.response_class(charge, mimetype="application/json")
+            reponse.headers["Content-Encoding"] = "gzip"
+        if a_revalider:
+            reponse.set_etag(nom)
+            reponse.headers["Cache-Control"] = "no-cache"
+        else:
+            reponse.headers["Cache-Control"] = "public, max-age=86400"
         return reponse
 
     @app.get("/")
@@ -153,7 +163,12 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
         trouve, err = dossier_scene(couche=COUCHE_VEHICULES)
         if err:
             return err
-        return servir_gzip(*trouve)
+        # Revalidée à chaque demande : à la même adresse, la couche change
+        # avec le détecteur du service et avec sa version. Gardée un jour par
+        # le navigateur, elle montrait encore les véhicules sans les piscines
+        # après une reconstruction de l'image. Le nom du fichier porte les
+        # deux, et le fichier ne change jamais une fois écrit.
+        return servir_gzip(*trouve, a_revalider=True)
 
     @app.get("/api/ortho")
     def ortho():

@@ -29,6 +29,12 @@ messages de commit et dans les commentaires des modules.
   toit laissent à découvert, au lieu de la couleur des murs.
 - Les marches d'une surface mesurée prennent la teinte du toit, plus celle
   des murs : les tours coniques ne se mouchettent plus d'orange.
+- **La couche des véhicules et des piscines n'est plus gardée un jour par le
+  navigateur.** À la même adresse, elle change avec le détecteur du service
+  et avec sa version : après une reconstruction de l'image, un lieu déjà
+  visité montrait encore ses véhicules sans ses piscines. Elle est
+  maintenant revalidée à chaque demande, le serveur répondant 304 tant que
+  rien n'a changé.
 
 ### Ajouté
 
