@@ -364,12 +364,15 @@ une :
 4. Dans la page, le chargement après la scène, avec reprise et indicateur
    (`etatCouche`), sur le modèle de `chargerOuvrages`.
 
-La couche des véhicules suit ce chemin avec deux particularités. Elle est
-optionnelle : son lecteur vient de `vehicules.lecteur()`, qui rend `None` sans
-`VUE3D_VEHICULES`, et la route répond alors `{"mode": "aucun"}` plutôt qu'une
-erreur. Et sa « lecture » est un calcul — l'orthophoto à 0,2 m, puis la
-détection — lancé en tâche de fond sur un seul fil pendant que la scène se
-construit. Les poids des réseaux ne sont pas dans le dépôt et ne doivent pas y
+Les couches de l'orthophoto (véhicules, piscines) suivent ce chemin avec
+trois particularités. Elles sont optionnelles : leur lecteur vient de
+`vehicules.lecteur()`, qui rend `None` sans `VUE3D_VEHICULES`, et les routes
+répondent alors `{"mode": "aucun"}` plutôt qu'une erreur. Leur « lecture »
+est un calcul — l'orthophoto à 0,2 m, puis la détection — lancé en tâche de
+fond sur un seul fil pendant que la scène se construit. Et il y a un fichier
+par résultat — les piscines, puis les véhicules de chaque détecteur — pour
+que la page dessine chacun dès qu'il est prêt : c'est elle qui réunit les
+détecteurs, dans l'ordre que `/api/sante` lui donne. Les poids des réseaux ne sont pas dans le dépôt et ne doivent pas y
 entrer : ceux de YOLO sont sous AGPL-3.0, et les deux réseaux sont entraînés
 sur DOTA (usage académique). `outils/exporter_vehicules.py` les convertit en
 ONNX dans l'étage `export` du Dockerfile.
@@ -429,10 +432,11 @@ façons :
   la construction est `(lat, lon, avancer=None)`, celle des lectures
   `(ouest, sud, est, nord)`. Une application de test qui sert `/api/scene`
   doit injecter les deux lectures : la demande de la scène les lance en tâche
-  de fond. `lire_vehicules=faux` active la couche des véhicules ; la fausse
-  lecture porte un attribut `mode` et rend des boîtes en pixels. Aucun test ne
-  charge de réseau : `test_vehicules.py` passe à `detecter` une doublure de
-  session d'inférence.
+  de fond. `lire_vehicules=faux` active les couches de l'orthophoto ; la
+  doublure a la forme de `vehicules.Lecteur` — `mode`, `detecteurs`,
+  `piscines(emprise)` et `vehicules(detecteur)`, qui rendent des boîtes en
+  pixels. Aucun test ne charge de réseau : `test_vehicules.py` passe à
+  `detecter` une doublure de session d'inférence.
 - **Grilles synthétiques.** Les tests de toitures fabriquent des grilles MNH à
   partir d'une fonction de hauteur (voir `_grille` dans `test_pans.py` ou
   `_grille_surface` dans `test_toits.py`) : un toit à deux pans, une marche, un

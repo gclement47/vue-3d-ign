@@ -60,10 +60,12 @@ VUE3D_VEHICULES=rtmdet docker compose up -d --build
 | `aucun` (défaut) | — | — | — | — | — |
 | `rtmdet` | RTMDet-R s (MMRotate, Apache-2.0) | 91, dont 22 des 61 d'un parking serré | 178 | 13 et 9 | 3 à 6 s |
 | `yolo` | YOLO11s-OBB (Ultralytics, **AGPL-3.0**) | 146, dont 48 des 61 | 140 | 8 et 8 | 14 à 35 s |
-| `tous` | l'union des deux | 169, dont 49 des 61 | 188 | 14 et 10 | 17 à 41 s |
+| `tous` | l'union des deux | 169, dont 49 des 61 | 188 | 14 et 9 | 17 à 41 s |
 
-Temps mesurés sur un Mac à dix cœurs, hors conteneur puis dans le conteneur ;
-ils s'ajoutent après l'affichage de la scène, qui n'attend pas les véhicules.
+Temps mesurés sur un Mac à dix cœurs, hors conteneur puis dans le conteneur.
+La scène n'attend pas ces calculs, et chaque résultat s'affiche dès qu'il est
+prêt : les piscines une demi-seconde après la scène, puis les véhicules
+détecteur par détecteur, `rtmdet` avant `yolo`.
 Aucun des deux réseaux ne suffit partout : `rtmdet` lit mal un parking serré,
 `yolo` est meilleur là et moins bon ailleurs ; pour les piscines, c'est
 `rtmdet` qui voit le mieux.
@@ -410,9 +412,10 @@ principales :
 | `GET /api/ortho?lat=…&lon=…` | L'orthophoto de la scène, en JPEG |
 | `GET /api/monuments?lat=…&lon=…` | La couche des monuments OSM, en JSON gzippé (`null` sans partie), que la page demande une fois la scène affichée |
 | `GET /api/ouvrages?lat=…&lon=…` | La couche des murs, ponts, voies ferrées et terrains de sport, en JSON gzippé (`null` sans ouvrage), demandée elle aussi après la scène |
-| `GET /api/vehicules?lat=…&lon=…` | La couche des véhicules et des piscines, en JSON gzippé, demandée après la scène ; `{"mode": "aucun", "vehicules": [], "piscines": []}` si le service n'a pas de détecteur |
+| `GET /api/piscines?lat=…&lon=…` | Les piscines de l'orthophoto, en JSON gzippé, demandées après la scène ; `{"mode": "aucun", "piscines": []}` si le service n'a pas de détecteur |
+| `GET /api/vehicules?lat=…&lon=…&detecteur=…` | Les véhicules vus d'un détecteur du service (`rtmdet` ou `yolo`), en JSON gzippé ; la page les demande dans l'ordre que donne `/api/sante`, du rapide au lent, et les réunit ; 400 sans le paramètre ou avec un détecteur que le service n'a pas |
 | `GET /api/avancement?lat=…&lon=…` | L'étape de la construction en cours (18 au total), que la page affiche pendant l'attente |
-| `GET /api/sante` | `{"ok": true}` |
+| `GET /api/sante` | `{"ok": true, "vehicules": {"mode": …, "detecteurs": […]}}` : le contrôle de vie, et les détecteurs du service, dans l'ordre où la page les demande |
 
 Codes d'erreur : 400 sans coordonnées valides, 422 hors de France métropolitaine,
 503 si un service de l'IGN n'a pas répondu (rien n'est mis en cache, réessayer).

@@ -29,6 +29,14 @@ messages de commit et dans les commentaires des modules.
   toit laissent à découvert, au lieu de la couleur des murs.
 - Les marches d'une surface mesurée prennent la teinte du toit, plus celle
   des murs : les tours coniques ne se mouchettent plus d'orange.
+- **Chaque détection s'affiche dès qu'elle est prête.** La page attendait
+  la couche entière — véhicules des deux détecteurs et piscines, jusqu'à
+  quarante secondes dans le conteneur avec `tous` — avant de rien montrer.
+  Les piscines ont maintenant leur fichier et leur route (`/api/piscines`),
+  chaque détecteur de véhicules le sien (`/api/vehicules?detecteur=…`), et
+  la page les demande l'un après l'autre, du rapide au lent, en dessinant
+  chaque couche à son arrivée ; `/api/sante` lui dit les détecteurs du
+  service. La couche des véhicules passe en version 3.
 - **La couche des véhicules et des piscines n'est plus gardée un jour par le
   navigateur.** À la même adresse, elle change avec le détecteur du service
   et avec sa version : après une reconstruction de l'image, un lieu déjà
@@ -52,7 +60,7 @@ messages de commit et dans les commentaires des modules.
 - **Les piscines avec.** La même option lit aussi les piscines de
   l'orthophoto — la BD TOPO n'a pas celles des particuliers — et la vue les
   pose en bassins, à la couleur de leur eau : 13 à Gordes et 9 à Carcassonne
-  pour `rtmdet`, 8 et 8 pour `yolo`, 14 et 10 pour les deux, en une
+  pour `rtmdet`, 8 et 8 pour `yolo`, 14 et 9 pour les deux, en une
   demi-seconde de plus. Des 21 taches bleues des deux orthophotos, toutes
   des piscines, `rtmdet` en couvre 20. La couche passe en version 2 : elle
   est recalculée à la première ouverture de chaque lieu, les scènes non.
