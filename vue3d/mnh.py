@@ -24,13 +24,15 @@ D'où `couvert` dans la réponse, pour que l'appelant distingue « pas de
 végétation » de « pas de donnée ».
 """
 
+import math
 import struct
 
 import logging
 
+import numpy as np
 import requests
 
-from .geopf import get_avec_reprise
+from .geopf import en_parallele, get_avec_reprise, place
 
 MNH_LAYER = "IGNF_LIDAR-HD_MNH_ELEVATION.ELEVATIONGRIDCOVERAGE.WGS84G"
 # Repli hors couverture LiDAR HD : modèle numérique de surface photogrammétrique
@@ -60,10 +62,20 @@ def _grille_depuis_bil(contenu, largeur, hauteur):
     attendu = largeur * hauteur * 4
     if len(contenu) < attendu:
         raise ValueError(f"BIL tronqué : {len(contenu)} octets pour {attendu} attendus")
-    brut = struct.unpack(f"<{largeur * hauteur}f", contenu[:attendu])
+    brut = np.frombuffer(contenu, dtype="<f4", count=largeur * hauteur).astype(np.float64)
     # Le service signale l'absence de donnée par de grandes valeurs négatives ;
-    # les négatifs résiduels sont du bruit autour de zéro.
-    return [0.0 if (v < 0 or v > 200 or v != v) else round(v, 1) for v in brut]
+    # les négatifs résiduels sont du bruit autour de zéro (NaN compris).
+    with np.errstate(invalid="ignore"):
+        hors = ~((brut >= 0) & (brut <= 200))
+    # round(v, 1) de Python, à l'identique : un float32 fois 10 est exact en
+    # float64 (24 + 4 bits), rint arrondit ce produit exact au pair le plus
+    # proche comme round(), et la division rend le double le plus proche de
+    # k / 10 comme lui. Vérifié sur les 1 128 792 065 float32 de [0, 200], et
+    # −0 : aucun écart. 0,05 s au lieu de 0,4 à 0,7 s pour la grille d'une
+    # zone de 1 000 m (2,9 millions de cellules) : du temps pris à l'arrivée
+    # d'une des plus longues lectures, et au verrou global de Python, que les
+    # lectures parallèles se partagent.
+    return np.where(hors, 0.0, np.rint(brut * 10.0) / 10.0).tolist()
 
 
 def _grille_wms(layer, west, south, east, north, largeur, hauteur, brut=False):
@@ -80,7 +92,8 @@ def _grille_wms(layer, west, south, east, north, largeur, hauteur, brut=False):
         f"&WIDTH={largeur}&HEIGHT={hauteur}"
         "&FORMAT=image/x-bil;bits=32"
     )
-    reponse = get_avec_reprise(url)
+    with place():
+        reponse = get_avec_reprise(url)
     reponse.raise_for_status()
     if "bil" not in reponse.headers.get("Content-Type", ""):
         # Le service répond en XML quand il refuse la requête.
@@ -114,6 +127,26 @@ def fetch_sol_grid(west, south, east, north, largeur, hauteur, source):
     return [v if v > -1000 else float("nan") for v in valeurs]
 
 
+def dimensions_grille(west, south, east, north, resolution_m=MNH_RESOLUTION_M,
+                      max_pixels=MNH_MAX_PIXELS):
+    """(largeur, hauteur) en pixels de la grille MNH d'une emprise.
+
+    Elles ne dépendent que de l'emprise : la scène les calcule avant d'avoir
+    la grille, pour demander l'orthophoto et le terrain à la même taille en
+    même temps qu'elle.
+    """
+    west, south = float(west), float(south)
+    east, north = float(east), float(north)
+    # Pas de grille en degrés, déduit de la résolution voulue au centre.
+    lat_moy = (south + north) / 2
+    m_par_deg_lon = 111320 * math.cos(math.radians(lat_moy))
+    # max_pixels : 512 pour la végétation (payload navigateur) ; les toits
+    # demandent 0,5 m et restent côté serveur, donc jusqu'à 2048 (plafond WMS).
+    largeur = int(min(max((east - west) * m_par_deg_lon / resolution_m, 8), max_pixels))
+    hauteur = int(min(max((north - south) * 110540 / resolution_m, 8), max_pixels))
+    return largeur, hauteur
+
+
 def fetch_mnh_grid(west, south, east, north, resolution_m=MNH_RESOLUTION_M,
                    max_pixels=MNH_MAX_PIXELS):
     """Grille de hauteurs du sursol sur une emprise WGS84.
@@ -125,15 +158,7 @@ def fetch_mnh_grid(west, south, east, north, resolution_m=MNH_RESOLUTION_M,
     """
     west, south = float(west), float(south)
     east, north = float(east), float(north)
-
-    # Pas de grille en degrés, déduit de la résolution voulue au centre.
-    import math
-    lat_moy = (south + north) / 2
-    m_par_deg_lon = 111320 * math.cos(math.radians(lat_moy))
-    # max_pixels : 512 pour la végétation (payload navigateur) ; les toits
-    # demandent 0,5 m et restent côté serveur, donc jusqu'à 2048 (plafond WMS).
-    largeur = int(min(max((east - west) * m_par_deg_lon / resolution_m, 8), max_pixels))
-    hauteur = int(min(max((north - south) * 110540 / resolution_m, 8), max_pixels))
+    largeur, hauteur = dimensions_grille(west, south, east, north, resolution_m, max_pixels)
 
     valeurs = _grille_wms(MNH_LAYER, west, south, east, north, largeur, hauteur)
     source = "lidar_hd"
@@ -141,8 +166,10 @@ def fetch_mnh_grid(west, south, east, north, resolution_m=MNH_RESOLUTION_M,
     # seuil évite de confondre ce cas avec une emprise réellement rase.
     if max(valeurs) <= 0.5:
         try:
-            mns = _grille_wms(MNS_LAYER, west, south, east, north, largeur, hauteur, brut=True)
-            mnt = _grille_wms(MNT_LAYER, west, south, east, north, largeur, hauteur, brut=True)
+            # Deux grilles indépendantes, de la taille du MNH : lues ensemble.
+            mns, mnt = en_parallele(
+                lambda: _grille_wms(MNS_LAYER, west, south, east, north, largeur, hauteur, brut=True),
+                lambda: _grille_wms(MNT_LAYER, west, south, east, north, largeur, hauteur, brut=True))
             repli = [round(min(max(a - b, 0.0), 200.0), 1) if (a > -1000 and b > -1000) else 0.0
                      for a, b in zip(mns, mnt)]
             if max(repli) > 0.5:
@@ -152,15 +179,16 @@ def fetch_mnh_grid(west, south, east, north, resolution_m=MNH_RESOLUTION_M,
             # réponse LiDAR, même vide.
             journal.warning("Repli MNS-MNT indisponible: %s", exc)
 
+    couvert = max(valeurs) > 0.5
     data = {
         "width": largeur,
         "height": hauteur,
         "bbox": [west, south, east, north],
         "resolution_m": resolution_m,
-        "couvert": max(valeurs) > 0.5,
+        "couvert": couvert,
         # lidar_hd : hauteurs mesurées. mns_mnt : estimées par photogrammétrie,
         # à afficher comme telles.
-        "source": source if max(valeurs) > 0.5 else None,
+        "source": source if couvert else None,
         "seuil_m": MNH_SEUIL_M,
         "values": valeurs,
     }

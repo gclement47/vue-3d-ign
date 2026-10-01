@@ -39,6 +39,35 @@ def test_une_reponse_plafonnee_est_completee_par_quarts(monkeypatch):
     assert geojson["numberReturned"] == len(objets)
 
 
+def test_les_quarts_sont_lus_ensemble(monkeypatch):
+    """Les quatre quarts partent en même temps (la barrière ne s'ouvre qu'à
+    quatre), et le résultat est celui de la lecture un à un : mêmes objets,
+    dans le même ordre."""
+    import threading
+    objets = [(f"b.{i}", 0.1 + 0.2 * (i % 5), 0.1 + 0.2 * (i // 5)) for i in range(25)]
+    objets.append(("b.milieu", 0.5, 0.5))
+    service = _service(objets, plafond=10)
+    barriere = threading.Barrier(4, timeout=5)
+    appels = []
+
+    def get(url, timeout=None):
+        appels.append(url)
+        if len(appels) > 1:
+            barriere.wait()
+        return service(url, timeout)
+
+    monkeypatch.setattr(couches, "get_avec_reprise", get)
+    geojson = couches.lire_couche("X", 0, 0, 1, 1)
+    # Un à un : sud-ouest, sud-est, nord-ouest, nord-est, chacun dans l'ordre
+    # du service ; l'objet du milieu, à cheval, vient du premier quart.
+    attendus = []
+    for o, s, e, n in ((0, 0, .5, .5), (.5, 0, 1, .5), (0, .5, .5, 1), (.5, .5, 1, 1)):
+        for i, x, y in objets:
+            if o <= x <= e and s <= y <= n and i not in attendus:
+                attendus.append(i)
+    assert [f["id"] for f in geojson["features"]] == attendus
+
+
 def test_une_couche_trop_dense_est_une_lecture_en_echec(monkeypatch):
     # Cinq objets au même point : aucun découpage ne les sépare.
     objets = [(f"b.{i}", 0.3, 0.3) for i in range(5)]

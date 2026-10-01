@@ -67,6 +67,74 @@ def test_un_refus_persistant_finit_par_remonter(monkeypatch):
     assert len(appels) == geopf.GEOPF_ESSAIS
 
 
+def test_en_parallele_rend_les_resultats_dans_l_ordre():
+    """Lancées ensemble (la barrière ne s'ouvre qu'à trois), rendues dans
+    l'ordre où on les a données, pas dans celui où elles finissent."""
+    import threading
+    import time
+    barriere = threading.Barrier(3, timeout=5)
+
+    def lecture(valeur, delai):
+        barriere.wait()
+        time.sleep(delai)
+        return valeur
+
+    assert geopf.en_parallele(lambda: lecture("a", 0.2), lambda: lecture("b", 0),
+                              lambda: lecture("c", 0.1)) == ["a", "b", "c"]
+    assert geopf.en_parallele(lambda: "seule") == ["seule"]
+
+
+def test_en_parallele_n_attend_pas_les_autres_pour_echouer():
+    import threading
+    import time
+    libere = threading.Event()
+
+    def lente():
+        libere.wait(10)
+        return "trop tard"
+
+    def en_panne():
+        raise requests.Timeout("Read timed out")
+
+    debut = time.monotonic()
+    try:
+        with pytest.raises(requests.Timeout):
+            geopf.en_parallele(lente, en_panne)
+        assert time.monotonic() - debut < 5
+    finally:
+        libere.set()
+
+
+def test_les_requetes_simultanees_sont_bornees(monkeypatch):
+    """Tout le processus partage GEOPF_SIMULTANEES places : trois fois plus
+    de lectures WFS lancées ensemble n'en ont jamais davantage en cours."""
+    import threading
+    import time
+
+    from vue3d import couches
+    en_cours, pic, verrou = [0], [0], threading.Lock()
+
+    class _Reponse:
+        text = '{"features": []}'
+
+        def raise_for_status(self):
+            pass
+
+    def get(url, timeout=None):
+        with verrou:
+            en_cours[0] += 1
+            pic[0] = max(pic[0], en_cours[0])
+        time.sleep(0.05)
+        with verrou:
+            en_cours[0] -= 1
+        return _Reponse()
+
+    monkeypatch.setattr(couches, "get_avec_reprise", get)
+    geopf.en_parallele(*(lambda: couches._requete("X", 0, 0, 1, 1)
+                         for _ in range(3 * geopf.GEOPF_SIMULTANEES)))
+    assert pic[0] == geopf.GEOPF_SIMULTANEES
+
+
 def test_une_panne_serveur_est_retentee(monkeypatch):
     appels = []
     monkeypatch.setattr(geopf.requests, "get",

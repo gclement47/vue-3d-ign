@@ -33,10 +33,12 @@ lancé avec un détecteur (`Cache.obtenir_vehicules`, `VUE3D_VEHICULES`). Les
 panneaux solaires du registre OpenPVMapper (vue3d/panneaux.py) en sont une
 quatrième, optionnelle aussi (`Cache.obtenir_panneaux`, `VUE3D_PANNEAUX`).
 
-La construction coûte une vingtaine à une trentaine de secondes, dont la moitié
-à télécharger la grille MNH. Le résultat est donc mis en cache sur disque, par
-point arrondi à 4 décimales (une dizaine de mètres) : deux demandes voisines
-partagent la même scène.
+La construction coûte de quelques secondes à une demi-minute selon la zone et
+le lieu. Ses seize lectures partent ensemble (`_lire_ensemble`) : 3 s environ
+pour une zone de 1 000 m, moins d'une seconde pour l'emprise par défaut — le
+temps de la plus longue, au lieu de 13 s et de 4 à 5 s une à une. Le
+résultat est mis en cache sur disque, par point arrondi à 4 décimales (une
+dizaine de mètres) : deux demandes voisines partagent la même scène.
 
 **Une scène est complète ou n'existe pas.** Le cache ne périme pas — les
 campagnes LiDAR, la BD TOPO et la BD Forêt se renouvellent au mieux une fois
@@ -48,6 +50,7 @@ demande suivante réessaie.
 """
 
 import concurrent.futures
+import functools
 import gzip
 import json
 import logging
@@ -66,7 +69,7 @@ from .eau import (COUCHE_COURS_EAU, COUCHE_SURFACES_EAU, eau_pour_emprise,
                   masque_eau)
 from .lignes import COUCHE_LIGNES, COUCHE_PYLONES, lignes_pour_emprise
 from .houppiers import houppiers_pour_emprise
-from .mnh import fetch_mnh_grid, fetch_sol_grid
+from .mnh import dimensions_grille, fetch_mnh_grid, fetch_sol_grid
 from .monuments import fetch_monuments, monuments_pour_emprise
 from .ortho import fetch_exg_grid, fetch_ortho_jpeg
 from .ouvrages import OUVRAGES_VERSION, fetch_ouvrages, ouvrages_pour_emprise
@@ -125,7 +128,18 @@ SCENE_COTE_M = 2 * SCENE_DELTA * 111320
 # d'assembler(). Un compteur plutôt qu'un pourcentage : les étapes sont très
 # inégales (moins d'une seconde pour la plupart des lectures, plusieurs pour
 # la grille MNH et les deux calculs), une part du temps serait fausse.
+# Les lectures partent ensemble : l'étape k est alors « k − 1 lectures
+# finies », et son libellé dit celles qu'on attend encore.
 ETAPES_SCENE = 18
+# Côté maximal de la grille MNH à 0,5 m : le plafond du WMS (ZONE_MAX_M).
+GRILLE_PIXELS_MAX = 2048
+# Source du MNH qu'on suppose pour lire le terrain en même temps que lui : le
+# LiDAR HD couvre 77 % des points tirés au hasard en France (vue3d/mnh.py), et
+# davantage à mesure que le programme avance. Ailleurs, le terrain lu pour
+# rien l'a été en même temps que le reste, et il est relu à la bonne source.
+SOURCE_PROBABLE = "lidar_hd"
+LECTURE_GRILLE = "hauteurs du sursol"
+LECTURE_TERRAIN = "terrain sous les toits"
 NOM_SCENE = "scene.json.gz"
 NOM_ORTHO = "ortho.jpg"
 NOM_MONUMENTS = "monuments.json.gz"
@@ -304,8 +318,10 @@ def construire(lat, lon, avancer=None, zone=None):
     """Construit la scène d'un point.
 
     Args:
-        avancer: appelé au début de chacune des ETAPES_SCENE étapes avec son
-            libellé, pour le suivi que la page affiche.
+        avancer: appelé ETAPES_SCENE fois, d'un seul fil, pour le suivi que
+            la page affiche : au départ des lectures et à chacune qui finit,
+            avec celles qu'on attend encore (`_lire_ensemble`), puis au début
+            des toitures et des houppiers.
         zone: côté de l'emprise en mètres (`zone_normalisee`), None pour
             l'emprise par défaut.
 
@@ -316,59 +332,149 @@ def construire(lat, lon, avancer=None, zone=None):
     """
     avancer = avancer or (lambda libelle: None)
     west, south, east, north = emprise(lat, lon, zone)
+    bbox = (west, south, east, north)
     anneau_bbox = emprise_anneau(lat, lon, zone=zone)
     # Le relief garde sa maille d'environ 1,4 m quand la zone grandit, jusqu'à
     # 512 points de côté.
     taille_relief = min(512, round(RELIEF_TAILLE * max(1.0, facteur_zone(zone))))
+    # L'orthophoto et le terrain se lisent à la taille de la grille MNH, qui
+    # ne dépend que de l'emprise : demandés avec elle, pas après elle.
+    largeur, hauteur = dimensions_grille(*bbox, TOITS_RESOLUTION_M, GRILLE_PIXELS_MAX)
 
-    def lire(nom, fn, *args, **kwargs):
-        avancer(nom)
+    def terrain(source):
+        # Le terrain dont le MNH est tiré, pour redresser les toits sur la
+        # pente : une entrée de calcul, comme le MNH, jamais embarquée.
+        return fetch_sol_grid(*bbox, largeur, hauteur, source)
+
+    couches = (
+        ("bâtiments", COUCHE_BATIMENTS, bbox),
+        ("zones de végétation", COUCHE_VEGETATION, bbox),
+        ("BD Forêt", COUCHE_FORET, bbox),
+        ("routes", COUCHE_ROUTES, bbox),
+        ("étendues d'eau", COUCHE_SURFACES_EAU, bbox),
+        ("cours d'eau", COUCHE_COURS_EAU, bbox),
+        ("réservoirs", COUCHE_RESERVOIRS, bbox),
+        ("constructions ponctuelles", COUCHE_PONCTUELLES, bbox),
+        # Sur l'emprise de l'anneau : une ligne se voit de loin (vue3d/lignes.py).
+        ("lignes électriques", COUCHE_LIGNES, anneau_bbox),
+        ("pylônes", COUCHE_PYLONES, anneau_bbox))
+    t0 = time.monotonic()
+    lu = _lire_ensemble([
+        # Les plus longues d'abord : 1,5 à 3,5 s chacune pour une zone de
+        # 1 000 m, contre 0,1 à 0,3 s pour une couche WFS. Elles prennent
+        # les premières places (geopf.place), les petites passent entre.
+        # La grille à 0,5 m sert aux toitures ET aux houppiers : lue une fois.
+        (LECTURE_GRILLE, functools.partial(fetch_mnh_grid, *bbox, resolution_m=TOITS_RESOLUTION_M,
+                                           max_pixels=GRILLE_PIXELS_MAX)),
+        ("orthophoto", functools.partial(fetch_exg_grid, *bbox, largeur, hauteur)),
+        (LECTURE_TERRAIN, functools.partial(terrain, SOURCE_PROBABLE)),
+        ("mosaïque d'orthophoto", functools.partial(fetch_ortho_jpeg, *bbox)),
+        ("relief", functools.partial(fetch_relief, *bbox, taille=taille_relief)),
+        ("relief de l'anneau", functools.partial(fetch_relief_anneau, *anneau_bbox)),
+    ] + [(nom, functools.partial(lire_couche, couche, *b)) for nom, couche, b in couches],
+        avancer, terrain)
+    lectures_s = time.monotonic() - t0
+
+    grille = lu[LECTURE_GRILLE]
+    lignes = lignes_pour_emprise(*anneau_bbox, lu["lignes électriques"], lu["pylônes"])
+    mosaique, _, _ = lu["mosaïque d'orthophoto"]
+    scene = assembler(west, south, east, north, lu["bâtiments"], lu["zones de végétation"],
+                      lu["BD Forêt"], lu["routes"], grille, lu["orthophoto"], lu["relief"],
+                      lu["relief de l'anneau"], lu[LECTURE_TERRAIN],
+                      (lu["étendues d'eau"], lu["cours d'eau"]), lignes, avancer,
+                      (lu["réservoirs"], lu["constructions ponctuelles"]))
+    journal.info("Scène %.4f, %.4f (zone %s) : %d bâtiment(s), %d houppier(s), source %s, "
+                 "lectures en %.1f s",
+                 lat, lon, zone or "par défaut", len(scene["batiments"].get("features", [])),
+                 len(scene["houppiers"]), grille.get("source"), lectures_s)
+    return gzip.compress(json.dumps(scene, separators=(",", ":")).encode(), 6), mosaique
+
+
+def _libelle(attendues):
+    """Ce que la page affiche pendant les lectures : celles qu'on attend
+    encore, les plus longues en tête."""
+    if len(attendues) <= 2:
+        return " et ".join(attendues)
+    reste = len(attendues) - 2
+    return f"{attendues[0]}, {attendues[1]} et {reste} autre{'s' if reste > 1 else ''}"
+
+
+def _lire_ensemble(lectures, avancer, terrain):
+    """Les lectures d'une scène, toutes lancées ensemble ; {nom: résultat}.
+
+    Une seule en échec, et la scène est incomplète : SceneIncomplete dès
+    qu'on le sait, les lectures pas encore commencées sont abandonnées, celles
+    en cours finissent sans que personne ne les attende — rien n'est écrit.
+
+    Une seule dépendance réelle : le terrain sous les toits est celui de la
+    source du MNH. Il est lu d'emblée à SOURCE_PROBABLE (`terrain(source)`),
+    et n'est retenu qu'une fois la grille connue : relu à la bonne source si
+    elle en a une autre, son échec éventuel oublié alors avec lui.
+
+    `avancer` n'est appelé que d'ici, d'un seul fil : une fois au départ,
+    puis à chaque lecture finie sauf la dernière (l'étape suivante, les
+    toitures, s'annonce elle-même). L'étape k compte donc k − 1 lectures
+    finies, toujours croissante, et `len(lectures)` appels en tout.
+
+    Args:
+        lectures: (nom, fonction sans argument), dans l'ordre de lancement.
+    """
+    ordre = {nom: i for i, (nom, _) in enumerate(lectures)}
+    attendues = [nom for nom, _ in lectures]
+    # Un fil par lecture, et un pour un terrain à relire : aucune n'attend un
+    # fil, seulement une place vers la Géoplateforme (geopf.place).
+    bassin = concurrent.futures.ThreadPoolExecutor(max_workers=len(lectures) + 1,
+                                                   thread_name_prefix="lecture")
+    lu, terrain_tenu = {}, None
+
+    def finie(nom, futur):
         try:
-            return fn(*args, **kwargs)
+            lu[nom] = futur.result()
         except Exception as exc:
             raise SceneIncomplete(f"{nom} illisible : {exc}") from exc
+        attendues.remove(nom)
+        if attendues:
+            avancer(_libelle(attendues))
 
-    batiments = lire("bâtiments", lire_couche, COUCHE_BATIMENTS, west, south, east, north)
-    vegetation = lire("zones de végétation", lire_couche, COUCHE_VEGETATION,
-                      west, south, east, north)
-    forets = lire("BD Forêt", lire_couche, COUCHE_FORET, west, south, east, north)
-    routes = lire("routes", lire_couche, COUCHE_ROUTES, west, south, east, north)
-    eau = (lire("étendues d'eau", lire_couche, COUCHE_SURFACES_EAU, west, south, east, north),
-           lire("cours d'eau", lire_couche, COUCHE_COURS_EAU, west, south, east, north))
-    constructions = (
-        lire("réservoirs", lire_couche, COUCHE_RESERVOIRS, west, south, east, north),
-        lire("constructions ponctuelles", lire_couche, COUCHE_PONCTUELLES,
-             west, south, east, north))
-
-    # La grille à 0,5 m sert aux toitures ET aux houppiers : lue une fois.
-    grille = lire("hauteurs du sursol", fetch_mnh_grid, west, south, east, north,
-                  resolution_m=TOITS_RESOLUTION_M, max_pixels=2048)
-    if not grille.get("couvert"):
-        # Ni LiDAR HD ni repli photogrammétrique : la scène n'aurait ni
-        # toiture mesurée ni houppier. Le repli dépend d'un second service qui
-        # peut lui aussi tomber : on ne fige pas une scène vide.
-        raise SceneIncomplete("hauteurs du sursol indisponibles (ni LiDAR HD ni MNS − MNT)")
-    exg = lire("orthophoto", fetch_exg_grid, west, south, east, north,
-               grille["width"], grille["height"])
-    # Le terrain dont le MNH est tiré, pour redresser les toits sur la pente :
-    # une entrée de calcul, comme le MNH, jamais embarquée dans la scène.
-    sol = lire("terrain sous les toits", fetch_sol_grid, west, south, east, north,
-               grille["width"], grille["height"], grille["source"])
-    relief = lire("relief", fetch_relief, west, south, east, north, taille=taille_relief)
-    anneau = lire("relief de l'anneau", fetch_relief_anneau, *anneau_bbox)
-    lignes = lignes_pour_emprise(
-        *anneau_bbox,
-        lire("lignes électriques", lire_couche, COUCHE_LIGNES, *anneau_bbox),
-        lire("pylônes", lire_couche, COUCHE_PYLONES, *anneau_bbox))
-    mosaique, _, _ = lire("mosaïque d'orthophoto", fetch_ortho_jpeg, west, south, east, north)
-
-    scene = assembler(west, south, east, north, batiments, vegetation, forets,
-                      routes, grille, exg, relief, anneau, sol, eau, lignes, avancer,
-                      constructions)
-    journal.info("Scène %.4f, %.4f (zone %s) : %d bâtiment(s), %d houppier(s), source %s",
-                 lat, lon, zone or "par défaut", len(scene["batiments"].get("features", [])),
-                 len(scene["houppiers"]), grille.get("source"))
-    return gzip.compress(json.dumps(scene, separators=(",", ":")).encode(), 6), mosaique
+    try:
+        en_cours = {bassin.submit(lecture): nom for nom, lecture in lectures}
+        avancer(_libelle(attendues))
+        while en_cours:
+            faites, _ = concurrent.futures.wait(
+                en_cours, return_when=concurrent.futures.FIRST_COMPLETED)
+            # Dans l'ordre de lancement : deux lectures finies ensemble
+            # s'annoncent toujours dans le même ordre.
+            for futur in sorted(faites, key=lambda f: ordre[en_cours[f]]):
+                nom = en_cours.pop(futur, None)
+                if nom is None:
+                    continue                    # terrain écarté plus haut
+                if nom == LECTURE_TERRAIN and LECTURE_GRILLE not in lu:
+                    terrain_tenu = futur        # source pas encore connue
+                    continue
+                finie(nom, futur)
+                if nom != LECTURE_GRILLE:
+                    continue
+                grille = lu[nom]
+                if not grille.get("couvert"):
+                    # Ni LiDAR HD ni repli photogrammétrique : la scène
+                    # n'aurait ni toiture mesurée ni houppier. Le repli dépend
+                    # d'un second service qui peut lui aussi tomber : on ne
+                    # fige pas une scène vide.
+                    raise SceneIncomplete(
+                        "hauteurs du sursol indisponibles (ni LiDAR HD ni MNS − MNT)")
+                if grille["source"] == SOURCE_PROBABLE:
+                    if terrain_tenu is not None:
+                        finie(LECTURE_TERRAIN, terrain_tenu)
+                    continue
+                # Le terrain lu d'emblée n'est pas celui de cette grille.
+                for autre in [f for f, n in en_cours.items() if n == LECTURE_TERRAIN]:
+                    autre.cancel()
+                    del en_cours[autre]
+                terrain_tenu = None
+                en_cours[bassin.submit(terrain, grille["source"])] = LECTURE_TERRAIN
+        return lu
+    finally:
+        bassin.shutdown(wait=False, cancel_futures=True)
 
 
 class Cache:

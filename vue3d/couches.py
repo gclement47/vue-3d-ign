@@ -26,7 +26,7 @@ import json
 
 import requests
 
-from .geopf import get_avec_reprise
+from .geopf import en_parallele, get_avec_reprise, place
 
 WFS_URL = "https://data.geopf.fr/wfs/ows"
 COUCHE_BATIMENTS = "BDTOPO_V3:batiment"
@@ -45,7 +45,8 @@ def _requete(typenames, west, south, east, north):
     url = (f"{WFS_URL}?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature"
            f"&TYPENAMES={typenames}&OUTPUTFORMAT=application/json&SRSNAME=EPSG:4326"
            f"&BBOX={west},{south},{east},{north},EPSG:4326")
-    reponse = get_avec_reprise(url, timeout=30)
+    with place():
+        reponse = get_avec_reprise(url, timeout=30)
     reponse.raise_for_status()
     texte = reponse.text
     if "java.lang.RuntimeException" in texte or "Unable to obtain connection" in texte:
@@ -71,10 +72,15 @@ def lire_couche(typenames, west, south, east, north, profondeur=0):
         raise requests.RequestException(
             f"{typenames} : {len(geojson['features'])} objets rendus sur {attendus}")
     milieu_lon, milieu_lat = (west + east) / 2, (south + north) / 2
+    quarts = ((west, south, milieu_lon, milieu_lat), (milieu_lon, south, east, milieu_lat),
+              (west, milieu_lat, milieu_lon, north), (milieu_lon, milieu_lat, east, north))
+    # Les quatre lus ensemble, réunis dans le même ordre qu'un à un : un objet
+    # à cheval reste celui du premier quart qui le rend.
+    reponses = en_parallele(*(lambda q=q: lire_couche(typenames, *q, profondeur + 1)
+                              for q in quarts))
     vus, objets = set(), []
-    for quart in ((west, south, milieu_lon, milieu_lat), (milieu_lon, south, east, milieu_lat),
-                  (west, milieu_lat, milieu_lon, north), (milieu_lon, milieu_lat, east, north)):
-        for objet in lire_couche(typenames, *quart, profondeur + 1)["features"]:
+    for reponse in reponses:
+        for objet in reponse["features"]:
             if objet.get("id") not in vus:
                 vus.add(objet.get("id"))
                 objets.append(objet)

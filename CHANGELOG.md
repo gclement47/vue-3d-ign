@@ -37,6 +37,19 @@ messages de commit et dans les commentaires des modules.
 
 ### Modifié
 
+- **Les lectures d'une scène partent ensemble.** Ses seize lectures de la
+  Géoplateforme (couches WFS, grille MNH, orthophoto, terrain, relief,
+  mosaïque) se suivaient une à une. Elles partent désormais toutes à la
+  fois, huit requêtes au plus en cours pour tout le service, et l'orthophoto
+  et le terrain, qui ont la taille de la grille MNH, sont demandés avec elle
+  plutôt qu'après : cette taille ne dépend que de l'emprise. Médianes de
+  trois passages avant et après, dos à dos : en zone de 1 000 m, les
+  lectures passent de 13,8 à 2,9 s à Gordes et de 13,3 à 3,3 s à
+  Strasbourg ; dans l'emprise par défaut, de 4,2 à 0,9 s et de 5,1 à 0,8 s.
+  Deux scènes de 1 000 m demandées ensemble sont lues en 4,5 s au lieu de
+  14,2. La scène et l'orthophoto sont les mêmes à l'octet. Pendant
+  l'attente, la page compte les lectures finies et nomme celles qu'on attend
+  encore : « étape 14 sur 18 : hauteurs du sursol, orthophoto et 1 autre ».
 - **Toitures et houppiers se calculent dix fois plus vite.** Chaque
   bâtiment relisait la grille MNH entière, en Python, et la segmentation des
   arbres la parcourait toute à chaque passe. Sur Gordes en

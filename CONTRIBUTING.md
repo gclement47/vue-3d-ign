@@ -69,10 +69,10 @@ flowchart LR
     P -.->|"GET /api/monuments<br/>GET /api/ouvrages<br/>après la scène"| A
     A --> C{"Cache<br/>scene.py"}
     C -->|"déjà construite"| D[("cache/vN/lat_lon/<br/>scene.json.gz · ortho.jpg<br/>monuments.json.gz<br/>ouvrages-vM.json.gz")]
-    C -->|"absente : verrou par point"| B["construire()<br/>16 lectures"]
+    C -->|"absente : verrou par point"| B["construire()<br/>16 lectures ensemble"]
     C -.->|"tâche de fond"| OSM[("Overpass<br/>OpenStreetMap")]
     C -.->|"tâche de fond :<br/>ouvrages"| G
-    B --> G["geopf.get_avec_reprise<br/>3 essais"]
+    B --> G["geopf.get_avec_reprise<br/>3 essais, 8 places"]
     G --> IGN[("Géoplateforme IGN<br/>WFS · WMS")]
     B --> S["assembler()"]
     S --> T["toits.py, pans.py"]
@@ -89,10 +89,11 @@ Le trajet d'une demande, dans l'ordre :
    la même scène. Si elle est déjà sur disque, elle est servie telle quelle.
 3. Sinon, un verrou par point garantit qu'une seule construction a lieu, même
    si plusieurs visiteurs demandent le même lieu en même temps. `construire()`
-   lit alors seize sources de l'IGN, l'une après l'autre, et annonce chaque
-   étape pour la barre d'avancement de la page. Pendant ce temps, deux tâches
-   de fond lisent les couches à part : Overpass pour les monuments OSM, quatre
-   couches BD TOPO pour les ouvrages.
+   lit alors seize sources de l'IGN, toutes ensemble (`_lire_ensemble` ; huit
+   requêtes au plus en cours pour tout le service, `geopf.place`), et compte
+   les lectures finies pour la barre d'avancement de la page. Pendant ce
+   temps, deux tâches de fond lisent les couches à part : Overpass pour les
+   monuments OSM, quatre couches BD TOPO pour les ouvrages.
 4. `assembler()` fait les deux calculs longs : les toitures (`toits.py`, et
    `pans.py` pour les toits que le résumé manque), puis les arbres
    (`houppiers.py`), une fois réservoirs et constructions ponctuelles retirés
@@ -122,7 +123,7 @@ anneau de relief grossier s'étend au-delà, sur 2 km de côté.
 |---|---|---|
 | `app.py` | Routes Flask | `creer_app(dossier_cache, construire)` : la construction est injectable, c'est ainsi que les tests évitent le réseau |
 | `scene.py` | Construction et cache | `SCENE_VERSION` (format), `ETAPES_SCENE` (suivi), `SceneIncomplete`, `Cache` et son verrou par point ; les couches à part y passent par le même chemin (`_prelire`, `_obtenir_couche`) |
-| `geopf.py` | GET avec reprise | 3 essais espacés de 3 s, sur **tout** échec, refus 4xx compris |
+| `geopf.py` | GET avec reprise | 3 essais espacés de 3 s, sur **tout** échec, refus 4xx compris ; `place()` borne à 8 les requêtes simultanées du processus, `en_parallele` lance des lectures ensemble |
 | `batiments.py` | Bâtiments découpés sur l'emprise | Le WFS les rend entiers ; coupés à 1,25 m du bord pour que la grille MNH les encadre, ils portent `coupe` |
 | `couches.py` | Lecture des couches WFS | Le serveur renvoie parfois une erreur Java avec un code 200 : c'est le contenu qui tranche |
 | `mnh.py` | Grille des hauteurs (MNH) et terrain | GetMap au format BIL float32 ; repli MNS − MNT hors LiDAR HD ; `fetch_sol_grid` pour le terrain sous les toits |
@@ -330,12 +331,16 @@ Trois autres habitudes complètent celle-ci :
 ### Ajouter une source de données
 
 1. Écrivez la lecture dans le module concerné : `couches.lire_couche` pour une
-   couche WFS, sinon une fonction qui passe par `geopf.get_avec_reprise`.
+   couche WFS, sinon une fonction qui passe par `geopf.get_avec_reprise`, sous
+   `with geopf.place():` — la requête seule, jamais une attente sur d'autres
+   lectures.
    Rendez `None` ou une collection vide quand la donnée n'existe pas ;
    laissez l'exception remonter quand la lecture échoue.
-2. Dans `scene.construire()`, appelez-la par `lire("libellé", fonction, …)` :
-   l'échec devient `SceneIncomplete`, et l'étape est annoncée à la page.
-   **Incrémentez `ETAPES_SCENE`** ; un test vérifie que le compte tombe juste.
+2. Dans `scene.construire()`, ajoutez `("libellé", functools.partial(fonction,
+   …))` à la liste que reçoit `_lire_ensemble` : elle part avec les autres,
+   son échec devient `SceneIncomplete`, et sa fin est comptée pour la page.
+   Les plus longues en tête de liste. **Incrémentez `ETAPES_SCENE`** ; un test
+   vérifie que le compte tombe juste.
 3. Traitez la donnée dans une fonction pure, testable sans réseau, appelée par
    `assembler()` ou par `construire()`.
 4. Ajoutez la clé à la scène et incrémentez `SCENE_VERSION`.
