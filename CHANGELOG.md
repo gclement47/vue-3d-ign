@@ -43,6 +43,19 @@ messages de commit et dans les commentaires des modules.
   zone de 1 000 m (672 bâtiments, 19 312 houppiers), le calcul passe de 100 s
   à 8,5 s, et la scène entière, lectures comprises, de 114 s à 17 s. La
   scène est la même à l'octet : son format et son cache ne changent pas.
+- **La page affiche une scène deux à trois fois plus vite.** De la réponse
+  du serveur à la première image complète, scène en cache, sur un Mac M4
+  (médianes de trois essais) : Gordes 0,40 s → 0,17 s, Gordes en zone de
+  1 000 m 1,7 s → 0,57 s, Strasbourg en zone de 1 000 m 2,4 s → 0,94 s. La
+  végétation s'écrit dans des tableaux typés, normales et sphères
+  englobantes se calculent sans les objets intermédiaires de three.js, une
+  surface de toit mesurée ne recoupe plus l'emprise entière à chaque maille,
+  et les programmes du GPU se compilent pendant que le serveur répond. Les
+  ouvrages et les monuments, en arrivant, reconstruisaient la végétation ou
+  les toits mesurés : une fois la scène affichée, l'image se figeait encore
+  1,3 à 1,7 s à Gordes en zone de 1 000 m, 1,2 puis 0,6 s à Strasbourg ; ils
+  ne refont plus que ce qui change, en 0,09 s au plus. Les géométries
+  affichées sont les mêmes à l'octet.
 
 ### Corrigé
 

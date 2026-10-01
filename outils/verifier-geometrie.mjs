@@ -17,10 +17,19 @@
 //   l'extérieur, volume égal à l'intégrale de la hauteur du toit ;
 // - véhicules (blocsVehicule, repereVehicule) : chaque bloc fermé, tourné vers
 //   l'extérieur, dans le gabarit unité ; le repère d'un véhicule posé sur une
-//   pente reste orthonormé, direct, le toit vers le haut.
+//   pente reste orthonormé, direct, le toit vers le haut ;
+// - normales et sphères englobantes que la page calcule elle-même, pour aller
+//   plus vite (normalesFacettes, normalesPliees, normalesIndexees,
+//   sphereEnglobante) : identiques à l'octet à celles de three.js
+//   (computeVertexNormals, toCreasedNormals, computeBoundingSphere) ; tampon
+//   des houppiers en tableaux typés : identique à l'ancien, en tableaux
+//   JavaScript, et à la taille annoncée par facesHouppier ; végétation sans
+//   les masses qu'expliquent les ouvrages (vegetationExtraite) : identique à
+//   sa reconstruction.
 //
 // Sort en erreur au premier contrôle manqué.
 import * as THREE from 'three';
+import { toCreasedNormals } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 
@@ -35,15 +44,34 @@ function extraire(nom) {
     else if (src[j] === '}' && --n === 0) return src.slice(i, j + 1);
   }
 }
+// Une déclaration `const NOM = …;` de la page, jusqu'au point-virgule hors
+// de toute parenthèse, crochet ou accolade.
+function extraireConst(nom) {
+  const i = src.indexOf(`const ${nom} =`);
+  if (i < 0) throw new Error('introuvable dans la page : ' + nom);
+  let n = 0;
+  for (let j = i; j < src.length; j++) {
+    if ('([{'.includes(src[j])) n++;
+    else if (')]}'.includes(src[j])) n--;
+    else if (src[j] === ';' && n === 0) return src.slice(i, j + 1);
+  }
+}
 // Projection locale de la page, autour d'un point à 45° N.
 const M = 111320, MLON = 111320 * Math.cos(45 * Math.PI / 180);
 const toLocal = (lon, lat) => [(lon - 2) * MLON, (lat - 45) * M];
 const NOMS = ['couperPolygone', 'enveloppeConvexe', 'rectangleMin', 'rectangleSelonAxe',
               'geometrieToitDecoupe', 'stationsLeLong', 'prismeLeLong', 'dalle',
-              'blocsVehicule', 'repereVehicule'];
+              'blocsVehicule', 'repereVehicule', 'normalesFacettes', 'poserNormaleFacette', 'geometrieFacettes',
+              'normalesPliees', 'normalesIndexees', 'sphereEnglobante',
+              'alea', 'portDe', 'portMesure', 'facesHouppier', 'ajouterHouppier', 'nouveauTampon',
+              'vegetationExtraite'];
+const CONSTS = ['PORTS', 'SEGMENTS_HOUPPIER', 'ANGLES_HOUPPIER', 'COS_HOUPPIER', 'BOSSES_HOUPPIER',
+                'EMPRISE_HOUPPIER', 'HAUTEUR_MIN_TRONC'];
 const { rectangleMin, rectangleSelonAxe, geometrieToitDecoupe, stationsLeLong, prismeLeLong, dalle,
-        blocsVehicule, repereVehicule } =
-  new Function('THREE', 'toLocal', NOMS.map(extraire).join('\n') + `\nreturn { ${NOMS.join(', ')} };`)(THREE, toLocal);
+        blocsVehicule, repereVehicule, normalesFacettes, normalesPliees, normalesIndexees, sphereEnglobante,
+        facesHouppier, ajouterHouppier, nouveauTampon, vegetationExtraite } =
+  new Function('THREE', 'toLocal', CONSTS.map(extraireConst).join('\n') + '\n' + NOMS.map(extraire).join('\n')
+               + `\nreturn { ${NOMS.join(', ')} };`)(THREE, toLocal);
 let tout = true;
 
 // --- Volumes des ouvrages ---------------------------------------------------
@@ -243,6 +271,156 @@ const plat = repereVehicule(0, 1, 4.3, 1.8, 0, 0, 0, 0);       // cap nord, sol 
 const platOk = [plat.X, plat.Y, plat.Z].flat().every((c, i) => Math.abs(c - [0, 0, -1, 0, 1, 0, 1, 0, 0][i]) < 1e-12);
 console.log(`${mauvais === 0 && platOk ? 'OK ' : 'KO '} repère d'un véhicule : ${essais} poses, ${mauvais} fausses, écart à l'orthonormé ${pire.toExponential(1)}, à plat cap nord ${platOk ? 'avant au nord, droite à l\'est' : 'FAUX'}`);
 tout = tout && mauvais === 0 && platOk;
+}
+
+// --- Normales et sphères calculées par la page ----------------------------------
+// Elles remplacent celles de three.js pour aller plus vite : elles doivent en
+// être la copie à l'octet, faute de quoi la scène changerait.
+{
+// Tirage pseudo-aléatoire reproductible (LCG), pour des essais stables.
+let graine = 12345;
+const hasard = () => ((graine = (Math.imul(graine, 1103515245) + 12345) >>> 0) / 4294967296);
+const memes = (a, b) => a.length === b.length && Buffer.compare(Buffer.from(a.buffer, a.byteOffset, a.byteLength),
+                                                                 Buffer.from(b.buffer, b.byteOffset, b.byteLength)) === 0;
+const geoDe = pos => { const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); return g; };
+// Toit en nappe : une grille de 0,5 m relevée d'un faîtage, bruitée de quelques
+// centimètres comme le LiDAR, à des centaines de mètres du centre, coupée en
+// triangles non indexés ; plus des triangles dégénérés et des sommets doublés.
+function nappe(n, x0, z0) {
+  const h = (i, j) => 6 + 3 * (1 - Math.abs(j - n / 2) / (n / 2)) + 0.05 * hasard() + (i > n / 2 ? 1.5 : 0);
+  const v = [];
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+    const p = (a, b) => [x0 + a * 0.5, h(a, b), z0 - b * 0.5];
+    const [a, b, c, d] = [p(i, j), p(i + 1, j), p(i + 1, j + 1), p(i, j + 1)];
+    v.push(...a, ...b, ...c, ...a, ...c, ...d);
+  }
+  v.push(x0, 7, z0, x0, 7, z0, x0 + 1, 7, z0);                 // dégénéré : deux sommets confondus
+  v.push(x0, 7, z0, x0 + 0.001, 7, z0, x0 + 0.002, 7, z0);     // dégénéré : alignés, au centimètre
+  // Des triangles quelconques autour de la nappe, de toutes tailles.
+  for (let k = 0; k < 200; k++) for (let s = 0; s < 3; s++) v.push(x0 + 40 * hasard(), 30 * hasard(), z0 - 40 * hasard());
+  return new Float32Array(v);
+}
+let ok = true, essais = 0;
+for (const [n, x0, z0] of [[8, 0, 0], [30, 412.3, -287.9], [60, -950.7, 801.1]]) {
+  const pos = nappe(n, x0, z0);
+  // Facettes : computeVertexNormals.
+  const ref = geoDe(pos.slice()); ref.computeVertexNormals();
+  ok = memes(normalesFacettes(pos), ref.attributes.normal.array) && ok;
+  // Pliées : toCreasedNormals, au pli des toits (40°) et à d'autres angles.
+  for (const angle of [40 * Math.PI / 180, Math.PI / 3, 0.05]) {
+    const r = toCreasedNormals(geoDe(pos.slice()), angle);
+    ok = memes(normalesPliees(geoDe(pos.slice()), angle).attributes.normal.array, r.attributes.normal.array) && ok;
+    essais++;
+  }
+  // Sphère englobante.
+  const g = geoDe(pos.slice());
+  sphereEnglobante(g);
+  ok = g.boundingSphere.center.equals((ref.computeBoundingSphere(), ref.boundingSphere.center))
+       && g.boundingSphere.radius === ref.boundingSphere.radius && ok;
+  essais += 2;
+}
+// Indexées : un terrain (PlaneGeometry) relevé deux fois de suite — la seconde
+// remet à zéro les normales existantes —, et une face qui répète un sommet.
+for (const seg of [16, 64]) {
+  const a = new THREE.PlaneGeometry(300, 200, seg, seg), b = a.clone();
+  for (let passe = 0; passe < 2; passe++) {
+    for (let i = 0; i < a.attributes.position.count; i++) {
+      const y = 50 * hasard() - 25;
+      a.attributes.position.array[3 * i + 2] = y; b.attributes.position.array[3 * i + 2] = y;
+    }
+    a.computeVertexNormals(); normalesIndexees(b);
+    ok = memes(a.attributes.normal.array, b.attributes.normal.array) && ok;
+    essais++;
+  }
+}
+{
+  const pos = new Float32Array([0, 0, 0, 1, 0.2, 0, 0, 0.3, 1, 1, 1, 1]);
+  const a = geoDe(pos.slice()), b = geoDe(pos.slice());
+  a.setIndex([0, 1, 2, 1, 3, 2, 0, 0, 3, 2, 3, 2]); b.setIndex([0, 1, 2, 1, 3, 2, 0, 0, 3, 2, 3, 2]);
+  a.computeVertexNormals(); normalesIndexees(b);
+  ok = memes(a.attributes.normal.array, b.attributes.normal.array) && ok;
+  essais++;
+}
+console.log(`${ok ? 'OK ' : 'KO '} normales et sphères de la page contre three.js : ${essais} essais, ${ok ? 'identiques à l\'octet' : 'DIFFÉRENTES'}`);
+tout = tout && ok;
+}
+
+// --- Tampon des houppiers ----------------------------------------------------------
+// L'ancien tampon, en tableaux JavaScript et computeVertexNormals, sert de
+// référence : le nouveau, en tableaux typés, doit rendre les mêmes octets, à
+// la taille exacte annoncée par facesHouppier comme en s'agrandissant.
+{
+function ancienTampon() {
+  const sommets = [], positions = [], couleurs = [], elements = [];
+  let courant = 0;
+  return {
+    element(n) { courant = n; },
+    sommet(x, y, z, c) { sommets.push([x, y, z, c.r, c.g, c.b, courant]); return sommets.length - 1; },
+    face(i, j, k) {
+      for (const n of [i, j, k]) { const s = sommets[n]; positions.push(s[0], s[1], s[2]); couleurs.push(s[3], s[4], s[5]); elements.push(s[6]); }
+    },
+    geometrie() {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      geo.setAttribute('color', new THREE.Float32BufferAttribute(couleurs, 3));
+      geo.computeVertexNormals();
+      geo.userData.baseY = Float32Array.from(positions.filter((_, i) => i % 3 === 1));
+      geo.userData.elements = Int32Array.from(elements);
+      return geo;
+    },
+  };
+}
+let graine = 777;
+const hasard = () => ((graine = (Math.imul(graine, 1103515245) + 12345) >>> 0) / 4294967296);
+const elements = Array.from({ length: 300 }, (_, k) => {
+  const nb = [0, 4, 6, 8, 11][k % 5];
+  const profil = Array.from({ length: nb }, (_, i) => 1 - i / (nb + 1) - 0.1 * hasard());
+  const lon = 2 + (hasard() - 0.5) * 0.01, lat = 45 + (hasard() - 0.5) * 0.01;
+  const [x, y] = toLocal(lon, lat);
+  return { lon, lat, x, y, h: 1 + 25 * hasard(), r: 0.5 + 6 * hasard(), allongement: 1 + 2 * hasard(),
+           axe_deg: 360 * hasard(), profil, classe: k % 3 ? 'vegetation' : 'sursol',
+           essence: ['Pin', 'Chêne', 'Mixte', ''][k % 4], nature: ['Bois', 'Haie', ''][k % 3] };
+});
+const construireAvec = tampon => {
+  let faces = 0, annonce = 0;
+  elements.forEach((el, n) => { tampon.element(n); const f = ajouterHouppier(tampon, el, 0); faces += f; annonce += facesHouppier(el); if (f !== facesHouppier(el)) faces = NaN; });
+  return { geo: tampon.geometrie(), faces, annonce };
+};
+const ref = construireAvec(ancienTampon());
+let ok = Number.isFinite(ref.faces) && ref.faces === ref.annonce;
+const memes = (a, b) => a.length === b.length && Buffer.compare(Buffer.from(a.buffer, a.byteOffset, a.byteLength),
+                                                                 Buffer.from(b.buffer, b.byteOffset, b.byteLength)) === 0;
+for (const t of [nouveauTampon(ref.annonce), nouveauTampon(7), nouveauTampon()]) {
+  const { geo } = construireAvec(t);
+  for (const n of ['position', 'color', 'normal']) ok = memes(geo.attributes[n].array, ref.geo.attributes[n].array) && ok;
+  for (const n of ['baseY', 'elements']) ok = memes(geo.userData[n], ref.geo.userData[n]) && ok;
+}
+console.log(`${ok ? 'OK ' : 'KO '} tampon des houppiers : ${elements.length} éléments, ${ref.faces} faces (${ref.annonce} annoncées), identique à l'ancien en tableaux JavaScript`);
+tout = tout && ok;
+
+// Masses retirées par les ouvrages : la géométrie recopiée d'un maillage déjà
+// posé sur le relief doit être celle du tampon pour les éléments restants.
+const construireListe = liste => {
+  const t = nouveauTampon(liste.reduce((n, el) => n + facesHouppier(el), 0));
+  const facesDebut = [];
+  let faces = 0;
+  liste.forEach((el, n) => { facesDebut.push(faces); t.element(n); faces += ajouterHouppier(t, el, 0); });
+  return { geo: t.geometrie(), facesDebut };
+};
+const complet = construireListe(elements);
+// Posé comme par placerVegetation : chaque élément relevé de son sol.
+const sols = elements.map(() => Math.fround(300 * hasard()));
+const pY = complet.geo.attributes.position.array, bY = complet.geo.userData.baseY, qE = complet.geo.userData.elements;
+for (let i = 0; i < qE.length; i++) pY[3 * i + 1] = bY[i] + sols[qE[i]];
+const mesh = { geometry: complet.geo, userData: { elements, facesDebut: complet.facesDebut } };
+const restants = elements.filter((_, k) => k % 3 !== 1 && k !== elements.length - 1);
+const extrait = vegetationExtraite(mesh, restants), attendu = construireListe(restants);
+let okE = !!extrait && JSON.stringify(extrait.facesDebut) === JSON.stringify(attendu.facesDebut);
+for (const n of ['position', 'color', 'normal']) okE = okE && memes(extrait.geometrie.attributes[n].array, attendu.geo.attributes[n].array);
+for (const n of ['baseY', 'elements']) okE = okE && memes(extrait.geometrie.userData[n], attendu.geo.userData[n]);
+okE = okE && vegetationExtraite(mesh, [elements[5], elements[2]]) === null;          // hors d'ordre
+console.log(`${okE ? 'OK ' : 'KO '} végétation sans les masses retirées : ${restants.length} éléments sur ${elements.length}, recopiés à l'identique de la reconstruction`);
+tout = tout && okE;
 }
 
 process.exit(tout ? 0 : 1);

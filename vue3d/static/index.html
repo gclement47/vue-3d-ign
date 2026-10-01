@@ -464,6 +464,12 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 host.appendChild(renderer.domElement);
+// Demandée tout de suite, GPU au repos : three.js la garde ensuite. Le
+// premier appel (gl.getParameter) attend que le GPU ait fini tout ce qu'on
+// lui a confié, et c'est l'orthophoto, arrivée juste après la scène, qui la
+// demandait : 14 ms d'arrêt sur le GPU du Mac (M4), 0,45 à 7,7 s sous le
+// rendu logiciel des essais (Gordes, Strasbourg en zone de 1 000 m).
+renderer.capabilities.getMaxAnisotropy();
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;          // l'inertie fait tout le confort
@@ -505,6 +511,181 @@ scene.add(sol);
 const grille = new THREE.GridHelper(1000, 100, 0x39414a, 0x2b3138);
 grille.visible = false;
 scene.add(grille);
+
+// --- Normales et sphères englobantes ----------------------------------------
+// Les mêmes calculs que three.js r160, à l'octet près, sans ses objets
+// intermédiaires : chaque sommet y passait par un Vector3 et des accesseurs
+// d'attribut. Mesuré au profil CPU de Chrome, computeVertexNormals pesait
+// 0,36 s des 1,9 s de la végétation de Gordes en zone de 1 000 m (19 312
+// houppiers, 3,9 millions de faces), et toCreasedNormals 0,41 s des 1,2 s des
+// bâtiments de Strasbourg en zone de 1 000 m (251 surfaces de toit
+// mesurées). Les opérations sont celles de three.js, dans le même ordre : le
+// résultat est identique, ce que vérifie outils/verifier-geometrie.mjs.
+
+/**
+ * Normales d'une géométrie non indexée, une par facette : ce que rend
+ * BufferGeometry.computeVertexNormals() — produit vectoriel (C − B) × (A − B)
+ * rangé en Float32, puis normé depuis la valeur rangée (normalizeNormals).
+ */
+function normalesFacettes(pos) {
+    const normales = new Float32Array(pos.length);
+    for (let i = 0; i < pos.length; i += 9) poserNormaleFacette(pos, normales, i);
+    return normales;
+}
+
+/** La normale de la face dont les sommets commencent en `i`, aux trois sommets. */
+function poserNormaleFacette(pos, normales, i) {
+    const ax = pos[i], ay = pos[i + 1], az = pos[i + 2];
+    const bx = pos[i + 3], by = pos[i + 4], bz = pos[i + 5];
+    const cbx = pos[i + 6] - bx, cby = pos[i + 7] - by, cbz = pos[i + 8] - bz;
+    const abx = ax - bx, aby = ay - by, abz = az - bz;
+    const x = Math.fround(cby * abz - cbz * aby);
+    const y = Math.fround(cbz * abx - cbx * abz);
+    const z = Math.fround(cbx * aby - cby * abx);
+    const s = 1 / (Math.sqrt(x * x + y * y + z * z) || 1);
+    normales[i] = normales[i + 3] = normales[i + 6] = x * s;
+    normales[i + 1] = normales[i + 4] = normales[i + 7] = y * s;
+    normales[i + 2] = normales[i + 5] = normales[i + 8] = z * s;
+}
+
+/** Géométrie non indexée sur des positions, normales par facette (computeVertexNormals). */
+function geometrieFacettes(pos) {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(normalesFacettes(pos), 3));
+    return g;
+}
+
+/**
+ * Normales pliées : ce que rend toCreasedNormals(geo, angle) de
+ * BufferGeometryUtils (three r160) sur une géométrie non indexée. Les sommets
+ * sont regroupés au centimètre comme là-bas (~~(v × 100,000001) par
+ * composante), mais sans en faire des chaînes ; la normale d'un sommet est la
+ * somme, dans l'ordre des faces, des normales des faces de son groupe à moins
+ * de `angle` de la sienne, normée.
+ */
+function normalesPliees(geo, angle) {
+    const pos = geo.attributes.position.array;
+    const nf = pos.length / 9, nv = pos.length / 3;
+    const creaseDot = Math.cos(angle);
+    const hashMultiplier = (1 + 1e-10) * 1e2;
+    // Normale normée de chaque face : (C − B) × (A − B), Vector3.normalize().
+    const fn = new Float64Array(3 * nf);
+    for (let f = 0; f < nf; f++) {
+        const i = 9 * f;
+        const bx = pos[i + 3], by = pos[i + 4], bz = pos[i + 5];
+        const t1x = pos[i + 6] - bx, t1y = pos[i + 7] - by, t1z = pos[i + 8] - bz;
+        const t2x = pos[i] - bx, t2y = pos[i + 1] - by, t2z = pos[i + 2] - bz;
+        const x = t1y * t2z - t1z * t2y, y = t1z * t2x - t1x * t2z, z = t1x * t2y - t1y * t2x;
+        const s = 1 / (Math.sqrt(x * x + y * y + z * z) || 1);
+        fn[3 * f] = x * s; fn[3 * f + 1] = y * s; fn[3 * f + 2] = z * s;
+    }
+    // Clé de chaque sommet, puis numéro de son groupe dans l'ordre d'apparition,
+    // par une table à adressage ouvert : deux sommets sont du même groupe si
+    // leurs trois entiers sont égaux, comme deux chaînes de three.js.
+    const kx = new Int32Array(nv), ky = new Int32Array(nv), kz = new Int32Array(nv);
+    let taille = 2;
+    while (taille < 2 * nv) taille *= 2;
+    const table = new Int32Array(taille).fill(-1), premier = new Int32Array(nv), groupe = new Int32Array(nv);
+    let nbGroupes = 0;
+    for (let v = 0; v < nv; v++) {
+        const x = kx[v] = ~~(pos[3 * v] * hashMultiplier);
+        const y = ky[v] = ~~(pos[3 * v + 1] * hashMultiplier);
+        const z = kz[v] = ~~(pos[3 * v + 2] * hashMultiplier);
+        let h = (Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791)) & (taille - 1);
+        for (;;) {
+            const g = table[h];
+            if (g < 0) { table[h] = nbGroupes; premier[nbGroupes] = v; groupe[v] = nbGroupes++; break; }
+            const r = premier[g];
+            if (kx[r] === x && ky[r] === y && kz[r] === z) { groupe[v] = g; break; }
+            h = (h + 1) & (taille - 1);
+        }
+    }
+    // Faces de chaque groupe, dans l'ordre des sommets : celui des push de three.js.
+    const debut = new Int32Array(nbGroupes + 1);
+    for (let v = 0; v < nv; v++) debut[groupe[v] + 1]++;
+    for (let g = 0; g < nbGroupes; g++) debut[g + 1] += debut[g];
+    const rempli = debut.slice(0, nbGroupes), faces = new Int32Array(nv);
+    for (let v = 0; v < nv; v++) faces[rempli[groupe[v]]++] = (v / 3) | 0;
+    const normales = new Float32Array(pos.length);
+    for (let v = 0; v < nv; v++) {
+        const f = (v / 3) | 0;
+        const tx = fn[3 * f], ty = fn[3 * f + 1], tz = fn[3 * f + 2];
+        let sx = 0, sy = 0, sz = 0;
+        for (let k = debut[groupe[v]], fin = debut[groupe[v] + 1]; k < fin; k++) {
+            const o = 3 * faces[k];
+            const ox = fn[o], oy = fn[o + 1], oz = fn[o + 2];
+            if (tx * ox + ty * oy + tz * oz > creaseDot) { sx += ox; sy += oy; sz += oz; }
+        }
+        const s = 1 / (Math.sqrt(sx * sx + sy * sy + sz * sz) || 1);
+        normales[3 * v] = sx * s; normales[3 * v + 1] = sy * s; normales[3 * v + 2] = sz * s;
+    }
+    geo.setAttribute('normal', new THREE.BufferAttribute(normales, 3));
+    return geo;
+}
+
+/**
+ * computeVertexNormals() de three.js r160 sur une géométrie indexée, en
+ * place : chaque face ajoute (C − B) × (A − B) aux normales de ses trois
+ * sommets, rangées en Float32 à chaque ajout, puis chacune est normée depuis
+ * sa valeur rangée. Les trois sommets sont lus avant d'être écrits, comme
+ * là-bas : un sommet répété dans une face n'y compte qu'une fois.
+ */
+function normalesIndexees(geo) {
+    const pos = geo.attributes.position.array, index = geo.index.array;
+    let attr = geo.attributes.normal;
+    if (attr === undefined) {
+        attr = new THREE.BufferAttribute(new Float32Array(pos.length), 3);
+        geo.setAttribute('normal', attr);
+    } else {
+        attr.array.fill(0);
+    }
+    const n = attr.array;
+    for (let i = 0; i < index.length; i += 3) {
+        const a = 3 * index[i], b = 3 * index[i + 1], c = 3 * index[i + 2];
+        const bx = pos[b], by = pos[b + 1], bz = pos[b + 2];
+        const cbx = pos[c] - bx, cby = pos[c + 1] - by, cbz = pos[c + 2] - bz;
+        const abx = pos[a] - bx, aby = pos[a + 1] - by, abz = pos[a + 2] - bz;
+        const x = cby * abz - cbz * aby, y = cbz * abx - cbx * abz, z = cbx * aby - cby * abx;
+        const nax = n[a] + x, nay = n[a + 1] + y, naz = n[a + 2] + z;
+        const nbx = n[b] + x, nby = n[b + 1] + y, nbz = n[b + 2] + z;
+        const ncx = n[c] + x, ncy = n[c + 1] + y, ncz = n[c + 2] + z;
+        n[a] = nax; n[a + 1] = nay; n[a + 2] = naz;
+        n[b] = nbx; n[b + 1] = nby; n[b + 2] = nbz;
+        n[c] = ncx; n[c + 1] = ncy; n[c + 2] = ncz;
+    }
+    for (let i = 0; i < n.length; i += 3) {
+        const x = n[i], y = n[i + 1], z = n[i + 2];
+        const s = 1 / (Math.sqrt(x * x + y * y + z * z) || 1);
+        n[i] = x * s; n[i + 1] = y * s; n[i + 2] = z * s;
+    }
+    attr.needsUpdate = true;
+}
+
+/**
+ * computeBoundingSphere() de three.js r160 pour une géométrie sans morphose :
+ * centre de la boîte englobante (Math.min, Math.max), rayon jusqu'au sommet
+ * le plus éloigné. `boite` : [x0, y0, z0, x1, y1, z1], déjà relevée en
+ * écrivant les sommets.
+ */
+function sphereEnglobante(geo, boite = null) {
+    const pos = geo.attributes.position.array;
+    let [x0, y0, z0, x1, y1, z1] = boite || [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+    if (!boite) for (let i = 0; i < pos.length; i += 3) {
+        x0 = Math.min(x0, pos[i]); y0 = Math.min(y0, pos[i + 1]); z0 = Math.min(z0, pos[i + 2]);
+        x1 = Math.max(x1, pos[i]); y1 = Math.max(y1, pos[i + 1]); z1 = Math.max(z1, pos[i + 2]);
+    }
+    if (geo.boundingSphere === null) geo.boundingSphere = new THREE.Sphere();
+    const c = geo.boundingSphere.center;
+    if (x1 < x0 || y1 < y0 || z1 < z0) c.set(0, 0, 0);
+    else c.set((x0 + x1) * 0.5, (y0 + y1) * 0.5, (z0 + z1) * 0.5);
+    let r2 = 0;
+    for (let i = 0; i < pos.length; i += 3) {
+        const dx = c.x - pos[i], dy = c.y - pos[i + 1], dz = c.z - pos[i + 2];
+        r2 = Math.max(r2, dx * dx + dy * dy + dz * dz);
+    }
+    geo.boundingSphere.radius = Math.sqrt(r2);
+}
 
 // --- Géométrie des bâtiments --------------------------------------------
 const MAT_CIBLE = new THREE.MeshStandardMaterial({ color: 0xc9a88a, roughness: 0.8, flatShading: true });
@@ -789,10 +970,7 @@ function geometrieToitDecoupe(anneau, trous, boites, hMur) {
         }
     }
     if (!v.length) return null;
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
-    geo.computeVertexNormals();
-    return geo;
+    return geometrieFacettes(new Float32Array(v));
 }
 
 /**
@@ -839,16 +1017,21 @@ function geometriesSurface(anneau, s, trous = []) {
 
     // --- Toit : maille par maille. Les facettes trop raides rejoignent les murs.
     const toit = [], murs = [];
-    const poser = (cible, x, y) => cible.push(x, hauteur(x, y), -y);
     const coupeX = x0 => (a, b) => [x0, a[1] + (b[1] - a[1]) * (x0 - a[0]) / (b[0] - a[0])];
     const coupeY = y0 => (a, b) => [a[0] + (b[0] - a[0]) * (y0 - a[1]) / (b[1] - a[1]), y0];
-    const v2 = [];
+    const v2 = [], v2Libres = [];
     for (const piece of pieces) {
         let minY = Infinity, maxY = -Infinity;
         for (const p of piece) { minY = Math.min(minY, p[1]); maxY = Math.max(maxY, p[1]); }
         // Une ligne et une colonne de marge : l'arrondi ne doit écarter aucune maille.
         const jDeb = Math.max(Math.floor((Y0 - maxY) / dy) - 1, 0);
         const jFin = Math.min(Math.floor((Y0 - minY) / dy) + 1, s.h - 2);
+        // La pièce coupée aux deux bords d'une colonne ne dépend que de la
+        // colonne : calculée une fois, puis coupée à chaque ligne. Les mêmes
+        // coupes dans le même ordre, donc les mêmes sommets. Recoupée entière
+        // à chaque maille, l'emprise coûtait 141 ms de coupes aux surfaces
+        // mesurées de Strasbourg en zone de 1 000 m, 62 ms ainsi.
+        const colonnes = [];
         for (let j = jDeb; j <= jFin; j++) {
             const yh = Y0 - j * dy, yb = yh - dy;
             // La bande de la ligne dit quelles colonnes la pièce y touche : la
@@ -861,30 +1044,41 @@ function geometriesSurface(anneau, s, trous = []) {
             const iDeb = Math.max(Math.floor((minX - X0) / dx) - 1, 0);
             const iFin = Math.min(Math.floor((maxX - X0) / dx) + 1, s.l - 2);
             for (let i = iDeb; i <= iFin; i++) {
-                const xg = X0 + i * dx, xd = xg + dx;
-                let c = couperPolygone(piece, p => p[0] >= xg, coupeX(xg));
-                c = couperPolygone(c, p => p[0] <= xd, coupeX(xd));
-                c = couperPolygone(c, p => p[1] >= yb, coupeY(yb));
+                let colonne = colonnes[i];
+                if (colonne === undefined) {
+                    const xg = X0 + i * dx, xd = xg + dx;
+                    colonne = couperPolygone(piece, p => p[0] >= xg, coupeX(xg));
+                    colonnes[i] = colonne = couperPolygone(colonne, p => p[0] <= xd, coupeX(xd));
+                }
+                let c = couperPolygone(colonne, p => p[1] >= yb, coupeY(yb));
                 c = couperPolygone(c, p => p[1] <= yh, coupeY(yh));
                 if (c.length < 3) continue;
+                // Des Vector2 réutilisés : triangulateShape n'en lit que x et y.
                 v2.length = 0;
-                for (const [x, y] of c) v2.push(new THREE.Vector2(x, y));
-                for (const [a, b, d] of THREE.ShapeUtils.triangulateShape(v2, [])) {
+                for (let k = 0; k < c.length; k++) {
+                    const v = v2Libres[k] || (v2Libres[k] = new THREE.Vector2());
+                    v2.push(v.set(c[k][0], c[k][1]));
+                }
+                const tris = THREE.ShapeUtils.triangulateShape(v2, []);
+                for (let t = 0; t < tris.length; t++) {
                     // Le plan (x, y) devient (x, -z) : l'ordre qui tourne dans le
                     // sens trigonométrique vu du nord... est inversé vu du ciel.
                     // On l'impose d'après l'aire, pour que la face regarde en haut.
-                    const [pa, pb, pd] = [c[a], c[b], c[d]];
+                    const pa = c[tris[t][0]], pb = c[tris[t][1]], pd = c[tris[t][2]];
                     const aire = (pb[0] - pa[0]) * (pd[1] - pa[1]) - (pd[0] - pa[0]) * (pb[1] - pa[1]);
                     if (Math.abs(aire) < 1e-9) continue;
-                    const ordre = aire > 0 ? [pa, pb, pd] : [pa, pd, pb];
+                    const p1 = aire > 0 ? pb : pd, p2 = aire > 0 ? pd : pb;
                     // Pente : composante verticale de la normale, |aire| étant la
-                    // projection au sol de ce même produit vectoriel.
-                    const [q0, q1, q2] = ordre.map(([x, y]) => [x, hauteur(x, y), -y]);
-                    const ux = q1[0] - q0[0], uy = q1[1] - q0[1], uz = q1[2] - q0[2];
-                    const vx = q2[0] - q0[0], vy = q2[1] - q0[1], vz = q2[2] - q0[2];
+                    // projection au sol de ce même produit vectoriel. Sommets
+                    // (x, h, −y), relevés une seule fois, sans tableau de passage.
+                    const x0 = pa[0], h0 = hauteur(pa[0], pa[1]), z0 = -pa[1];
+                    const x1 = p1[0], h1 = hauteur(p1[0], p1[1]), z1 = -p1[1];
+                    const x2 = p2[0], h2 = hauteur(p2[0], p2[1]), z2 = -p2[1];
+                    const ux = x1 - x0, uy = h1 - h0, uz = z1 - z0;
+                    const vx = x2 - x0, vy = h2 - h0, vz = z2 - z0;
                     const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
                     const raide = ny < PENTE_MUR_COS * Math.hypot(nx, ny, nz);
-                    for (const [x, y] of ordre) poser(raide ? murs : toit, x, y);
+                    (raide ? murs : toit).push(x0, h0, z0, x1, h1, z1, x2, h2, z2);
                 }
             }
         }
@@ -927,12 +1121,7 @@ function geometriesSurface(anneau, s, trous = []) {
         }
     }
 
-    const geo = v => {
-        const g = new THREE.BufferGeometry();
-        g.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
-        g.computeVertexNormals();
-        return g;
-    };
+    const geo = v => geometrieFacettes(new Float32Array(v));
     // Le bruit du LiDAR, quelques centimètres d'une cellule à l'autre, incline
     // chaque facette de 0,5 m : ombrée à plat, la toiture paraissait rocheuse.
     // Lisser les hauteurs l'éloignait du LiDAR sans la rendre moins rugueuse sur
@@ -945,7 +1134,11 @@ function geometriesSurface(anneau, s, trous = []) {
     // la teinte. Peintes comme les murs, les tours coniques de Chambord, raides
     // de 65 à 75°, se mouchetaient vues du dessus, en orange sur le bâtiment
     // visé. Le pourtour seul porte le liseré de la cible (habillerCible).
-    return { toit: toCreasedNormals(geo(toit), ANGLE_PLI_TOIT),
+    // Les normales du toit ne sont calculées qu'une fois, pliées : celles par
+    // facette qu'y mettait geo() étaient aussitôt remplacées.
+    const geoToit = new THREE.BufferGeometry();
+    geoToit.setAttribute('position', new THREE.BufferAttribute(new Float32Array(toit), 3));
+    return { toit: normalesPliees(geoToit, ANGLE_PLI_TOIT),
              murs: geo(murs.slice(debutPourtour)),
              marches: debutPourtour ? geo(murs.slice(0, debutPourtour)) : null };
 }
@@ -976,12 +1169,9 @@ function geometriesPans(s) {
         const v = [];
         for (let t = debut; t < fin; t++)
             for (let m = 0; m < 3; m++) v.push(...point(s.triangles[3 * t + m]));
-        const g = new THREE.BufferGeometry();
-        g.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
         // Non indexée : une normale par facette, les pans restent nets et le
         // faîtage franc.
-        g.computeVertexNormals();
-        return g;
+        return geometrieFacettes(new Float32Array(v));
     };
     return { toit: geo(0, s.n_toit), murs: geo(s.n_toit, s.triangles.length / 3) };
 }
@@ -1046,6 +1236,47 @@ function anneauVersShape(anneau, trous = []) {
     // Cours intérieures : l'extrusion les laisse ouvertes et leur donne des murs.
     for (const trou of trous) forme.holes.push(tracer(new THREE.Path(), trou));
     return forme;
+}
+
+/**
+ * Toit et murs mesurés d'une emprise (geometriesPans, geometriesSurface),
+ * calculés une fois par mesure LiDAR et par emprise. construire() est
+ * rappelée à l'arrivée des monuments OSM et à chaque bouton des toits : à
+ * Strasbourg en zone de 1 000 m, refaire les 251 surfaces mesurées arrêtait
+ * l'image 0,47 s après l'affichage, 0,09 s ainsi. Les sommets et les normales
+ * sont repris tels quels dans de nouvelles géométries — les mêmes attributs
+ * que la première fois, sans les coordonnées de texture qu'un fond y a
+ * posées depuis.
+ */
+const cacheMesurees = new WeakMap();      // mesure LiDAR → [{ anneau, trous, tableaux }]
+
+function geometriesMesurees(anneau, lidar, trous) {
+    const mesure = lidar.pans || lidar.surface;
+    let liste = cacheMesurees.get(mesure);
+    if (!liste) cacheMesurees.set(mesure, liste = []);
+    const deja = liste.find(e => e.anneau === anneau && e.trous.length === trous.length
+                                 && e.trous.every((t, i) => t === trous[i]));
+    if (deja) {
+        if (!deja.tableaux) return null;
+        const r = {};
+        for (const [cle, t] of Object.entries(deja.tableaux)) {
+            if (!t) { r[cle] = null; continue; }
+            r[cle] = new THREE.BufferGeometry();
+            r[cle].setAttribute('position', new THREE.BufferAttribute(t.position, 3));
+            r[cle].setAttribute('normal', new THREE.BufferAttribute(t.normal, 3));
+        }
+        return r;
+    }
+    const geos = lidar.pans ? geometriesPans(lidar.pans) : geometriesSurface(anneau, lidar.surface, trous);
+    let tableaux = null;
+    if (geos) {
+        tableaux = {};
+        for (const [cle, g] of Object.entries(geos)) {
+            tableaux[cle] = g && { position: g.attributes.position.array, normal: g.attributes.normal.array };
+        }
+    }
+    liste.push({ anneau, trous, tableaux });
+    return geos;
 }
 
 /**
@@ -1425,8 +1656,7 @@ function construire(features, toitsEnPente) {
             // sur demande seulement : le toit résumé se lit mieux dans une vue
             // d'ensemble.
             const surface = !(toitsEnPente && toitsMesures && lidar && TOITS_GRILLE) ? null
-                : lidar.pans ? geometriesPans(lidar.pans)
-                : lidar.surface ? geometriesSurface(anneau, lidar.surface, trous) : null;
+                : lidar.pans || lidar.surface ? geometriesMesurees(anneau, lidar, trous) : null;
             if (surface) {
                 const provisoire = meshes.pop();
                 groupeBatiments.remove(provisoire);
@@ -2288,11 +2518,13 @@ function appliquerTextureTerrain() {
 function deplacerTerrain() {
     const pos = terrain.mesh.geometry.attributes.position;
     for (let i = 0; i < pos.count; i++) {
-        pos.setY(i, (terrain.hauteurs[i] - altitudeRef) * exagVert);
+        pos.array[3 * i + 1] = (terrain.hauteurs[i] - altitudeRef) * exagVert;
     }
     pos.needsUpdate = true;
-    terrain.mesh.geometry.computeVertexNormals();
-    terrain.mesh.geometry.computeBoundingSphere();
+    // Les calculs de three.js sans leurs objets intermédiaires : 263 000
+    // sommets en zone de 1 000 m, refaits à chaque cran du curseur.
+    normalesIndexees(terrain.mesh.geometry);
+    sphereEnglobante(terrain.mesh.geometry);
 }
 
 /**
@@ -2669,11 +2901,11 @@ function deplacerAnneau() {
     const pos = mesh.geometry.attributes.position;
     for (let k = 0; k < pos.count; k++) {
         // Un sommet sans altitude n'appartient à aucune facette : 0 suffit.
-        pos.setY(k, Number.isNaN(hauteurs[k]) ? 0 : (hauteurs[k] - altitudeRef) * exagVert);
+        pos.array[3 * k + 1] = Number.isNaN(hauteurs[k]) ? 0 : (hauteurs[k] - altitudeRef) * exagVert;
     }
     pos.needsUpdate = true;
-    mesh.geometry.computeVertexNormals();
-    mesh.geometry.computeBoundingSphere();
+    normalesIndexees(mesh.geometry);
+    sphereEnglobante(mesh.geometry);
 }
 
 /** Drape le fond actif sur l'anneau, par projection zénithale. */
@@ -4222,6 +4454,12 @@ function formeDe(el) {
 }
 
 const SEGMENTS_HOUPPIER = 10;
+// Angles des segments, leurs cosinus et sinus : les mêmes pour tous les
+// houppiers, calculés une fois.
+const ANGLES_HOUPPIER = Float64Array.from({ length: SEGMENTS_HOUPPIER },
+                                          (_, s) => s / SEGMENTS_HOUPPIER * Math.PI * 2);
+const COS_HOUPPIER = ANGLES_HOUPPIER.map(Math.cos), SIN_HOUPPIER = ANGLES_HOUPPIER.map(Math.sin);
+const BOSSES_HOUPPIER = new Float64Array(SEGMENTS_HOUPPIER);
 // Part linéaire du segment mesuré effectivement occupée par le houppier.
 const EMPRISE_HOUPPIER = 0.8;
 // Très transparent : le sujet de la vue est le bâti, le feuillage n'est là que
@@ -4253,32 +4491,82 @@ const HAUTEUR_MIN_TRONC = 3;
  * Chaque sommet retient l'élément dont il vient : c'est ce qui permet de
  * reposer la végétation sur le relief (exagération) en décalant les Y, sans
  * reconstruire un million de sommets à chaque cran du curseur.
+ *
+ * Écrit dans des tableaux typés, avec la normale de chaque face. En tableaux
+ * JavaScript — un tableau par sommet, neuf `push` par face —, le tampon
+ * prenait 0,75 s et sa géométrie 0,86 s des 1,9 s de la végétation de Gordes
+ * en zone de 1 000 m (19 312 houppiers, profil CPU de Chrome). Les sommets
+ * sont numérotés depuis zéro à chaque élément : une face ne relie que des
+ * sommets de l'élément en cours.
  */
-function nouveauTampon() {
-    const sommets = [];          // [x, y, z, r, g, b, element] par sommet
-    const positions = [], couleurs = [], elements = [];
-    let courant = 0;
+function nouveauTampon(nbFaces = 1 << 16) {
+    // Flottants par attribut, neuf par face : à la taille exacte quand le
+    // nombre de faces est connu (facesHouppier), sans copie à l'agrandissement
+    // ni à la fin ; doublés sinon. Agrandir coûtait 34 ms, la copie finale
+    // 25 ms, à Strasbourg en zone de 1 000 m (profil CPU de Chrome).
+    let capacite = 9 * Math.max(nbFaces, 1);
+    let positions = new Float32Array(capacite), couleurs = new Float32Array(capacite);
+    let normales = new Float32Array(capacite), elements = new Int32Array(capacite / 3);
+    let n = 0;                               // flottants écrits par attribut
+    let sommets = new Float64Array(6 * 128); // x, y, z, r, g, b des sommets de l'élément
+    let nbSommets = 0, courant = 0;
+    const agrandir = () => {
+        capacite *= 2;
+        const p = new Float32Array(capacite), c = new Float32Array(capacite), m = new Float32Array(capacite);
+        const e = new Int32Array(capacite / 3);
+        p.set(positions); c.set(couleurs); m.set(normales); e.set(elements);
+        positions = p; couleurs = c; normales = m; elements = e;
+    };
+    const copier = s => {
+        const k = 6 * s;
+        positions[n] = sommets[k]; positions[n + 1] = sommets[k + 1]; positions[n + 2] = sommets[k + 2];
+        couleurs[n] = sommets[k + 3]; couleurs[n + 1] = sommets[k + 4]; couleurs[n + 2] = sommets[k + 5];
+        elements[n / 3] = courant;
+        n += 3;
+    };
     return {
-        element(n) { courant = n; },
-        sommet(x, y, z, c) { sommets.push([x, y, z, c.r, c.g, c.b, courant]); return sommets.length - 1; },
-        face(i, j, k) {
-            for (const n of [i, j, k]) {
-                const s = sommets[n];
-                positions.push(s[0], s[1], s[2]);
-                couleurs.push(s[3], s[4], s[5]);
-                elements.push(s[6]);
+        element(e) { courant = e; nbSommets = 0; },
+        sommet(x, y, z, c) {
+            if (6 * nbSommets + 6 > sommets.length) {
+                const t = new Float64Array(2 * sommets.length);
+                t.set(sommets);
+                sommets = t;
             }
+            const k = 6 * nbSommets;
+            sommets[k] = x; sommets[k + 1] = y; sommets[k + 2] = z;
+            sommets[k + 3] = c.r; sommets[k + 4] = c.g; sommets[k + 5] = c.b;
+            return nbSommets++;
+        },
+        face(i, j, k) {
+            if (n + 9 > capacite) agrandir();
+            copier(i); copier(j); copier(k);
+            // Sa normale (computeVertexNormals), tant que ses sommets sont à portée.
+            poserNormaleFacette(positions, normales, n - 9);
         },
         geometrie() {
+            const exact = n === capacite;
+            const pos = exact ? positions : positions.slice(0, n);
             const geo = new THREE.BufferGeometry();
-            geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-            geo.setAttribute('color', new THREE.Float32BufferAttribute(couleurs, 3));
-            geo.computeVertexNormals();
-            geo.userData.baseY = Float32Array.from(positions.filter((_, i) => i % 3 === 1));
-            geo.userData.elements = Int32Array.from(elements);
+            geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+            geo.setAttribute('color', new THREE.BufferAttribute(exact ? couleurs : couleurs.slice(0, n), 3));
+            geo.setAttribute('normal', new THREE.BufferAttribute(exact ? normales : normales.slice(0, n), 3));
+            const baseY = new Float32Array(n / 3);
+            for (let i = 0; i < baseY.length; i++) baseY[i] = pos[3 * i + 1];
+            geo.userData.baseY = baseY;
+            geo.userData.elements = exact ? elements : elements.slice(0, n / 3);
             return geo;
         },
     };
+}
+
+/**
+ * Nombre de faces qu'ajouterHouppier() pose pour un élément : deux par
+ * segment entre deux anneaux consécutifs, et nb + 5 anneaux — le sommet, une
+ * couronne par valeur du profil (six par défaut), le bord, trois dessous.
+ */
+function facesHouppier(el) {
+    const nb = el.profil && el.profil.length ? el.profil.length : 6;
+    return 2 * SEGMENTS_HOUPPIER * (nb + 4);
 }
 
 /**
@@ -4356,6 +4644,17 @@ function ajouterHouppier(tampon, el, sol) {
     const couleur = new THREE.Color();
     const cx = el.x, cz = -el.y;
     const cosA = Math.cos(axe), sinA = Math.sin(axe);
+    // Lobage : un défaut de rondeur du HOUPPIER, donc le même à toutes les
+    // hauteurs. Le tirer anneau par anneau faisait bomber un anneau intérieur
+    // au-delà du bord — jusqu'à 8,83 m pour un bord à 8,45 m sur l'arbre
+    // mesuré — et la lisière se repliait sur elle-même. Partagé, il garantit
+    // que le rayon croît avec u, donc une surface qui ne se retourne jamais.
+    // Calculé une fois par houppier, et non par anneau : les mêmes valeurs.
+    const bosses = BOSSES_HOUPPIER;
+    for (let s = 0; s < SEGMENTS_HOUPPIER; s++) {
+        bosses[s] = 1 + 0.10 * Math.sin(3 * ANGLES_HOUPPIER[s] + g * 6.28)
+                      + 0.08 * (alea(el.lon + s, el.lat) - 0.5);
+    }
     const pts = [];
     for (let i = 0; i < anneaux.length; i++) {
         const { u, y } = anneaux[i];
@@ -4364,16 +4663,8 @@ function ajouterHouppier(tampon, el, sol) {
         const ligne = [];
         const interieur = u > 0 && u < 1;
         for (let s = 0; s < SEGMENTS_HOUPPIER; s++) {
-            const th = s / SEGMENTS_HOUPPIER * Math.PI * 2;
-            // Lobage : un défaut de rondeur du HOUPPIER, donc le même à toutes
-            // les hauteurs. Le tirer anneau par anneau faisait bomber un anneau
-            // intérieur au-delà du bord — jusqu'à 8,83 m pour un bord à 8,45 m
-            // sur l'arbre mesuré — et la lisière se repliait sur elle-même.
-            // Partagé, il garantit que le rayon croît avec u, donc une surface
-            // qui ne se retourne jamais.
-            const bosse = 1 + 0.10 * Math.sin(3 * th + g * 6.28)
-                            + 0.08 * (alea(el.lon + s, el.lat) - 0.5);
-            const ex = a * u * bosse * Math.cos(th), ez = b * u * bosse * Math.sin(th);
+            const bosse = bosses[s];
+            const ex = a * u * bosse * COS_HOUPPIER[s], ez = b * u * bosse * SIN_HOUPPIER[s];
             // axe_deg est compté depuis l'est vers le nord ; le nord de la scène est -Z.
             const x = cx + ex * cosA - ez * sinA;
             const z = cz - (ex * sinA + ez * cosA);
@@ -4438,7 +4729,23 @@ var vegElements = [];   // houppiers et masses reçus du serveur, en local
  * transformerait en séquoia dès ×3 et fausserait le masque affiché à côté.
  */
 function construireVegetation() {
+    // Maillages de la construction précédente, repris s'ils portent les mêmes
+    // éléments : les ouvrages ne retirent que des masses, et leur arrivée
+    // refaisait les 3,9 millions de faces des houppiers de Gordes en zone de
+    // 1 000 m — 1,1 à 1,6 s d'arrêt de l'image une fois la scène affichée,
+    // encore 0,3 s avec le tampon en tableaux typés.
+    const avant = new Map(groupeVegetation.children.map(m => [m.userData.genre, m]));
+    const repris = new Set();
     groupeVegetation.clear();
+    const reprendre = (genre, elements) => {
+        const m = avant.get(genre);
+        if (!m) return null;
+        const e = m.userData.elements;
+        if (e.length !== elements.length || e.some((el, i) => el !== elements[i])) return null;
+        avant.delete(genre);
+        repris.add(m);
+        return m;
+    };
     // Un rempart ou un tablier est, pour le MNH, du sursol non végétal : les
     // masses qu'un ouvrage affiché explique lui laissent la place
     // (vue3d/ouvrages.py), comme un bâtiment à ses parties OSM.
@@ -4450,15 +4757,23 @@ function construireVegetation() {
             ['houppier', dessines.filter(e => e.classe === 'vegetation'), MAT_FEUILLAGE],
             ['masse', dessines.filter(e => e.classe !== 'vegetation'), MAT_MASSE]]) {
         if (!elements.length) continue;
-        const tampon = nouveauTampon();
-        const facesDebut = [];
-        let faces = 0;
-        elements.forEach((el, n) => {
-            facesDebut.push(faces);
-            tampon.element(n);
-            faces += ajouterHouppier(tampon, el, 0);   // base à 0 : posée par placerVegetation()
-        });
-        const mesh = new THREE.Mesh(tampon.geometrie(), mat);
+        const garde = reprendre(genre, elements);
+        if (garde) { groupeVegetation.add(garde); continue; }
+        // Des éléments en moins : leurs faces sont recopiées de l'ancien
+        // maillage. Sinon, tout est reconstruit.
+        let { geometrie, facesDebut } = (avant.has(genre) && vegetationExtraite(avant.get(genre), elements)) || {};
+        if (!geometrie) {
+            const tampon = nouveauTampon(elements.reduce((n, el) => n + facesHouppier(el), 0));
+            facesDebut = [];
+            let faces = 0;
+            elements.forEach((el, n) => {
+                facesDebut.push(faces);
+                tampon.element(n);
+                faces += ajouterHouppier(tampon, el, 0);   // base à 0 : posée par placerVegetation()
+            });
+            geometrie = tampon.geometrie();
+        }
+        const mesh = new THREE.Mesh(geometrie, mat);
         mesh.castShadow = true;
         mesh.receiveShadow = true;
         mesh.userData = { vegetation: true, genre, elements, facesDebut };
@@ -4469,13 +4784,70 @@ function construireVegetation() {
     const arbres = vegElements.filter(e => e.classe === 'vegetation'
                                           && e.h >= HAUTEUR_MIN_TRONC && portDe(e).tronc >= 0.1);
     if (arbres.length) {
-        const mesh = new THREE.InstancedMesh(GEO_TRONC, MAT_TRONC, arbres.length);
-        mesh.castShadow = true;
-        mesh.userData = { genre: 'tronc', elements: arbres };
+        const garde = reprendre('tronc', arbres);
+        const mesh = garde || new THREE.InstancedMesh(GEO_TRONC, MAT_TRONC, arbres.length);
+        if (!garde) {
+            mesh.castShadow = true;
+            mesh.userData = { genre: 'tronc', elements: arbres };
+        }
         groupeVegetation.add(mesh);
     }
-    placerVegetation();
+    // Les maillages remplacés rendent leur mémoire au GPU ; la géométrie des
+    // troncs est partagée.
+    for (const m of avant.values()) if (m.geometry !== GEO_TRONC) m.geometry.dispose();
+    // Les maillages repris sont déjà posés : tout changement du sol les a
+    // reposés (appliquerExageration). Les reposer refaisait 11,6 millions de
+    // sommets et leur envoi au GPU à Gordes en zone de 1 000 m.
+    placerVegetation(groupeVegetation.children.filter(m => !repris.has(m)));
     majCiblesSurvol();
+}
+
+/**
+ * Géométrie de la végétation pour une partie des éléments d'un maillage déjà
+ * construit, dans leur ordre : leurs faces y sont recopiées. ajouterHouppier()
+ * ne dépend que de l'élément, jamais de son rang, et placerVegetation() ne
+ * touche que les Y, que baseY rend à la base 0 : la copie est la géométrie
+ * qu'aurait rendue le tampon. Null si `elements` n'est pas une sous-suite des
+ * éléments du maillage. Les masses qu'expliquent les ouvrages coûtaient
+ * 0,11 s à reconstruire à Strasbourg en zone de 1 000 m (8 872 masses, 19
+ * expliquées), 0,03 s à recopier.
+ */
+function vegetationExtraite(mesh, elements) {
+    const avant = mesh.userData.elements, debuts = mesh.userData.facesDebut;
+    const geo = mesh.geometry, total = geo.attributes.position.count / 3;
+    const fin = k => k + 1 < avant.length ? debuts[k + 1] : total;
+    const rangs = new Int32Array(elements.length);
+    let k = 0, nbFaces = 0;
+    for (let n = 0; n < elements.length; n++, k++) {
+        while (k < avant.length && avant[k] !== elements[n]) k++;
+        if (k === avant.length) return null;
+        rangs[n] = k;
+        nbFaces += fin(k) - debuts[k];
+    }
+    const P = geo.attributes.position.array, C = geo.attributes.color.array, N = geo.attributes.normal.array;
+    const B = geo.userData.baseY;
+    const pos = new Float32Array(9 * nbFaces), col = new Float32Array(9 * nbFaces), nor = new Float32Array(9 * nbFaces);
+    const baseY = new Float32Array(3 * nbFaces), quel = new Int32Array(3 * nbFaces);
+    const facesDebut = [];
+    let f = 0;
+    for (let n = 0; n < elements.length; n++) {
+        const d = debuts[rangs[n]], e = fin(rangs[n]);
+        facesDebut.push(f);
+        pos.set(P.subarray(9 * d, 9 * e), 9 * f);
+        col.set(C.subarray(9 * d, 9 * e), 9 * f);
+        nor.set(N.subarray(9 * d, 9 * e), 9 * f);
+        baseY.set(B.subarray(3 * d, 3 * e), 3 * f);
+        quel.fill(n, 3 * f, 3 * (f + e - d));
+        f += e - d;
+    }
+    for (let i = 0; i < baseY.length; i++) pos[3 * i + 1] = baseY[i];
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+    g.userData.baseY = baseY;
+    g.userData.elements = quel;
+    return { geometrie: g, facesDebut };
 }
 
 /**
@@ -4485,10 +4857,10 @@ function construireVegetation() {
  * reconstruction. ENFONCEMENT : même marge que les murs, le maillage étant
  * trianglé là où l'échantillonnage est bilinéaire.
  */
-function placerVegetation() {
+function placerVegetation(maillages = groupeVegetation.children) {
     if (!vegPrete) return;
     const dummy = new THREE.Object3D();
-    for (const mesh of groupeVegetation.children) {
+    for (const mesh of maillages) {
         const elements = mesh.userData.elements || [];
         const sols = Float32Array.from(elements, el => ySol(el.lon, el.lat) - ENFONCEMENT);
         if (mesh.userData.genre === 'tronc') {
@@ -4509,9 +4881,17 @@ function placerVegetation() {
         const geo = mesh.geometry;
         const pos = geo.attributes.position.array;
         const baseY = geo.userData.baseY, quel = geo.userData.elements;
-        for (let i = 0; i < quel.length; i++) pos[i * 3 + 1] = baseY[i] + sols[quel[i]];
+        // La boîte englobante est relevée au passage : un parcours de moins des
+        // 11,6 millions de sommets des houppiers de Gordes en zone de 1 000 m.
+        let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+        for (let i = 0; i < quel.length; i++) {
+            const k = 3 * i;
+            pos[k + 1] = baseY[i] + sols[quel[i]];
+            x0 = Math.min(x0, pos[k]); y0 = Math.min(y0, pos[k + 1]); z0 = Math.min(z0, pos[k + 2]);
+            x1 = Math.max(x1, pos[k]); y1 = Math.max(y1, pos[k + 1]); z1 = Math.max(z1, pos[k + 2]);
+        }
         geo.attributes.position.needsUpdate = true;
-        geo.computeBoundingSphere();
+        sphereEnglobante(geo, [x0, y0, z0, x1, y1, z1]);
     }
 }
 
@@ -5132,6 +5512,27 @@ window.addEventListener('resize', dimensionner);
 // hauteur du conteneur change alors sans que la fenêtre soit redimensionnée.
 if (window.ResizeObserver) new ResizeObserver(dimensionner).observe(host);
 dimensionner();
+
+// --- Programmes GPU compilés pendant l'attente --------------------------------
+// La première image de la scène attendait la compilation des programmes de
+// ses matériaux : 36 ms sur le GPU du Mac (M4), le premier poste de cette
+// image à Gordes (profil CPU de Chrome). Ils sont compilés ici, pendant que le
+// serveur répond, sur un triangle par matériau, éclairé comme la scène ; la
+// scène n'en reçoit rien, et three.js retrouve chaque programme par sa clé.
+{
+    const triangle = new THREE.BufferGeometry();
+    triangle.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0], 3));
+    triangle.setAttribute('normal', new THREE.Float32BufferAttribute([0, 0, 1, 0, 0, 1, 0, 0, 1], 3));
+    const essai = new THREE.Group();
+    for (const m of [MAT_CIBLE, MAT_VOISIN, MAT_TOIT_VOISIN, MAT_TOIT_SURFACE, MAT_INCONNU, MAT_DESSUS,
+                     MAT_TERRAIN, MAT_EAU, MAT_EAU_INTERMITTENTE, MAT_ROUTE, MAT_CHEMIN, MAT_PYLONE,
+                     MAT_RESERVOIR, MAT_CHEMINEE, MAT_TOUR, MAT_FEUILLAGE, MAT_MASSE]) {
+        essai.add(new THREE.Mesh(triangle, m));
+    }
+    essai.add(new THREE.InstancedMesh(triangle, MAT_TRONC, 1));
+    essai.add(new THREE.LineSegments(triangle, MAT_CABLE), new THREE.LineSegments(triangle, MAT_CONTOUR_CIBLE));
+    renderer.compileAsync(essai, camera, scene).catch(() => {}).finally(() => triangle.dispose());
+}
 
 let precedent = performance.now();
 function boucle(maintenant) {
