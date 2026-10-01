@@ -571,3 +571,23 @@ def test_deux_niveaux_sous_un_arbre_restent_lus_dans_le_mode_bas():
     # Sans orthophoto, rien ne dit que ce n'est pas un arbre : mode bas aussi.
     t = toits_pour_emprise(*bbox, bats, grille, None)["toits"]["REMISE"]
     assert t["mode_bas"] is True and "surface" not in t and "pans" not in t
+
+
+def test_les_cellules_d_une_boite_sont_celles_de_la_grille_dans_le_meme_ordre():
+    """Le raccourci par bâtiment ne doit rien changer à ce que lit profil_toit."""
+    from shapely.geometry import Polygon
+    from vue3d.toits import _cellules_de_la_boite, _cellules_locales, _verdure_locale
+    rng = np.random.default_rng(7)
+    H = np.where(rng.random((40, 60)) < 0.7, rng.random((40, 60)) * 9, 0.0)
+    grille = {"bbox": [5.2, 43.9, 5.2004, 43.9002], "width": 60, "height": 40,
+              "values": H.ravel().tolist()}
+    lon0, lat0 = 5.2002, 43.9001
+    toutes = _cellules_locales(grille, lon0, lat0)
+    xs, ys = _verdure_locale(H, grille["bbox"], lon0, lat0)[1:]
+    # Dans la grille, à cheval sur son bord, et hors d'elle.
+    for boite in ((-8.0, -6.0, 3.0, 4.5), (5.0, -40.0, 90.0, 2.0), (200.0, 200.0, 210.0, 210.0)):
+        minx, miny, maxx, maxy = boite
+        attendu = [c for c in toutes if minx <= c[0] <= maxx and miny <= c[1] <= maxy]
+        assert _cellules_de_la_boite(grille["values"], xs, ys, boite) == attendu
+    # Emprise vide : ses bornes ne sont pas des nombres.
+    assert _cellules_de_la_boite(grille["values"], xs, ys, Polygon().bounds) == []

@@ -213,3 +213,21 @@ def test_hors_couverture_rien_n_est_segmente():
     res = houppiers_pour_emprise(0, 0, 1, 1, {"features": []}, None, None, grille, None)
     assert res["couvert"] is False and res["houppiers"] == []
     assert res["veg_disponible"] is False and res["ortho"] is False
+
+
+def test_la_fenetre_d_une_emprise_garde_toutes_ses_cellules():
+    """Tester un polygone dans sa fenêtre rend le masque de la grille entière."""
+    import shapely
+    from shapely.geometry import Polygon, box
+    from vue3d.houppiers import _fenetre
+    lons = 5.6 + (np.arange(50) + 0.5) * 1e-5
+    lats = 43.5 - (np.arange(40) + 0.5) * 1e-5
+    LON, LAT = np.meshgrid(lons, lats)
+    for geom in (Polygon([(5.6001, 43.4999), (5.6003, 43.49985), (5.60022, 43.4997)]),
+                 box(5.5999, 43.4995, 5.60012, 43.49972),      # à cheval sur le bord
+                 box(5.7, 43.6, 5.8, 43.7),                    # hors de la grille
+                 Polygon()):
+        fenetre = _fenetre(geom, lons, lats)
+        masque = np.zeros(LON.shape, dtype=bool)
+        masque[fenetre] = shapely.contains_xy(geom, LON[fenetre], LAT[fenetre])
+        assert np.array_equal(masque, shapely.contains_xy(geom, LON, LAT))

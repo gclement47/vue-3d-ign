@@ -31,6 +31,15 @@ messages de commit et dans les commentaires des modules.
   `VUE3D_MOTEUR=processeur` s'en passe ; le conteneur, qui n'a pas CoreML, ne
   change pas.
 
+### Modifié
+
+- **Toitures et houppiers se calculent dix fois plus vite.** Chaque
+  bâtiment relisait la grille MNH entière, en Python, et la segmentation des
+  arbres la parcourait toute à chaque passe. Sur Gordes en
+  zone de 1 000 m (672 bâtiments, 19 312 houppiers), le calcul passe de 100 s
+  à 8,5 s, et la scène entière, lectures comprises, de 114 s à 17 s. La
+  scène est la même à l'octet : son format et son cache ne changent pas.
+
 ### Corrigé
 
 - **Une cheminée posée sur un bâtiment n'est plus effacée.** Un point de la

@@ -795,6 +795,36 @@ def _cellules_locales(grille, lon0, lat0):
     return out
 
 
+def _cellules_de_la_boite(valeurs, xs, ys, bornes):
+    """Les (x, y, h) de `_cellules_locales` dont le centre tombe dans la
+    boîte `bornes` (minx, miny, maxx, maxy), dans le même ordre.
+
+    `profil_toit` ne garde d'une liste que ce qui tombe dans l'emprise érodée
+    du bâtiment : lui donner la grille entière, c'était la relire en Python
+    pour chaque bâtiment. Mesuré sur Gordes en zone de 1 000 m (676
+    bâtiments, grille de 1 440 × 1 985) : 41 s de toitures, 6 s ainsi, pour
+    la même scène à l'octet.
+
+    Args:
+        valeurs: hauteurs de la grille, à plat, ligne par ligne.
+        xs, ys: coordonnées locales des colonnes (croissantes) et des lignes
+            (décroissantes), de `_verdure_locale`.
+    """
+    minx, miny, maxx, maxy = bornes
+    nx = len(xs)
+    i0, i1 = np.searchsorted(xs, minx, "left"), np.searchsorted(xs, maxx, "right")
+    j0, j1 = np.searchsorted(-ys, -maxy, "left"), np.searchsorted(-ys, -miny, "right")
+    out = []
+    for j in range(j0, j1):
+        y = float(ys[j])
+        base = j * nx
+        for i in range(i0, i1):
+            h = valeurs[base + i]
+            if h > 0:                      # sol : inutile pour un toit
+                out.append((float(xs[i]), y, h))
+    return out
+
+
 def _verdure_locale(exg, bbox, lon0, lat0):
     """Grille ExG (numpy) + coordonnées locales de ses colonnes et lignes.
 
@@ -865,7 +895,6 @@ def toits_pour_emprise(west, south, east, north, batiments_geojson, grille, exg,
         return resultat
     lon0, lat0 = (west + east) / 2, (south + north) / 2
     m_lon = 111320 * math.cos(math.radians(lat0))
-    cellules = _cellules_locales(grille, lon0, lat0)
     # Second avis de l'orthophoto : sans elle, la canopée passe pour un toit.
     verdure = _verdure_locale(exg, grille["bbox"], lon0, lat0) if exg is not None else None
     hauteurs = np.asarray(grille["values"], dtype=np.float32).reshape(
@@ -889,6 +918,7 @@ def toits_pour_emprise(west, south, east, north, batiments_geojson, grille, exg,
         # raide. Mesuré à Strasbourg : à la largeur du morceau, 3 toits
         # fiables entiers devenaient « non fiables » une fois coupés.
         coupe = (f.get("properties") or {}).get("coupe") or {}
+        cellules = _cellules_de_la_boite(grille["values"], xs, ys, poly.bounds)
         profil = profil_toit(cellules, poly, largeur_min=coupe.get("largeur_m"))
         part = part_verte(poly, verdure) if verdure is not None else None
         if profil is None:
