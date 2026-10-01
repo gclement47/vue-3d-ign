@@ -43,6 +43,16 @@ messages de commit et dans les commentaires des modules.
   zone de 1 000 m (672 bâtiments, 19 312 houppiers), le calcul passe de 100 s
   à 8,5 s, et la scène entière, lectures comprises, de 114 s à 17 s. La
   scène est la même à l'octet : son format et son cache ne changent pas.
+- **Les houppiers, encore quatre à cinq fois plus vite.** La descente
+  réévaluait tout son front à chaque passe, les sommets dilataient la grille
+  entière une fois par rayon, chaque bâtiment, zone de végétation et parcelle
+  de forêt était testé sur toutes les cellules de sa boîte, et chaque arbre
+  était décrit un à un. Seul ce qui peut changer est désormais recalculé, et
+  un polygone n'est testé qu'aux cellules où sa réponse compte. Sur Gordes en
+  zone de 1 000 m, ce qui suit les toitures passe de 5,0 s à 1,1 s ; à
+  Strasbourg, de 3,3 s à 0,8 s (machine partagée avec d'autres calculs :
+  médianes de trois, en alternant). La scène reste la même à l'octet, sur le
+  Mac comme dans le conteneur.
 
 ### Corrigé
 

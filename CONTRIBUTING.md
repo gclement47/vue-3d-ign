@@ -444,6 +444,10 @@ façons :
   arbre qui surplombe…
 - **`monkeypatch`.** `test_construire_annonce_chacune_de_ses_etapes` remplace
   toutes les sources de `scene.py` pour vérifier le déroulé de `construire()`.
+- **Oracle.** `tests/houppiers_v14.py` garde la segmentation des houppiers
+  telle qu'elle était avant d'être accélérée, simple et lente : les tests
+  d'équivalence de `test_houppiers.py` exigent la même sortie, en JSON, sur
+  des scènes tirées au hasard. Une accélération qui change un octet y échoue.
 
 Ce que les tests Python ne voient pas, c'est le rendu : pour tout changement
 dans `index.html`, lancez l'essai navigateur.

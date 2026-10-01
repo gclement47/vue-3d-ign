@@ -57,6 +57,8 @@ import tempfile
 import threading
 import time
 
+import numpy as np
+
 from .batiments import decouper_batiments
 from .constructions import (COUCHE_PONCTUELLES, COUCHE_RESERVOIRS,
                             constructions_pour_emprise)
@@ -263,18 +265,22 @@ def assembler(west, south, east, north, batiments, vegetation, forets, routes,
     decoupes = decouper_batiments(batiments, west, south, east, north)
     toits = toits_pour_emprise(west, south, east, north, decoupes, grille, exg, sol)
     avancer("houppiers")
+    # Les constructions et les houppiers lisent la grille en tableau : la
+    # liste n'est convertie qu'une fois pour les deux (0,05 s par conversion
+    # sur une grille de 1 440 × 1 985).
+    tableau = {**grille, "values": np.asarray(grille["values"], dtype=np.float32)}
     # Réservoirs et constructions ponctuelles sortent du sursol avec les
     # bâtiments : sans cela, une citerne se couvre de masses et de houppiers
     # (vue3d/constructions.py).
     construits, masque = constructions_pour_emprise(
-        west, south, east, north, *(constructions or (None, None)), batiments, grille)
+        west, south, east, north, *(constructions or (None, None)), batiments, tableau)
     # L'eau aussi : entre deux quais, le MNH lit leur hauteur en pleine
     # rivière (vue3d/eau.py).
     nappes = masque_eau(eau[0], south, north) if eau else {"features": []}
     bati = {"features": ((batiments or {}).get("features", []) + masque["features"]
                          + nappes["features"])}
     veg = houppiers_pour_emprise(west, south, east, north, bati, vegetation,
-                                 forets, grille, exg)
+                                 forets, tableau, exg)
     return {
         "version": SCENE_VERSION,
         "bbox": [west, south, east, north],
