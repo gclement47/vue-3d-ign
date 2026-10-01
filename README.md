@@ -21,7 +21,10 @@ docker compose up -d
 
 Puis ouvrir <http://localhost:8080/> : sans paramètre, la page s'ouvre sur le
 village de Gordes. Un autre point se saisit dans le panneau, ou dans l'URL
-(`?lat=…&lon=…`).
+(`?lat=…&lon=…`). La zone chargée mesure par défaut environ 356 m du nord au
+sud ; le sélecteur **Zone** du panneau, ou `&zone=…` dans l'URL, la porte de
+150 à 1 000 m (arrondie à 50 m). Le temps de construction suit la surface :
+environ cinq minutes à 1 000 m.
 
 La **première** ouverture d'un lieu construit sa scène : 20 à 40 secondes, le
 temps de télécharger une grille de hauteurs à 0,5 m et d'y segmenter les arbres.

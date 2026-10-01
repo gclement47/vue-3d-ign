@@ -13,10 +13,10 @@ from vue3d.scene import SceneIncomplete
 def client(tmp_path):
     scene = {"version": 1, "bbox": [0, 0, 1, 1], "houppiers": []}
 
-    def construire(lat, lon, avancer=None):
+    def construire(lat, lon, avancer=None, zone=None):
         if lat == 45.0:
             raise SceneIncomplete("orthophoto illisible : Read timed out")
-        return gzip.compress(json.dumps(scene).encode()), b"\xff\xd8jpeg"
+        return gzip.compress(json.dumps({**scene, "zone": zone}).encode()), b"\xff\xd8jpeg"
 
     def lire_monuments(west, south, east, north):
         # Au sud de 46° : Overpass en panne.
@@ -87,6 +87,20 @@ def test_l_orthophoto_est_servie(client):
 def test_sans_parametres_400(client):
     assert client.get("/api/scene").status_code == 400
     assert client.get("/api/scene?lat=abc&lon=2").status_code == 400
+
+
+def test_la_zone_est_transmise_a_la_scene_et_a_ses_couches(client):
+    r = client.get("/api/scene?lat=48.8049&lon=2.1204&zone=690")
+    assert json.loads(gzip.decompress(r.data))["zone"] == 700
+    r = client.get("/api/scene?lat=48.8049&lon=2.1204")
+    assert json.loads(gzip.decompress(r.data))["zone"] is None
+    assert client.get("/api/ouvrages?lat=48.8049&lon=2.1204&zone=700").status_code == 200
+    assert client.get("/api/avancement?lat=48.8049&lon=2.1204&zone=700").get_json() == {"etat": "prete"}
+    assert client.get("/api/avancement?lat=48.8049&lon=2.1204&zone=500").get_json() == {"etat": "attente"}
+
+
+def test_une_zone_illisible_400(client):
+    assert client.get("/api/scene?lat=48.8&lon=2.1&zone=grand").status_code == 400
 
 
 def test_hors_emprise_422(client):

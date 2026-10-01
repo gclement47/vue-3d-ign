@@ -71,7 +71,7 @@ from .monuments import fetch_monuments, monuments_pour_emprise
 from .ortho import fetch_exg_grid, fetch_ortho_jpeg
 from .ouvrages import OUVRAGES_VERSION, fetch_ouvrages, ouvrages_pour_emprise
 from .panneaux import PANNEAUX_VERSION, panneaux_pour_emprise
-from .relief import fetch_relief, fetch_relief_anneau
+from .relief import RELIEF_TAILLE, fetch_relief, fetch_relief_anneau
 from .toits import TOITS_RESOLUTION_M, toits_pour_emprise
 from .vehicules import (PISCINES_VERSION, VEHICULES_VERSION, piscines_pour_emprise,
                         vehicules_pour_emprise)
@@ -103,6 +103,20 @@ SCENE_DELTA = 0.0016
 ANNEAU_DEMI_M = 1000
 # Arrondi du point pour la clé de cache : 4 décimales, une dizaine de mètres.
 SCENE_ARRONDI = 4
+# Zone élargie (ou réduite) à la demande : `zone`, côté nord-sud de l'emprise
+# en mètres. Sans elle, l'emprise par défaut (SCENE_DELTA, ~356 m), dont le
+# cache garde son dossier. Arrondie au pas, pour que deux demandes voisines
+# partagent leur scène comme le point arrondi.
+#
+# Plafond : la grille MNH à 0,5 m tient en une requête jusqu'à 2 048 pixels
+# de côté, soit 1 024 m ; au-delà, toits et houppiers perdraient leur
+# résolution. Le temps de construction et le poids de la scène croissent
+# comme la surface : ×8 à 1 000 m.
+ZONE_PAS_M = 50
+ZONE_MIN_M = 150
+ZONE_MAX_M = 1000
+# Côté nord-sud de l'emprise par défaut, en mètres.
+SCENE_COTE_M = 2 * SCENE_DELTA * 111320
 # Étapes d'une construction, que la page affiche pendant l'attente : les
 # seize lectures de construire(), puis les toitures et les houppiers
 # d'assembler(). Un compteur plutôt qu'un pourcentage : les étapes sont très
@@ -185,13 +199,41 @@ def point_normalise(lat, lon):
     return round(lat, SCENE_ARRONDI), round(lon, SCENE_ARRONDI)
 
 
-def emprise(lat, lon, delta=SCENE_DELTA):
-    """Emprise (ouest, sud, est, nord) autour d'un point."""
+def zone_normalisee(zone):
+    """Côté de la zone en mètres, arrondi au pas et borné ; None pour
+    l'emprise par défaut.
+
+    Raises:
+        ValueError si `zone` n'est pas un nombre.
+    """
+    if zone is None or zone == "":
+        return None
+    cote = float(zone)
+    if cote != cote:
+        raise ValueError("zone n'est pas un nombre")
+    cote = int(round(cote / ZONE_PAS_M) * ZONE_PAS_M)
+    return min(max(cote, ZONE_MIN_M), ZONE_MAX_M)
+
+
+def facteur_zone(zone):
+    """Rapport du côté de la zone à celui de l'emprise par défaut."""
+    return 1.0 if zone is None else zone / SCENE_COTE_M
+
+
+def emprise(lat, lon, zone=None):
+    """Emprise (ouest, sud, est, nord) autour d'un point.
+
+    Le même écart en degrés dans les deux sens, comme l'emprise par défaut :
+    plus étroite d'est en ouest qu'en mètres du nord au sud.
+    """
+    delta = SCENE_DELTA if zone is None else zone / 2 / 111320
     return lon - delta, lat - delta, lon + delta, lat + delta
 
 
-def emprise_anneau(lat, lon, demi_m=ANNEAU_DEMI_M):
-    """Emprise (ouest, sud, est, nord) de l'anneau, carrée en mètres."""
+def emprise_anneau(lat, lon, demi_m=ANNEAU_DEMI_M, zone=None):
+    """Emprise (ouest, sud, est, nord) de l'anneau, carrée en mètres. Elle
+    grandit avec la zone, que la vue regarde de plus loin."""
+    demi_m *= max(1.0, facteur_zone(zone))
     dlat = demi_m / 111320
     dlon = demi_m / (111320 * math.cos(math.radians(lat)))
     return lon - dlon, lat - dlat, lon + dlon, lat + dlat
@@ -255,12 +297,14 @@ def assembler(west, south, east, north, batiments, vegetation, forets, routes,
     }
 
 
-def construire(lat, lon, avancer=None):
+def construire(lat, lon, avancer=None, zone=None):
     """Construit la scène d'un point.
 
     Args:
         avancer: appelé au début de chacune des ETAPES_SCENE étapes avec son
             libellé, pour le suivi que la page affiche.
+        zone: côté de l'emprise en mètres (`zone_normalisee`), None pour
+            l'emprise par défaut.
 
     Returns:
         (octets gzip de la scène, octets JPEG de l'orthophoto).
@@ -268,7 +312,11 @@ def construire(lat, lon, avancer=None):
         SceneIncomplete si une source n'a pas pu être lue.
     """
     avancer = avancer or (lambda libelle: None)
-    west, south, east, north = emprise(lat, lon)
+    west, south, east, north = emprise(lat, lon, zone)
+    anneau_bbox = emprise_anneau(lat, lon, zone=zone)
+    # Le relief garde sa maille d'environ 1,4 m quand la zone grandit, jusqu'à
+    # 512 points de côté.
+    taille_relief = min(512, round(RELIEF_TAILLE * max(1.0, facteur_zone(zone))))
 
     def lire(nom, fn, *args, **kwargs):
         avancer(nom)
@@ -303,19 +351,19 @@ def construire(lat, lon, avancer=None):
     # une entrée de calcul, comme le MNH, jamais embarquée dans la scène.
     sol = lire("terrain sous les toits", fetch_sol_grid, west, south, east, north,
                grille["width"], grille["height"], grille["source"])
-    relief = lire("relief", fetch_relief, west, south, east, north)
-    anneau = lire("relief de l'anneau", fetch_relief_anneau, *emprise_anneau(lat, lon))
+    relief = lire("relief", fetch_relief, west, south, east, north, taille=taille_relief)
+    anneau = lire("relief de l'anneau", fetch_relief_anneau, *anneau_bbox)
     lignes = lignes_pour_emprise(
-        *emprise_anneau(lat, lon),
-        lire("lignes électriques", lire_couche, COUCHE_LIGNES, *emprise_anneau(lat, lon)),
-        lire("pylônes", lire_couche, COUCHE_PYLONES, *emprise_anneau(lat, lon)))
+        *anneau_bbox,
+        lire("lignes électriques", lire_couche, COUCHE_LIGNES, *anneau_bbox),
+        lire("pylônes", lire_couche, COUCHE_PYLONES, *anneau_bbox))
     mosaique, _, _ = lire("mosaïque d'orthophoto", fetch_ortho_jpeg, west, south, east, north)
 
     scene = assembler(west, south, east, north, batiments, vegetation, forets,
                       routes, grille, exg, relief, anneau, sol, eau, lignes, avancer,
                       constructions)
-    journal.info("Scène %.4f, %.4f : %d bâtiment(s), %d houppier(s), source %s",
-                 lat, lon, len(scene["batiments"].get("features", [])),
+    journal.info("Scène %.4f, %.4f (zone %s) : %d bâtiment(s), %d houppier(s), source %s",
+                 lat, lon, zone or "par défaut", len(scene["batiments"].get("features", [])),
                  len(scene["houppiers"]), grille.get("source"))
     return gzip.compress(json.dumps(scene, separators=(",", ":")).encode(), 6), mosaique
 
@@ -383,40 +431,46 @@ class Cache:
             f.write(octets)
         os.replace(tmp, os.path.join(dossier, nom))
 
-    def _dossier_point(self, lat, lon):
+    def _dossier_point(self, lat, lon, zone=None):
+        # L'emprise par défaut garde le nom de dossier d'avant les zones : son
+        # cache reste valable.
+        suffixe = f"_z{zone}" if zone else ""
         return os.path.join(self.dossier, f"v{SCENE_VERSION}",
-                            f"{lat:.{SCENE_ARRONDI}f}_{lon:.{SCENE_ARRONDI}f}")
+                            f"{lat:.{SCENE_ARRONDI}f}_{lon:.{SCENE_ARRONDI}f}{suffixe}")
 
     def _verrou(self, cle):
         with self._verrou_global:
             return self._verrous.setdefault(cle, threading.Lock())
 
-    def chemin(self, lat, lon, nom):
-        return os.path.join(self._dossier_point(lat, lon), nom)
+    def chemin(self, lat, lon, nom, zone=None):
+        return os.path.join(self._dossier_point(lat, lon, zone), nom)
 
-    def present(self, lat, lon):
-        return all(os.path.exists(self.chemin(lat, lon, n)) for n in (NOM_SCENE, NOM_ORTHO))
+    def present(self, lat, lon, zone=None):
+        return all(os.path.exists(self.chemin(lat, lon, n, zone)) for n in (NOM_SCENE, NOM_ORTHO))
 
-    def avancement(self, lat, lon):
+    def avancement(self, lat, lon, zone=None):
         """Où en est la scène du point : prête, en construction (à quelle
         étape, depuis combien de secondes), ou pas encore commencée."""
         lat, lon = point_normalise(lat, lon)
-        if self.present(lat, lon):
+        zone = zone_normalisee(zone)
+        if self.present(lat, lon, zone):
             return {"etat": "prete"}
-        a = self._avancements.get((lat, lon))
+        a = self._avancements.get((lat, lon, zone))
         if a is None:
             return {"etat": "attente"}
         return {"etat": "construction", "etape": a["etape"], "total": ETAPES_SCENE,
                 "libelle": a["libelle"], "secondes": round(time.monotonic() - a["debut"])}
 
-    def obtenir(self, lat, lon, construire=construire):
+    def obtenir(self, lat, lon, construire=construire, zone=None):
         """Chemin de la scène du point, construite au besoin."""
         lat, lon = point_normalise(lat, lon)
-        if self.present(lat, lon):
-            return self._dossier_point(lat, lon)
-        with self._verrou((lat, lon)):
-            if self.present(lat, lon):          # construite pendant l'attente
-                return self._dossier_point(lat, lon)
+        zone = zone_normalisee(zone)
+        cle = (lat, lon, zone)
+        if self.present(*cle):
+            return self._dossier_point(*cle)
+        with self._verrou(cle):
+            if self.present(*cle):              # construite pendant l'attente
+                return self._dossier_point(*cle)
             debut = time.monotonic()
             etape = [0]
 
@@ -424,12 +478,15 @@ class Cache:
                 etape[0] += 1
                 # Remplacé d'un bloc : une lecture concurrente ne voit jamais
                 # l'étape d'un libellé et le libellé d'une autre.
-                self._avancements[(lat, lon)] = {"etape": etape[0], "libelle": libelle,
+                self._avancements[cle] = {"etape": etape[0], "libelle": libelle,
                                                  "debut": debut}
 
             try:
-                scene, mosaique = construire(lat, lon, avancer=avancer)
-                dossier = self._dossier_point(lat, lon)
+                # Sans zone, l'appel d'avant les zones : les constructions
+                # injectées par les tests n'ont pas à la connaître.
+                options = {"zone": zone} if zone else {}
+                scene, mosaique = construire(lat, lon, avancer=avancer, **options)
+                dossier = self._dossier_point(*cle)
                 os.makedirs(dossier, exist_ok=True)
                 # L'orthophoto d'abord, la scène ensuite : `present` teste les
                 # deux, une interruption entre les deux laisse une scène
@@ -439,20 +496,22 @@ class Cache:
                 return dossier
             finally:
                 # Succès ou échec, la construction n'est plus en cours.
-                self._avancements.pop((lat, lon), None)
+                self._avancements.pop(cle, None)
 
-    def _prelire(self, nom, lat, lon, lire):
+    def _prelire(self, nom, lat, lon, lire, zone=None):
         """Lance en tâche de fond la lecture d'une couche à part, si elle
         n'est ni en cache ni déjà demandée pour ce point."""
         lat, lon = point_normalise(lat, lon)
-        if os.path.exists(self.chemin(lat, lon, nom)):
+        zone = zone_normalisee(zone)
+        if os.path.exists(self.chemin(lat, lon, nom, zone)):
             return
         with self._verrou_global:
-            if (nom, lat, lon) not in self._lectures:
-                self._lectures[(nom, lat, lon)] = self._taches[nom].submit(
-                    lire, *emprise(lat, lon))
+            if (nom, lat, lon, zone) not in self._lectures:
+                self._lectures[(nom, lat, lon, zone)] = self._taches[nom].submit(
+                    lire, *emprise(lat, lon, zone))
 
-    def _obtenir_couche(self, nom, lat, lon, construire, lire, indisponible, assembler):
+    def _obtenir_couche(self, nom, lat, lon, construire, lire, indisponible, assembler,
+                        zone=None):
         """Chemin du dossier où la couche `nom` du point est écrite.
 
         La couche lit la scène, qui est donc construite d'abord au besoin. La
@@ -465,31 +524,33 @@ class Cache:
                 n'a pas répondu — rien n'est alors écrit.
             assembler: (emprise, réponse de la source, scène) -> couche.
         """
-        dossier = self.obtenir(lat, lon, construire=construire)
+        dossier = self.obtenir(lat, lon, construire=construire, zone=zone)
         lat, lon = point_normalise(lat, lon)
+        zone = zone_normalisee(zone)
+        cle = (nom, lat, lon, zone)
         chemin = os.path.join(dossier, nom)
         if os.path.exists(chemin):
             return dossier
-        with self._verrou((nom, lat, lon)):
+        with self._verrou(cle):
             if os.path.exists(chemin):          # écrite pendant l'attente
                 return dossier
             with self._verrou_global:
-                tache = self._lectures.pop((nom, lat, lon), None)
+                tache = self._lectures.pop(cle, None)
             try:
-                brut = tache.result() if tache else lire(*emprise(lat, lon))
+                brut = tache.result() if tache else lire(*emprise(lat, lon, zone))
             except Exception as exc:
                 raise indisponible(str(exc)) from exc
             with gzip.open(os.path.join(dossier, NOM_SCENE), "rt", encoding="utf-8") as f:
                 scene = json.load(f)
-            couche = assembler(emprise(lat, lon), brut, scene)
+            couche = assembler(emprise(lat, lon, zone), brut, scene)
             self._ecrire(dossier, nom,
                          gzip.compress(json.dumps(couche, separators=(",", ":")).encode(), 6))
             # Une lecture relancée entre-temps (page rechargée) ne sert plus.
             with self._verrou_global:
-                self._lectures.pop((nom, lat, lon), None)
+                self._lectures.pop(cle, None)
             return dossier
 
-    def prelire_monuments(self, lat, lon):
+    def prelire_monuments(self, lat, lon, zone=None):
         """Lance la lecture d'Overpass en tâche de fond, si la couche OSM du
         point n'est ni en cache ni déjà demandée.
 
@@ -497,9 +558,9 @@ class Cache:
         réponse arrive pendant la construction, et la couche est souvent prête
         quand la vue la demande.
         """
-        self._prelire(NOM_MONUMENTS, lat, lon, self.lire_monuments)
+        self._prelire(NOM_MONUMENTS, lat, lon, self.lire_monuments, zone)
 
-    def obtenir_monuments(self, lat, lon, construire=construire):
+    def obtenir_monuments(self, lat, lon, construire=construire, zone=None):
         """Chemin du dossier où la couche OSM du point est écrite.
 
         La couche lit les bâtiments de la scène — les hauteurs de repli des
@@ -516,14 +577,14 @@ class Cache:
             NOM_MONUMENTS, lat, lon, construire, self.lire_monuments,
             lambda message: MonumentsIndisponibles(f"monuments OSM illisibles : {message}"),
             lambda bbox, brut, scene: monuments_pour_emprise(
-                *bbox, brut, scene.get("batiments") or {"features": []}))
+                *bbox, brut, scene.get("batiments") or {"features": []}), zone=zone)
 
-    def prelire_ouvrages(self, lat, lon):
+    def prelire_ouvrages(self, lat, lon, zone=None):
         """Lance la lecture des couches d'ouvrages en tâche de fond : quatre
         petites lectures WFS, finies bien avant la scène."""
-        self._prelire(NOM_OUVRAGES, lat, lon, self.lire_ouvrages)
+        self._prelire(NOM_OUVRAGES, lat, lon, self.lire_ouvrages, zone)
 
-    def obtenir_ouvrages(self, lat, lon, construire=construire):
+    def obtenir_ouvrages(self, lat, lon, construire=construire, zone=None):
         """Chemin du dossier où la couche des ouvrages du point est écrite.
 
         La couche lit le relief de la scène (la hauteur d'un mur est
@@ -538,14 +599,14 @@ class Cache:
             NOM_OUVRAGES, lat, lon, construire, self.lire_ouvrages,
             lambda message: OuvragesIndisponibles(f"ouvrages illisibles : {message}"),
             lambda bbox, brut, scene: ouvrages_pour_emprise(
-                *bbox, brut, scene.get("relief"), scene.get("masses"), scene.get("routes")))
+                *bbox, brut, scene.get("relief"), scene.get("masses"), scene.get("routes")), zone=zone)
 
-    def prelire_panneaux(self, lat, lon):
+    def prelire_panneaux(self, lat, lon, zone=None):
         """Lance la lecture du registre en tâche de fond, si le service en a un."""
         if self.lire_panneaux:
-            self._prelire(NOM_PANNEAUX, lat, lon, self.lire_panneaux)
+            self._prelire(NOM_PANNEAUX, lat, lon, self.lire_panneaux, zone)
 
-    def obtenir_panneaux(self, lat, lon, construire=construire):
+    def obtenir_panneaux(self, lat, lon, construire=construire, zone=None):
         """Chemin du dossier où la couche des panneaux solaires du point est
         écrite. Elle ne lit rien de la scène, mais suit le même chemin.
 
@@ -559,21 +620,21 @@ class Cache:
         return self._obtenir_couche(
             NOM_PANNEAUX, lat, lon, construire, self.lire_panneaux,
             lambda message: PanneauxIndisponibles(f"panneaux solaires illisibles : {message}"),
-            lambda bbox, brut, scene: panneaux_pour_emprise(*bbox, brut))
+            lambda bbox, brut, scene: panneaux_pour_emprise(*bbox, brut), zone=zone)
 
-    def prelire_vehicules(self, lat, lon):
+    def prelire_vehicules(self, lat, lon, zone=None):
         """Lance en tâche de fond les détections sur l'orthophoto à 0,2 m, si
         le service a un détecteur : les piscines d'abord (une demi-seconde),
         puis les véhicules de chaque détecteur, du rapide au lent. Quelques
         secondes à une demi-minute de calcul, qui avancent pendant que la
         scène attend l'IGN."""
         if self.lire_vehicules:
-            self._prelire(nom_piscines(self.mode_vehicules), lat, lon, self.lire_vehicules.piscines)
+            self._prelire(nom_piscines(self.mode_vehicules), lat, lon, self.lire_vehicules.piscines, zone)
             for detecteur in self.lire_vehicules.detecteurs:
                 self._prelire(nom_vehicules(detecteur), lat, lon,
-                              self.lire_vehicules.vehicules(detecteur))
+                              self.lire_vehicules.vehicules(detecteur), zone)
 
-    def obtenir_piscines(self, lat, lon, construire=construire):
+    def obtenir_piscines(self, lat, lon, construire=construire, zone=None):
         """(dossier, nom du fichier) des piscines du point.
 
         La couche lit les bâtiments et l'eau de la scène : une « piscine »
@@ -593,9 +654,9 @@ class Cache:
             lambda message: VehiculesIndisponibles(f"piscines illisibles : {message}"),
             lambda bbox, brut, scene: piscines_pour_emprise(
                 *bbox, brut, self.mode_vehicules, scene.get("batiments"),
-                scene.get("eau"))), nom
+                scene.get("eau")), zone=zone), nom
 
-    def obtenir_vehicules(self, lat, lon, detecteur, construire=construire):
+    def obtenir_vehicules(self, lat, lon, detecteur, construire=construire, zone=None):
         """(dossier, nom du fichier) des véhicules du point vus d'un détecteur.
 
         Mêmes lectures de la scène et mêmes erreurs que les piscines ;
@@ -608,4 +669,4 @@ class Cache:
             nom, lat, lon, construire, self.lire_vehicules.vehicules(detecteur),
             lambda message: VehiculesIndisponibles(f"véhicules illisibles : {message}"),
             lambda bbox, brut, scene: vehicules_pour_emprise(
-                *bbox, brut, detecteur, scene.get("batiments"), scene.get("eau"))), nom
+                *bbox, brut, detecteur, scene.get("batiments"), scene.get("eau")), zone=zone), nom

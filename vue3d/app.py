@@ -1,6 +1,7 @@
 """Serveur de la vue 3D.
 
     GET /                          la page ; `?lat=…&lon=…` pour viser un point
+                                   et `&zone=…` pour le côté de la zone, en mètres
     GET /api/scene?lat=…&lon=…     la scène, JSON gzippé (construite au besoin)
     GET /api/ortho?lat=…&lon=…     l'orthophoto de la scène, en JPEG
     GET /api/monuments?lat=…&lon=…   la couche des monuments OSM, JSON gzippé
@@ -10,6 +11,9 @@
     GET /api/panneaux?lat=…&lon=…    les panneaux solaires du registre, si le service en a un
     GET /api/avancement?lat=…&lon=…  l'étape de la construction en cours
     GET /api/sante                 contrôle de vie, pour Docker
+
+Chaque route d'API accepte `zone=` (150 à 1 000 m, arrondie à 50 m) : sans
+elle, l'emprise par défaut d'environ 356 m.
 
 La première demande d'un point construit sa scène : une vingtaine à une
 trentaine de secondes, que la page annonce. Les suivantes la lisent sur disque.
@@ -27,7 +31,7 @@ from .panneaux import lecteur as lecteur_panneaux
 from .scene import (NOM_MONUMENTS, NOM_ORTHO, NOM_OUVRAGES, NOM_PANNEAUX, NOM_SCENE, Cache,
                     HorsEmprise, MonumentsIndisponibles, OuvragesIndisponibles,
                     PanneauxIndisponibles, SceneIncomplete, VehiculesDesactives,
-                    VehiculesIndisponibles)
+                    VehiculesIndisponibles, zone_normalisee)
 from .scene import construire as construire_scene
 from .vehicules import MODE_PAR_DEFAUT
 from .vehicules import lecteur as lecteur_vehicules
@@ -59,10 +63,15 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
                   lire_vehicules=lire_vehicules, lire_panneaux=lire_panneaux)
 
     def point():
+        """(lat, lon, zone) de la requête ; None si l'un d'eux est illisible."""
         try:
-            return float(request.args["lat"]), float(request.args["lon"])
+            return (float(request.args["lat"]), float(request.args["lon"]),
+                    zone_normalisee(request.args.get("zone")))
         except (KeyError, ValueError):
             return None
+
+    MESSAGE_POINT = ("Paramètres lat et lon attendus, en degrés décimaux ; zone, "
+                     "facultative, en mètres.")
 
     def erreur(code, message):
         return jsonify({"erreur": message}), code
@@ -70,27 +79,29 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
     def dossier_scene(couche=None, prelire=False, detecteur=None):
         p = point()
         if p is None:
-            return None, erreur(400, "Paramètres lat et lon attendus, en degrés décimaux.")
+            return None, erreur(400, MESSAGE_POINT)
+        *p, zone = p
         try:
             if couche == NOM_MONUMENTS:
-                return cache.obtenir_monuments(*p, construire=construire), None
+                return cache.obtenir_monuments(*p, construire=construire, zone=zone), None
             if couche == NOM_OUVRAGES:
-                return cache.obtenir_ouvrages(*p, construire=construire), None
+                return cache.obtenir_ouvrages(*p, construire=construire, zone=zone), None
             if couche == COUCHE_PISCINES:
-                return cache.obtenir_piscines(*p, construire=construire), None
+                return cache.obtenir_piscines(*p, construire=construire, zone=zone), None
             if couche == NOM_PANNEAUX:
-                return cache.obtenir_panneaux(*p, construire=construire), None
+                return cache.obtenir_panneaux(*p, construire=construire, zone=zone), None
             if couche == COUCHE_VEHICULES:
-                return cache.obtenir_vehicules(*p, detecteur, construire=construire), None
+                return cache.obtenir_vehicules(*p, detecteur, construire=construire,
+                                              zone=zone), None
             if prelire:
                 # Les couches à part d'abord, en tâche de fond : leurs sources
                 # répondent pendant que la scène se construit, et elles sont
                 # souvent prêtes quand la page les demande.
-                cache.prelire_monuments(*p)
-                cache.prelire_ouvrages(*p)
-                cache.prelire_vehicules(*p)
-                cache.prelire_panneaux(*p)
-            return cache.obtenir(*p, construire=construire), None
+                cache.prelire_monuments(*p, zone=zone)
+                cache.prelire_ouvrages(*p, zone=zone)
+                cache.prelire_vehicules(*p, zone=zone)
+                cache.prelire_panneaux(*p, zone=zone)
+            return cache.obtenir(*p, construire=construire, zone=zone), None
         except HorsEmprise as exc:
             return None, erreur(422, str(exc))
         except SceneIncomplete as exc:
@@ -246,7 +257,7 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
         d'une seconde à l'autre."""
         p = point()
         if p is None:
-            return erreur(400, "Paramètres lat et lon attendus, en degrés décimaux.")
+            return erreur(400, MESSAGE_POINT)
         try:
             reponse = jsonify(cache.avancement(*p))
         except HorsEmprise as exc:

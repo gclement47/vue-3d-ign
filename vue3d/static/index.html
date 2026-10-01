@@ -79,6 +79,9 @@
                             border:1px solid #3a4148; border-radius:4px; padding:4px 6px; font-size:12px; }
         .form-point button { background:#2f6fb0; color:#fff; border:0; border-radius:4px;
                              padding:4px 10px; font-size:12px; cursor:pointer; }
+        .zone { display:flex; align-items:center; gap:6px; margin:0 0 6px; font-size:11px; color:var(--muted); }
+        .zone select { flex:1; background:#161a1e; color:#e8eaed; border:1px solid #3a4148;
+                       border-radius:4px; padding:3px 4px; font-size:12px; }
         #attente { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
                    z-index:4; pointer-events:none; color:#e8eaed; font-size:13px; text-align:center;
                    line-height:1.6; text-shadow:0 1px 3px #000; }
@@ -116,6 +119,15 @@
                 <input id="in-lon" type="text" inputmode="decimal" placeholder="longitude" aria-label="longitude" />
                 <button type="submit">Voir</button>
             </form>
+            <label class="zone" title="Côté nord-sud de la zone chargée. Une zone plus grande se construit plus longtemps : jusqu'à huit fois à 1 000 m.">
+                Zone
+                <select id="in-zone">
+                    <option value="">356 m (par défaut)</option>
+                    <option value="500">500 m</option>
+                    <option value="700">700 m</option>
+                    <option value="1000">1 000 m</option>
+                </select>
+            </label>
             <a href="https://github.com/ysimonx/vue-3d-ign#readme" target="_blank" rel="noopener">📐 Méthode et sources ↗</a>
         </header>
 
@@ -268,6 +280,19 @@ const lireCoord = n => { const v = Number(String(PARAMS.get(n) || '').replace(',
 const LAT0 = lireCoord('lat') ?? POINT_DEFAUT.lat;
 const LON0 = lireCoord('lon') ?? POINT_DEFAUT.lon;
 const CENTER = [LON0, LAT0];
+// Côté nord-sud de la zone, en mètres (?zone=…) ; absent, l'emprise par
+// défaut du serveur (scene.SCENE_DELTA, ~356 m). Mêmes arrondi et bornes que
+// scene.zone_normalisee, pour que la page attende l'emprise que le serveur
+// construit.
+const ZONE_DEFAUT_M = 2 * 0.0016 * 111320;
+const ZONE = (() => {
+    const v = lireCoord('zone');
+    return v === null ? null : Math.min(Math.max(Math.round(v / 50) * 50, 150), 1000);
+})();
+// Rapport à l'emprise par défaut : les distances de vue, le brouillard et les
+// ombres, réglés pour elle, la suivent quand la zone grandit.
+const ECHELLE_ZONE = Math.max(1, (ZONE ?? ZONE_DEFAUT_M) / ZONE_DEFAUT_M);
+const PARAM_ZONE = ZONE === null ? '' : `&zone=${ZONE}`;
 // Page rechargée par « Ma position » pour se recentrer (moi=1) : le suivi
 // reprend de lui-même, sans nouveau recentrage automatique — pas de boucle si
 // un relevé tombe encore hors de la scène. Le drapeau est retiré de l'URL :
@@ -278,7 +303,7 @@ if (RELANCE_MOI) {
     u.searchParams.delete('moi');
     history.replaceState(null, '', u.pathname + u.search + u.hash);
 }
-const REQUETE = `lat=${LAT0}&lon=${LON0}`;
+const REQUETE = `lat=${LAT0}&lon=${LON0}${PARAM_ZONE}`;
 const URL_VUE3D = `api/scene?${REQUETE}`;
 const URL_VUE3D_ORTHO = `api/ortho?${REQUETE}`;
 document.getElementById('coord-point').textContent = `${LAT0.toFixed(5)}, ${LON0.toFixed(5)}`;
@@ -289,7 +314,19 @@ document.getElementById('form-point').addEventListener('submit', e => {
     const lat = Number(document.getElementById('in-lat').value.replace(',', '.'));
     const lon = Number(document.getElementById('in-lon').value.replace(',', '.'));
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
-    location.search = `?lat=${lat}&lon=${lon}`;
+    location.search = `?lat=${lat}&lon=${lon}${PARAM_ZONE}`;
+});
+const selectZone = document.getElementById('in-zone');
+// Une zone hors des choix proposés (?zone=850) s'ajoute à la liste.
+if (ZONE !== null && ![...selectZone.options].some(o => o.value === String(ZONE))) {
+    selectZone.add(new Option(`${ZONE.toLocaleString('fr-FR')} m`, String(ZONE)));
+}
+selectZone.value = ZONE === null ? '' : String(ZONE);
+selectZone.addEventListener('change', () => {
+    const u = new URL(location.href);
+    if (selectZone.value) u.searchParams.set('zone', selectZone.value);
+    else u.searchParams.delete('zone');
+    location.assign(u.pathname + u.search + u.hash);
 });
 
 // La scène — bâtiments, toitures, houppiers, routes, relief — arrive en un seul
@@ -417,9 +454,9 @@ function baseBatiment(anneau) {
 const host = document.getElementById('scene');
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0e1116);
-scene.fog = new THREE.Fog(0x0e1116, 300, 900);
+scene.fog = new THREE.Fog(0x0e1116, 300 * ECHELLE_ZONE, 900 * ECHELLE_ZONE);
 
-const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 5000);
+const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 5000 * ECHELLE_ZONE);
 camera.position.set(90, 70, 90);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -433,7 +470,7 @@ controls.enableDamping = true;          // l'inertie fait tout le confort
 controls.dampingFactor = 0.06;
 controls.maxPolarAngle = Math.PI / 2.05; // interdit de passer sous le sol
 controls.minDistance = 15;
-controls.maxDistance = 900;
+controls.maxDistance = 900 * ECHELLE_ZONE;
 
 const ambiance = new THREE.HemisphereLight(0xbcd4ff, 0x2b2b2b, 1.1);
 scene.add(ambiance);
@@ -441,20 +478,24 @@ scene.add(ambiance);
 // Le soleil est placé par majSoleil() d'après l'heure : sa position initiale
 // n'a donc pas d'importance. Le frustum d'ombre, lui, est fixe et doit couvrir
 // l'emprise même quand le relief exagéré la fait monter de plus de 100 m.
-const DISTANCE_SOLEIL = 900;
+const DISTANCE_SOLEIL = 900 * ECHELLE_ZONE;
 const soleil = new THREE.DirectionalLight(0xfff2dd, 2.0);
 soleil.castShadow = true;
-soleil.shadow.mapSize.set(2048, 2048);
+// Doublée au-delà d'une fois et demie l'emprise par défaut : le frustum
+// grandit avec la zone, et l'ombre d'un arbre y deviendrait une tache.
+const TAILLE_OMBRE = ECHELLE_ZONE > 1.5 ? 4096 : 2048;
+soleil.shadow.mapSize.set(TAILLE_OMBRE, TAILLE_OMBRE);
 // normalBias décolle l'ombre de la surface qui la reçoit : sans lui, le
 // maillage du terrain se moire d'acné d'ombre dès que le soleil rase.
 soleil.shadow.normalBias = 0.4;
 const c = soleil.shadow.camera;
-c.left = c.bottom = -400; c.right = c.top = 400; c.near = 1; c.far = 2000;
+c.left = c.bottom = -400 * ECHELLE_ZONE; c.right = c.top = 400 * ECHELLE_ZONE;
+c.near = 1; c.far = 2000 * ECHELLE_ZONE;
 scene.add(soleil);
 scene.add(soleil.target);
 
 const sol = new THREE.Mesh(
-    new THREE.PlaneGeometry(2000, 2000),
+    new THREE.PlaneGeometry(2000 * ECHELLE_ZONE, 2000 * ECHELLE_ZONE),
     new THREE.MeshStandardMaterial({ color: 0x2a2f36, roughness: 1 })
 );
 sol.rotation.x = -Math.PI / 2;
@@ -1097,7 +1138,7 @@ function lienStreetView(anneau) {
 function lienRecentrer(anneau) {
     if (!anneau || anneau.length < 3) return '';
     const [lon, lat] = centreAnneau(anneau);
-    return ' <a class="lien-ext lien-recentrer" href="?lat=' + lat.toFixed(6) + '&amp;lon=' + lon.toFixed(6) + '">'
+    return ' <a class="lien-ext lien-recentrer" href="?lat=' + lat.toFixed(6) + '&amp;lon=' + lon.toFixed(6) + PARAM_ZONE.replace('&', '&amp;') + '">'
         + 'Recentrer la scène sur ce bâtiment</a>';
 }
 
@@ -1763,7 +1804,7 @@ chargerScene()
 // ni bâtiments, ni orthophoto, ni végétation. « Ma position » proposait de
 // recentrer au-delà de 500 m seulement : entre 130 et 500 m du point, le
 // repère flottait sur le relief nu sans que rien ne le dise.
-const DEMI_EMPRISE_DEG = 0.0016;
+const DEMI_EMPRISE_DEG = ZONE === null ? 0.0016 : ZONE / 2 / 111320;
 
 /** Distance en mètres d'un point à l'emprise chargée ; 0 à l'intérieur. */
 function distanceAEmprise(lon, lat) {
@@ -1792,7 +1833,7 @@ function cadrer() {
 // scène. Le plan OpenStreetMap qu'on proposait avant dépendait de serveurs
 // dont les conditions d'usage découragent un rechargement à chaque visite.
 const TUILE_ZOOM = 18;
-const TUILE_DELTA = 0.0016;      // même emprise que les bâtiments
+const TUILE_DELTA = DEMI_EMPRISE_DEG;      // même emprise que les bâtiments
 
 const FONDS = {
     ortho: (z, x, y) =>
@@ -2464,9 +2505,11 @@ async function chargerRelief() {
     const [ax, ay] = toLocal(BORNES.o, BORNES.n);
     const [bx, by] = toLocal(BORNES.e, BORNES.s);
     const largeur = Math.abs(bx - ax), profondeur = Math.abs(by - ay);
-    // Un vertex tous les ~2 m, plafonné à 256 subdivisions.
-    const segX = Math.min(256, Math.max(16, Math.round(largeur / 2)));
-    const segZ = Math.min(256, Math.max(16, Math.round(profondeur / 2)));
+    // Un vertex tous les ~2 m, plafonné à 256 subdivisions — 512 pour une
+    // zone élargie, dont le relief serveur a jusqu'à 512 points de côté.
+    const segMax = ECHELLE_ZONE > 1 ? 512 : 256;
+    const segX = Math.min(segMax, Math.max(16, Math.round(largeur / 2)));
+    const segZ = Math.min(segMax, Math.max(16, Math.round(profondeur / 2)));
 
     const geo = new THREE.PlaneGeometry(largeur, profondeur, segX, segZ);
     geo.rotateX(-Math.PI / 2);          // le +Y du plan devient le nord (-Z)

@@ -512,3 +512,46 @@ def test_une_base_illisible_ne_met_rien_en_cache(tmp_path):
     en_panne[0] = False
     cache.obtenir_panneaux(48.8049, 2.1204, construire=_scene_nue)
     assert os.path.exists(cache.chemin(48.8049, 2.1204, scene.NOM_PANNEAUX))
+
+
+@pytest.mark.parametrize("brute,attendue", [(None, None), ("", None), ("500", 500),
+                                            (512, 500), (90, 150), (5000, 1000)])
+def test_la_zone_est_arrondie_et_bornee(brute, attendue):
+    assert scene.zone_normalisee(brute) == attendue
+
+
+@pytest.mark.parametrize("brute", ["grand", "nan"])
+def test_une_zone_illisible_est_refusee(brute):
+    with pytest.raises(ValueError):
+        scene.zone_normalisee(brute)
+
+
+def test_la_zone_fixe_le_cote_nord_sud_et_agrandit_l_anneau():
+    lat, lon = 48.8, 2.1
+    o, s, e, n = emprise(lat, lon, 1000)
+    assert (n - s) * 111320 == pytest.approx(1000)
+    assert e - o == pytest.approx(n - s)
+    ao, as_, ae, an = scene.emprise_anneau(lat, lon, zone=1000)
+    assert (an - as_) * 111320 == pytest.approx(2 * scene.ANNEAU_DEMI_M * 1000 / scene.SCENE_COTE_M)
+    # Une zone plus petite que la scène par défaut garde l'anneau d'un kilomètre.
+    assert scene.emprise_anneau(lat, lon, zone=200) == scene.emprise_anneau(lat, lon)
+
+
+def test_chaque_zone_a_sa_scene(tmp_path):
+    """La scène par défaut garde son dossier d'avant les zones ; une zone en a
+    un autre, construite avec elle."""
+    appels = []
+
+    def construire(lat, lon, avancer=None, zone=None):
+        appels.append(zone)
+        return b"scene", b"jpeg"
+
+    cache = Cache(str(tmp_path))
+    defaut = cache.obtenir(48.8049, 2.1204, construire=construire)
+    large = cache.obtenir(48.8049, 2.1204, construire=construire, zone="700")
+    assert cache.obtenir(48.8049, 2.1204, construire=construire, zone=690) == large
+    assert appels == [None, 700]
+    assert os.path.basename(defaut) == "48.8049_2.1204"
+    assert os.path.basename(large) == "48.8049_2.1204_z700"
+    assert cache.avancement(48.8049, 2.1204, "700") == {"etat": "prete"}
+    assert cache.avancement(48.8049, 2.1204, "500") == {"etat": "attente"}

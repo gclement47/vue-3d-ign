@@ -57,7 +57,6 @@ détecteur (ou le mode) et la version (scene.nom_vehicules, nom_piscines) :
 changer de détecteur ne ressert jamais la couche d'un autre.
 """
 
-import io
 import logging
 import math
 import os
@@ -67,7 +66,7 @@ from shapely.geometry import Point, Polygon, shape
 from shapely.ops import unary_union
 
 from .batiments import DECOUPE_RETRAIT_M
-from .ortho import fetch_ortho_jpeg
+from .ortho import fetch_ortho_rgb
 
 journal = logging.getLogger(__name__)
 
@@ -450,9 +449,7 @@ class Lecteur:
         Raises:
             requests.RequestException si elle n'a pas pu être lue.
         """
-        from PIL import Image
-        contenu, _, _ = fetch_ortho_jpeg(west, south, east, north, resolution_m=RESOLUTION_M)
-        return np.asarray(Image.open(io.BytesIO(contenu)).convert("RGB"))
+        return fetch_ortho_rgb(west, south, east, north, RESOLUTION_M)
 
     def piscines(self, west, south, east, north):
         """Les piscines de l'emprise, vues de tous les détecteurs du mode."""

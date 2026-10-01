@@ -13,7 +13,29 @@ messages de commit et dans les commentaires des modules.
 
 ## Scène v13 — 30 septembre 2026
 
+### Ajouté
+
+- **Une zone plus grande, au choix.** Le sélecteur « Zone » du panneau, ou
+  `zone=` dans l'URL, fixe le côté nord-sud de la scène, de 150 à 1 000 m
+  (arrondi à 50 m). L'emprise par défaut (~356 m) ne change pas et garde son
+  cache. Autour d'un site de la vallée de la chimie à Lyon, 1 000 m donnent 301
+  bâtiments, 17 réservoirs et 4 constructions élevées contre 50, 7 et 2 ; la
+  construction prend environ cinq minutes. L'anneau de relief, le brouillard,
+  le recul de la caméra et les ombres suivent la taille de la zone.
+
 ### Corrigé
+
+- **Une lecture WFS n'est plus tronquée à 5 000 objets.** Le service s'arrête
+  là sans erreur (5 000 bâtiments rendus sur 9 948 au centre de Paris).
+  L'emprise est désormais coupée en quatre jusqu'à ce que chaque morceau
+  tienne en une réponse.
+- **Les véhicules d'une zone élargie sont détectés à 0,2 m.** L'orthophoto
+  des détections était plafonnée à 2 048 px : à 1 000 m elle revenait à
+  0,49 m, les voitures y étaient 2,5 fois trop petites et presque toutes
+  écartées (une dizaine). Lue en tuiles, elle garde sa résolution : 301
+  véhicules au même endroit.
+- **La mosaïque d'orthophoto garde ses proportions au-delà de 2 048 px.** Ses
+  deux côtés étaient plafonnés chacun de son côté, ce qui l'aurait étirée.
 
 - **Le château de Chambord n'est plus réduit à ses terrasses.** Son donjon et
   ses tours, un tiers de l'emprise, étaient pris pour « un arbre au-dessus du

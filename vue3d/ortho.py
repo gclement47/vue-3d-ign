@@ -77,9 +77,49 @@ def fetch_ortho_jpeg(west, south, east, north, resolution_m=ORTHO_MOSAIQUE_RESOL
     lat_moy = (south + north) / 2
     largeur_m = (east - west) * 111320 * math.cos(math.radians(lat_moy))
     hauteur_m = (north - south) * 111320
-    largeur = int(min(max(largeur_m / resolution_m, 64), max_pixels))
-    hauteur = int(min(max(hauteur_m / resolution_m, 64), max_pixels))
+    # Plafonnés ensemble, d'un même facteur : bornés chacun de son côté, le
+    # plus long seul raccourcirait et l'image sortirait étirée — le cas des
+    # zones de plus de 820 m (2 048 px à 0,4 m).
+    reduction = min(1.0, max_pixels / max(largeur_m / resolution_m, hauteur_m / resolution_m))
+    largeur = int(max(largeur_m / resolution_m * reduction, 64))
+    hauteur = int(max(hauteur_m / resolution_m * reduction, 64))
     return _image_wms(west, south, east, north, largeur, hauteur), largeur, hauteur
+
+
+def fetch_ortho_rgb(west, south, east, north, resolution_m, tuile_max=2048):
+    """Orthophoto de l'emprise à `resolution_m` exactement, en tableau RGB
+    (hauteur, largeur, 3), assemblée de tuiles d'au plus `tuile_max` pixels.
+
+    Pour la détection des véhicules (0,2 m), qui ne supporte pas d'image plus
+    grossière : ses réseaux et ses filtres de taille comptent en pixels de
+    0,2 m. Une zone de 1 000 m en demande 5 000 de côté ; plafonnée à 2 048
+    comme la mosaïque, l'image revenait à 0,49 m, les voitures y étaient 2,5
+    fois trop petites et presque toutes écartées.
+
+    En EPSG:4326, pixels et degrés sont proportionnels : chaque tuile est la
+    portion exacte de l'emprise qui correspond à ses pixels.
+    """
+    import math
+    from PIL import Image
+    west, south, east, north = map(float, (west, south, east, north))
+    lat_moy = (south + north) / 2
+    largeur = int(max((east - west) * 111320 * math.cos(math.radians(lat_moy)) / resolution_m, 64))
+    hauteur = int(max((north - south) * 111320 / resolution_m, 64))
+    dlon, dlat = (east - west) / largeur, (north - south) / hauteur
+    rgb = np.zeros((hauteur, largeur, 3), dtype=np.uint8)
+    for y0 in range(0, hauteur, tuile_max):
+        for x0 in range(0, largeur, tuile_max):
+            l, h = min(tuile_max, largeur - x0), min(tuile_max, hauteur - y0)
+            # Lignes depuis le nord : la tuile y0 commence à north - y0 * dlat.
+            contenu = _image_wms(west + x0 * dlon, north - (y0 + h) * dlat,
+                                 west + (x0 + l) * dlon, north - y0 * dlat, l, h)
+            morceau = np.asarray(Image.open(io.BytesIO(contenu)).convert("RGB"))
+            if morceau.shape[:2] != (h, l):
+                raise requests.RequestException(
+                    f"tuile d'orthophoto de {morceau.shape[1]} × {morceau.shape[0]} px "
+                    f"pour {l} × {h} demandés")
+            rgb[y0:y0 + h, x0:x0 + l] = morceau
+    return rgb
 
 
 def fetch_exg_grid(west, south, east, north, largeur, hauteur):
