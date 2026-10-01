@@ -27,7 +27,8 @@ laissé à qui déploie :
 - `tous` : l'union des deux, 169 et 188 véhicules.
 
 Temps sur un Mac à dix cœurs ; le double ou plus dans le conteneur Docker de
-la même machine (6 s et 35 s).
+la même machine (6 s et 35 s), trois à six fois moins hors conteneur avec
+CoreML (`VUE3D_MOTEUR`, MOTEURS).
 
 Les deux réseaux sont entraînés sur DOTA, dont les images sont réservées à un
 usage académique ; leurs poids ne sont pas dans le dépôt, ils sont exportés à
@@ -243,11 +244,61 @@ def mode_demande(valeur=None):
     return mode
 
 
-def charger(mode, dossier):
+# Moteurs d'onnxruntime, au choix de `VUE3D_MOTEUR`. Hors conteneur sur un
+# Mac, CoreML fait tourner les réseaux sur le GPU ; le conteneur Docker de la
+# même machine n'y a pas accès, et garde le processeur. Mesuré le 2026-10-01
+# sur un M4 à dix cœurs, hors conteneur, par `detecter` et
+# `detecter_piscines` sur Gordes :
+#
+#                               processeur    CoreML
+#   rtmdet (20 tuiles)             2,8 s       0,8 s
+#   yolo (140 tuiles)             16,4 s       5,1 s
+#   piscines                       1,0 s       0,3 s
+#   yolo, zone de 1 000 m            —         52 s   (1 092 tuiles)
+#
+# Dans le conteneur, yolo met environ 5 min sur une zone de 1 000 m. Les
+# couches écrites par le serveur sont les mêmes à l'octet, d'un moteur à
+# l'autre : piscines, rtmdet et yolo de Gordes.
+#
+# Format MLProgram, toutes les unités de calcul, 31 ms par tuile de yolo :
+# le format par défaut de CoreML (NeuralNetwork) en met 64 et s'écarte de
+# 0,003 sur les scores ; le Neural Engine seul, 170, plus que le processeur.
+MOTEURS = {
+    "processeur": ["CPUExecutionProvider"],
+    "coreml": [("CoreMLExecutionProvider", {"ModelFormat": "MLProgram", "MLComputeUnits": "ALL"}),
+               "CPUExecutionProvider"],
+}
+
+
+def moteur_demande(disponibles, valeur=None):
+    """Le moteur de `VUE3D_MOTEUR`, contrôlé : `auto` (défaut) prend CoreML
+    s'il est parmi les moteurs `disponibles` d'onnxruntime, le processeur
+    sinon ; `processeur` et `coreml` l'imposent.
+
+    Raises:
+        VehiculesMalConfigures pour une valeur inconnue, ou pour `coreml`
+        demandé là où onnxruntime ne l'a pas.
+    """
+    moteur = (os.environ.get("VUE3D_MOTEUR", "") if valeur is None else valeur).strip().lower()
+    coreml = MOTEURS["coreml"][0][0] in disponibles
+    if moteur in ("", "auto"):
+        return "coreml" if coreml else "processeur"
+    if moteur not in MOTEURS:
+        raise VehiculesMalConfigures(
+            f"VUE3D_MOTEUR={moteur!r} : attendu l'un de auto, {', '.join(MOTEURS)}.")
+    if moteur == "coreml" and not coreml:
+        raise VehiculesMalConfigures(
+            "VUE3D_MOTEUR=coreml : onnxruntime n'a pas ce moteur ici "
+            "(macOS hors conteneur seulement).")
+    return moteur
+
+
+def charger(mode, dossier, moteur=None):
     """Sessions d'inférence des détecteurs du mode, par nom.
 
     Raises:
-        VehiculesMalConfigures si onnxruntime ou un réseau manque.
+        VehiculesMalConfigures si onnxruntime ou un réseau manque, ou si
+        CoreML, retenu par `moteur_demande`, ne prend pas un réseau.
     """
     if not MODES[mode]:
         return {}
@@ -257,6 +308,7 @@ def charger(mode, dossier):
         raise VehiculesMalConfigures(
             f"VUE3D_VEHICULES={mode} demande onnxruntime, absent de cette installation "
             "(requirements-vehicules.txt, ou l'argument de construction de l'image).") from exc
+    moteur = moteur_demande(onnxruntime.get_available_providers(), moteur)
     sessions = {}
     for nom in MODES[mode]:
         chemin = os.path.join(dossier, DETECTEURS[nom]["fichier"])
@@ -264,7 +316,15 @@ def charger(mode, dossier):
             raise VehiculesMalConfigures(
                 f"VUE3D_VEHICULES={mode} demande {chemin}, introuvable : "
                 f"python outils/exporter_vehicules.py {nom} {dossier}")
-        sessions[nom] = onnxruntime.InferenceSession(chemin, providers=["CPUExecutionProvider"])
+        sessions[nom] = onnxruntime.InferenceSession(chemin, providers=MOTEURS[moteur])
+        # Un moteur qui ne s'initialise pas, onnxruntime le remplace par le
+        # processeur sans lever. Cinq fois plus lent, ce repli passerait pour
+        # une panne : il arrête le démarrage, et l'erreur dit comment le
+        # demander.
+        if moteur == "coreml" and MOTEURS["coreml"][0][0] not in sessions[nom].get_providers():
+            raise VehiculesMalConfigures(
+                f"CoreML n'a pas pris {chemin} : VUE3D_MOTEUR=processeur s'en passe.")
+    journal.info("Moteur d'inférence : %s", moteur)
     return sessions
 
 

@@ -142,6 +142,13 @@ pip install -r requirements-vehicules.txt               # dans .venv
 VUE3D_VEHICULES=rtmdet VUE3D_MODELES=./modeles VUE3D_CACHE=./cache flask --app vue3d.app run --port 8080
 ```
 
+Sur un Mac, les réseaux tournent alors sur CoreML, que le conteneur Docker
+n'atteint pas : à Gordes, 0,8 s au lieu de 2,8 pour `rtmdet` et 5 s au lieu
+de 16 pour `yolo` (M4), pour les mêmes couches, à l'octet. Sur une zone de
+1 000 m, piscines et véhicules sont prêts en même temps que la scène.
+`VUE3D_MOTEUR=processeur` s'en passe ; `coreml` l'exige ; sans la variable,
+CoreML est pris là où onnxruntime l'a, le processeur ailleurs.
+
 Pas Python 3.14 : avec les mêmes versions de numpy et shapely, la segmentation
 des arbres y rend 0 houppier sans la moindre erreur (2 160 en 3.12 sur Gordes,
 mêmes données). Et comme le cache ne périme pas, une scène construite ainsi

@@ -6,6 +6,7 @@ doublures qui rendent des boîtes écrites à la main, dans la disposition de
 chaque export.
 """
 import math
+import sys
 import types
 
 import numpy as np
@@ -45,6 +46,62 @@ def test_un_mode_sans_son_reseau_arrete_le_demarrage(tmp_path):
         vehicules.charger("rtmdet", str(tmp_path))
     with pytest.raises(VehiculesMalConfigures):
         vehicules.lecteur("tous", str(tmp_path))
+
+
+def test_le_moteur_est_coreml_la_ou_il_existe_le_processeur_ailleurs(monkeypatch):
+    monkeypatch.delenv("VUE3D_MOTEUR", raising=False)
+    mac = ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+    conteneur = ["AzureExecutionProvider", "CPUExecutionProvider"]
+    assert vehicules.moteur_demande(mac) == "coreml"
+    assert vehicules.moteur_demande(conteneur) == "processeur"
+    assert vehicules.moteur_demande(mac, " Auto ") == "coreml"
+    monkeypatch.setenv("VUE3D_MOTEUR", "processeur")
+    assert vehicules.moteur_demande(mac) == "processeur"
+
+
+def test_un_moteur_inconnu_ou_absent_arrete_le_demarrage():
+    with pytest.raises(VehiculesMalConfigures, match="auto, processeur, coreml"):
+        vehicules.moteur_demande(["CPUExecutionProvider"], "gpu")
+    with pytest.raises(VehiculesMalConfigures, match="VUE3D_MOTEUR=coreml"):
+        vehicules.moteur_demande(["CPUExecutionProvider"], "coreml")
+
+
+def _faux_onnxruntime(monkeypatch, tmp_path, pris):
+    """Un onnxruntime de doublure, qui a CoreML ; `pris` : les moteurs que
+    ses sessions disent avoir gardés. Rend la liste des moteurs demandés."""
+    demandes = []
+
+    class Session:
+        def __init__(self, chemin, providers):
+            demandes.append(providers)
+
+        def get_providers(self):
+            return pris
+
+    monkeypatch.setitem(sys.modules, "onnxruntime", types.SimpleNamespace(
+        InferenceSession=Session,
+        get_available_providers=lambda: ["CoreMLExecutionProvider", "CPUExecutionProvider"]))
+    (tmp_path / vehicules.DETECTEURS["yolo"]["fichier"]).write_bytes(b"")
+    return demandes
+
+
+def test_les_reseaux_sont_charges_sur_le_moteur_demande(monkeypatch, tmp_path):
+    monkeypatch.delenv("VUE3D_MOTEUR", raising=False)
+    demandes = _faux_onnxruntime(monkeypatch, tmp_path,
+                                 ["CoreMLExecutionProvider", "CPUExecutionProvider"])
+    assert list(vehicules.charger("yolo", str(tmp_path))) == ["yolo"]
+    assert demandes[-1] == vehicules.MOTEURS["coreml"]
+    vehicules.charger("yolo", str(tmp_path), "processeur")
+    assert demandes[-1] == ["CPUExecutionProvider"]
+
+
+def test_un_repli_muet_sur_le_processeur_arrete_le_demarrage(monkeypatch, tmp_path):
+    """onnxruntime remplace sans lever un moteur qui ne s'initialise pas."""
+    monkeypatch.delenv("VUE3D_MOTEUR", raising=False)
+    _faux_onnxruntime(monkeypatch, tmp_path, ["CPUExecutionProvider"])
+    with pytest.raises(VehiculesMalConfigures, match="VUE3D_MOTEUR=processeur"):
+        vehicules.charger("yolo", str(tmp_path))
+    assert list(vehicules.charger("yolo", str(tmp_path), "processeur")) == ["yolo"]
 
 
 def test_le_mode_tous_demande_le_detecteur_rapide_d_abord():

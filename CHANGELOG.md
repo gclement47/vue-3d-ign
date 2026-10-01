@@ -22,6 +22,14 @@ messages de commit et dans les commentaires des modules.
   LiDAR ne voit pas est désormais dessiné en coque hyperbolique, au galbe de
   convention (col à 0,58 fois le pied, aux quatre cinquièmes de la hauteur).
   Les centrales nucléaires restent absentes : la BD TOPO n'en contient rien.
+- **Les détecteurs sur CoreML, hors conteneur.** Lancé sans Docker sur un
+  Mac, le serveur fait tourner les réseaux des véhicules et des piscines sur
+  CoreML : à Gordes, 0,8 s au lieu de 2,8 pour `rtmdet`, 5 s au
+  lieu de 16 pour `yolo`, et des couches identiques à l'octet. Sur une zone
+  de 1 000 m, piscines et véhicules sont prêts avec la scène (114 s) ; dans
+  le conteneur, sur un autre lieu, `yolo` arrivait dix minutes après elle.
+  `VUE3D_MOTEUR=processeur` s'en passe ; le conteneur, qui n'a pas CoreML, ne
+  change pas.
 
 ### Corrigé
 
