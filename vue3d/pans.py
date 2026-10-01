@@ -27,6 +27,7 @@ pans >= 80 % pour 91 % et 85 % des toits fiables, écart médian au LiDAR 0,10 e
 
 import logging
 import math
+from array import array
 from collections import Counter, defaultdict, deque
 
 import numpy as np
@@ -49,6 +50,15 @@ PANS_ANGLE_DEG = 25.0
 PANS_ECART_M = 0.40
 # Plan réajusté (moindres carrés) toutes les N cellules ajoutées.
 PANS_REAJUSTEMENT = 20
+# Le produit scalaire de deux normales unitaires se calcule en float Python,
+# dix fois moins cher que le `@` de numpy, qui passe par BLAS. Les deux ne
+# sont pas toujours égaux au bit près : sur 1,6 million de produits des toits
+# de Strasbourg en zone de 1 000 m, aucun écart sous macOS (Accelerate), mais
+# 576 000 dans le conteneur (OpenBLAS), de 2,2e-16 au plus. Seule compte la
+# comparaison au seuil d'angle : à moins de PANS_DOUTE_PRODUIT de lui, c'est
+# le `@` d'origine qui tranche, et la région croît comme avant. Aucun des
+# 1,6 million n'en était si près.
+PANS_DOUTE_PRODUIT = 1e-12
 # Un pan plus petit que 3 m² (12 cellules), ou que 4 % du toit, est du bruit :
 # cheminée, lucarne, bord mêlé de sol.
 PANS_MIN_CELLULES = 12
@@ -104,17 +114,39 @@ PANS_QUANTUM_Z = 10
 
 def _plan(xs, ys, zs):
     """Plan z = a·x + b·y + c (moindres carrés) et sa normale unitaire."""
-    A = np.c_[xs, ys, np.ones(len(xs))]
+    # column_stack plutôt que np.c_ : la même matrice (valeurs, ordre,
+    # contiguïté), donc le même lstsq au bit près, et 4 µs au lieu de 17 par
+    # appel (cProfile, 60 000 appels à Strasbourg en zone de 1 000 m).
+    A = np.column_stack((xs, ys, np.ones(len(xs))))
     coef, *_ = np.linalg.lstsq(A, zs, rcond=None)
     n = np.array([-coef[0], -coef[1], 1.0])
     return coef, n / np.linalg.norm(n)
 
 
-def _voisins4(j, i, ny, nx):
-    for dj, di in ((0, 1), (0, -1), (1, 0), (-1, 0)):
-        jj, ii = j + dj, i + di
-        if 0 <= jj < ny and 0 <= ii < nx:
-            yield jj, ii
+def proches(polygone, X, Y, rayon):
+    """Masque des cellules dont le centre est à `rayon` au plus du polygone.
+
+    Le même que `shapely.distance(points, polygone) <= rayon`, mais la
+    distance n'est calculée que hors du polygone : dedans, GEOS la rend
+    nulle. Mesuré sur 590 000 cellules des fenêtres de Strasbourg : 71 ns
+    par cellule pour le test d'appartenance, 512 pour la distance, et 37 %
+    des cellules dedans.
+    """
+    out = shapely.contains_xy(polygone, X, Y)
+    js, is_ = np.nonzero(~out)
+    out[js, is_] = shapely.distance(shapely.points(X[js, is_], Y[js, is_]), polygone) <= rayon
+    return out
+
+
+def _bordee(a, bord):
+    """Grille bordée d'une cellule `bord`, à plat, en liste Python.
+
+    La croissance des régions lit ses voisines aux décalages +1, -1, +W, -W
+    (W = nx + 2) sans tester le bord de la fenêtre : une voisine hors de la
+    grille tombe sur la bordure, non valide et sans étiquette, et compte
+    comme si elle n'avait pas été lue.
+    """
+    return np.pad(a, 1, constant_values=bord).ravel().tolist()
 
 
 def segmenter(z, valides, X, Y):
@@ -144,52 +176,96 @@ def segmenter(z, valides, X, Y):
 
     js, is_ = np.nonzero(valides)
     ordre = np.lexsort((is_, js, courbure[js, is_]))
-    etiquettes = np.full((ny, nx), -1, dtype=np.int32)
     plans = []
     cos_min = math.cos(math.radians(PANS_ANGLE_DEG))
+    seuil = max(PANS_MIN_CELLULES, int(PANS_MIN_PART * valides.sum()))
+
+    # La croissance passe cellule par cellule : elle lit des listes Python à
+    # plat, bordées (`_bordee`), plutôt que des scalaires numpy, quatre à
+    # cinq fois plus chers à indexer. Le résidu au plan y est le même calcul
+    # en float Python qu'en float64 numpy, au bit près ; le produit scalaire
+    # des normales aussi, sauf à PANS_DOUTE_PRODUIT du seuil, où le `@` numpy
+    # d'avant tranche. Mesuré sur les 521 toits en pans de Strasbourg en zone
+    # de 1 000 m : 4,8 s -> 1,95 s (médianes de six mesures alternées),
+    # mêmes étiquettes et mêmes plans au bit près.
+    W = nx + 2
+    lab = [-1] * ((ny + 2) * W)
+    val = _bordee(valides, False)
+    Xp, Yp, zp_ = (np.pad(a, 1).ravel() for a in (X, Y, z))
+    Xl, Yl, zl = Xp.tolist(), Yp.tolist(), zp_.tolist()
+    N0, N1, N2 = (_bordee(n[..., a], 0.0) for a in range(3))
+    # Est, ouest, sud, nord : l'ordre de parcours fixe celui des cellules de
+    # la région, donc ses réajustements ; il ne doit pas changer.
+    voisinage = (1, -1, W, -W)
+    amorce = (-W - 1, -W, -W + 1, -1, 0, 1, W - 1, W, W + 1)
 
     # Graines par courbure croissante : on part du plat des pans.
-    for o in ordre:
-        j0, i0 = int(js[o]), int(is_[o])
-        if etiquettes[j0, i0] != -1:
+    jsl, isl = js.tolist(), is_.tolist()
+    for o in ordre.tolist():
+        c0 = (jsl[o] + 1) * W + isl[o] + 1
+        if lab[c0] != -1:
             continue
         k = len(plans)
-        etiquettes[j0, i0] = k
-        region = [(j0, i0)]
-        # Amorce sur le voisinage 3×3 : la normale d'une cellule seule est
-        # trop bruitée pour porter un plan.
-        vois = [(a, b) for a in range(max(j0 - 1, 0), min(j0 + 2, ny))
-                for b in range(max(i0 - 1, 0), min(i0 + 2, nx)) if valides[a, b]]
-        a_, b_ = np.array(vois).T
-        coef, npl = _plan(X[a_, b_], Y[a_, b_], z[a_, b_])
+        lab[c0] = k
+        region = array("q", (c0,))
+        coef = None
         file, depuis = deque(region), 0
         while file:
-            j, i = file.popleft()
-            for jj, ii in _voisins4(j, i, ny, nx):
-                if etiquettes[jj, ii] != -1 or not valides[jj, ii]:
+            c = file.popleft()
+            for d in voisinage:
+                v = c + d
+                if lab[v] != -1 or not val[v]:
                     continue
-                if float(n[jj, ii] @ npl) < cos_min:
+                if coef is None:
+                    # Amorce sur le voisinage 3×3 : la normale d'une cellule
+                    # seule est trop bruitée pour porter un plan. Ajustée à
+                    # la première voisine libre seulement : une graine sans
+                    # voisine libre reste seule, et son plan ne servirait
+                    # pas — 16 500 lstsq épargnés sur 45 500 graines à
+                    # Strasbourg en zone de 1 000 m.
+                    vois = np.array([c0 + e for e in amorce if val[c0 + e]])
+                    coef, npl = _plan(Xp[vois], Yp[vois], zp_[vois])
+                    ca, cb, cc = coef.tolist()
+                    pa, pb, pc = npl.tolist()
+                # Deux tests sans effet de bord, l'un ou l'autre rejette : le
+                # résidu, le moins cher, d'abord.
+                if abs(zl[v] - (ca * Xl[v] + cb * Yl[v] + cc)) > PANS_ECART_M:
                     continue
-                if abs(z[jj, ii] - (coef[0] * X[jj, ii] + coef[1] * Y[jj, ii] + coef[2])) > PANS_ECART_M:
+                produit = N0[v] * pa + N1[v] * pb + N2[v] * pc
+                if abs(produit - cos_min) <= PANS_DOUTE_PRODUIT:
+                    produit = float(n[v // W - 1, v % W - 1] @ npl)
+                if produit < cos_min:
                     continue
-                etiquettes[jj, ii] = k
-                region.append((jj, ii))
-                file.append((jj, ii))
+                lab[v] = k
+                region.append(v)
+                file.append(v)
                 depuis += 1
                 if depuis >= PANS_REAJUSTEMENT:
                     depuis = 0
-                    a_, b_ = np.array(region).T
-                    coef, npl = _plan(X[a_, b_], Y[a_, b_], z[a_, b_])
-        a_, b_ = np.array(region).T
-        plans.append(_plan(X[a_, b_], Y[a_, b_], z[a_, b_]) if len(region) >= 3 else (coef, npl))
+                    r = np.array(region)
+                    coef, npl = _plan(Xp[r], Yp[r], zp_[r])
+                    ca, cb, cc = coef.tolist()
+                    pa, pb, pc = npl.tolist()
+        if len(region) >= seuil:
+            r = np.array(region)
+            plans.append(_plan(Xp[r], Yp[r], zp_[r]))
+        else:
+            # Rejetée ci-dessous pour sa taille, quel que soit son plan : ne
+            # pas l'ajuster épargne la plupart des lstsq (une région par
+            # graine, et presque toutes n'ont que quelques cellules).
+            plans.append(None)
+    etiquettes = np.array(lab, dtype=np.int32).reshape(ny + 2, W)[1:-1, 1:-1].copy()
 
     # Régions trop petites ou presque verticales : rejetées.
-    seuil = max(PANS_MIN_CELLULES, int(PANS_MIN_PART * valides.sum()))
     tailles = np.bincount(etiquettes[etiquettes >= 0], minlength=len(plans))
-    for k, (coef, npl) in enumerate(plans):
-        if tailles[k] < seuil or npl[2] < PANS_NZ_MIN:
+    rejet = np.array([p is None or tailles[k] < seuil or p[1][2] < PANS_NZ_MIN
+                      for k, p in enumerate(plans)], dtype=bool)
+    if rejet.any():
+        for k in np.flatnonzero(rejet).tolist():
             plans[k] = None
-            etiquettes[etiquettes == k] = -1
+        m = etiquettes >= 0
+        e = etiquettes[m]
+        etiquettes[m] = np.where(rejet[e], -1, e)
 
     # Fusion des pans voisins coplanaires, jusqu'à stabilité.
     cos_fusion = math.cos(math.radians(PANS_FUSION_DEG))
@@ -216,48 +292,70 @@ def segmenter(z, valides, X, Y):
         plans[b] = None
 
     # Cellules orphelines (bords de pans, cheminées arasées) : au pan voisin
-    # le plus proche en hauteur, s'il l'est à moins de deux tolérances.
+    # le plus proche en hauteur, s'il l'est à moins de deux tolérances. En
+    # listes à plat, comme la croissance ; une cellule rattachée l'est tout
+    # de suite pour les suivantes de la même passe, comme avant.
+    lab = _bordee(etiquettes, -1)
+    coefs = [None if p is None else p[0].tolist() for p in plans]
+    # Les orphelines dans l'ordre des lignes, comme np.nonzero : une passe
+    # reprend celles que la précédente a laissées, dans le même ordre.
+    restantes = np.flatnonzero(np.array(val) & (np.array(lab) == -1)).tolist()
     for _ in range(8):
-        js_, is2 = np.nonzero(valides & (etiquettes == -1))
-        bouge = False
-        for j, i in zip(js_.tolist(), is2.tolist()):
+        bouge, suivantes = False, []
+        for c in restantes:
             mieux, res_min = -1, 2 * PANS_ECART_M
-            for jj, ii in _voisins4(j, i, ny, nx):
-                k = etiquettes[jj, ii]
+            for d in voisinage:
+                k = lab[c + d]
                 if k >= 0:
-                    c = plans[k][0]
-                    r = abs(z[j, i] - (c[0] * X[j, i] + c[1] * Y[j, i] + c[2]))
+                    a, b, e = coefs[k]
+                    r = abs(zl[c] - (a * Xl[c] + b * Yl[c] + e))
                     if r < res_min:
-                        mieux, res_min = int(k), r
+                        mieux, res_min = k, r
             if mieux >= 0:
-                etiquettes[j, i] = mieux
+                lab[c] = mieux
                 bouge = True
+            else:
+                suivantes.append(c)
         if not bouge:
             break
-    return etiquettes, plans
+        restantes = suivantes
+    return np.array(lab, dtype=np.int32).reshape(ny + 2, W)[1:-1, 1:-1].copy(), plans
 
 
 def _prolonger(etiquettes, plans, z, zone, X, Y):
-    """Étend les étiquettes à toute la zone : pan voisin de moindre écart."""
-    lab = etiquettes.copy()
-    ny, nx = lab.shape
+    """Étend les étiquettes à toute la zone : pan voisin de moindre écart.
+
+    Passe après passe, en listes à plat bordées comme `segmenter` : une
+    cellule étiquetée l'est aussitôt pour les suivantes de la même passe.
+    """
+    ny, nx = etiquettes.shape
+    W = nx + 2
+    lab = _bordee(etiquettes, -1)
+    zl, Xl, Yl = (_bordee(a, 0.0) for a in (z, X, Y))
+    coefs = [None if p is None else p[0].tolist() for p in plans]
+    dans_zone = np.pad(zone, 1, constant_values=False).ravel()
+    # Comme dans segmenter : les cellules sans étiquette dans l'ordre des
+    # lignes, et chaque passe reprend celles que la précédente a laissées.
+    restantes = np.flatnonzero(dans_zone & (np.array(lab) == -1)).tolist()
     while True:
-        js, is_ = np.nonzero(zone & (lab == -1))
-        bouge = False
-        for j, i in zip(js.tolist(), is_.tolist()):
+        bouge, suivantes = False, []
+        for c in restantes:
             mieux, res_min = -1, float("inf")
-            for jj, ii in _voisins4(j, i, ny, nx):
-                k = lab[jj, ii]
+            for d in (1, -1, W, -W):                 # est, ouest, sud, nord
+                k = lab[c + d]
                 if k >= 0:
-                    c = plans[k][0]
-                    r = abs(z[j, i] - (c[0] * X[j, i] + c[1] * Y[j, i] + c[2]))
+                    a, b, e = coefs[k]
+                    r = abs(zl[c] - (a * Xl[c] + b * Yl[c] + e))
                     if r < res_min:
-                        mieux, res_min = int(k), r
+                        mieux, res_min = k, r
             if mieux >= 0:
-                lab[j, i] = mieux
+                lab[c] = mieux
                 bouge = True
+            else:
+                suivantes.append(c)
         if not bouge:
-            return lab
+            return np.array(lab, dtype=etiquettes.dtype).reshape(ny + 2, W)[1:-1, 1:-1].copy()
+        restantes = suivantes
 
 
 # --- Frontières ------------------------------------------------------------
@@ -403,10 +501,17 @@ def _trianguler(polygone, eclat_permis=True):
         c = list(polygone.exterior.coords)[:-1]
         return [(c[0], c[k], c[k + 1]) for k in range(1, len(c) - 1)]
     try:
-        tris = [list(t.exterior.coords)[:3]
-                for t in shapely.constrained_delaunay_triangles(polygone).geoms]
+        triangles = shapely.constrained_delaunay_triangles(polygone)
     except shapely.errors.GEOSException:
         return None
+    # Les sommets de tous les triangles d'un appel, plutôt qu'un objet shapely
+    # par triangle et par anneau : les mêmes flottants, dans le même ordre,
+    # pour 19 600 triangulations à Strasbourg en zone de 1 000 m.
+    coords = shapely.get_coordinates(triangles)
+    if len(coords) == 4 * shapely.get_num_geometries(triangles):
+        tris = [[tuple(p) for p in t[:3]] for t in coords.reshape(-1, 4, 2).tolist()]
+    else:
+        tris = [list(t.exterior.coords)[:3] for t in triangles.geoms]
     aire = sum(abs((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])) / 2
                for a, b, c in tris)
     if abs(aire - polygone.area) > 1e-6 * max(polygone.area, 1.0):
@@ -624,8 +729,7 @@ def pans_du_toit(emprise, X, Y, z, valides):
     etiquettes, plans = segmenter(z, valides, X, Y)
     if (etiquettes >= 0).sum() < PANS_COUVERTURE_MIN * valides.sum():
         return None
-    zone = shapely.distance(shapely.points(X.ravel(), Y.ravel()),
-                            emprise).reshape(X.shape) <= PANS_DEBORD_M
+    zone = proches(emprise, X, Y, PANS_DEBORD_M)
     lab = _prolonger(etiquettes, plans, z, zone | (etiquettes >= 0), X, Y)
     vol = construire_volume(emprise, lab, plans, X, Y)
     if vol is None:
