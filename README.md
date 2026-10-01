@@ -48,6 +48,38 @@ docker compose up -d --build
 `-v` supprime le volume `scenes` : chaque lieu sera reconstruit à sa première
 ouverture.
 
+### Deux scripts de lancement
+
+```bash
+./run_docker.sh                              # Docker, depuis zéro, les deux détecteurs
+VUE3D_VEHICULES=tous ./run_macOS_CoreML.sh   # sans Docker, détecteurs sur CoreML
+```
+
+`run_docker.sh` enchaîne les deux commandes ci-dessus avec
+`VUE3D_VEHICULES=tous` : il **efface les scènes du volume** à chaque
+lancement, puis reconstruit l'image avec les deux détecteurs.
+
+`run_macOS_CoreML.sh` lance le même service sans Docker, avec le Python du
+`.venv`, sur le port 8080 : c'est sur un Mac la seule façon de faire tourner
+les détecteurs sur CoreML (voir plus bas), que le conteneur n'atteint pas.
+Il prend les mêmes variables que `docker-compose.yml` (`VUE3D_VEHICULES`,
+défaut `aucun` ; `VUE3D_PANNEAUX=oui` ; `VUE3D_PORT`), et `VUE3D_MOTEUR`. Ses
+fichiers sont à côté du dépôt, ignorés par git : `./cache` pour les scènes,
+`./modeles` pour les réseaux. À préparer une fois :
+
+```bash
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt -r requirements-vehicules.txt
+docker cp vue-3d-ign-vue3d-1:/modeles ./modeles   # les réseaux d'une image construite avec VUE3D_VEHICULES
+docker cp vue-3d-ign-vue3d-1:/cache ./cache       # facultatif : les scènes déjà construites dans Docker
+docker compose stop                               # libère le port 8080
+```
+
+Un `.venv` créé par uv n'a pas pip : `uv pip install --python .venv/bin/python
+-r …`. Le script refuse de démarrer, en disant quoi faire, si le port est
+déjà écouté (le conteneur), si onnxruntime manque ou s'il n'y a pas de
+`.venv`. Revenir à Docker : Ctrl-C, puis `docker compose start`.
+
 ### Les véhicules et les piscines, en option
 
 L'orthophoto montre des véhicules et des piscines ; un réseau de neurones

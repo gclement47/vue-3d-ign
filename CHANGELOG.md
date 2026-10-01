@@ -30,6 +30,10 @@ messages de commit et dans les commentaires des modules.
   le conteneur, sur un autre lieu, `yolo` arrivait dix minutes après elle.
   `VUE3D_MOTEUR=processeur` s'en passe ; le conteneur, qui n'a pas CoreML, ne
   change pas.
+- **Deux scripts de lancement** : `run_docker.sh` repart de zéro dans
+  Docker avec les deux détecteurs ; `run_macOS_CoreML.sh` lance le
+  service sans Docker, détecteurs sur CoreML, et refuse de démarrer si le
+  conteneur tient déjà le port.
 
 ### Modifié
 
