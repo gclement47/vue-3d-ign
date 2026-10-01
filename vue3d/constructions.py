@@ -36,12 +36,38 @@ annoncée est de 2,5 m) :
   hauteur de 9 autres —, mais la BD TOPO donne leur hauteur 24 fois sur 26.
 
 Un point dans une emprise bâtie (37 % des torchères, 34 % des cheminées, 21
-clochers sur 24) n'est pas dessiné : le toit mesuré du bâtiment le porte déjà.
-Clochers et minarets sont donc laissés à leur bâtiment ; croix et calvaires
+clochers sur 24) n'est dessiné que s'il dépasse le bâtiment : sinon le toit
+mesuré le porte déjà. Sur 17 points en bâtiment de hauteur déclarée autour
+de quatorze sites industriels, un seul tient sous son toit (118,9 m dans un
+bâtiment de 119,1 m, à Gardanne) ; les 16 autres le dépassent de 1,3 à 9 fois
+— torchères de 38,5 m sur des unités de 11 m à Feyzin, cheminée de 295 m sur
+un socle de 32,8 m à Gardanne, que l'ancienne règle effaçait.
+Clochers et minarets ne sont pas repris : ils sont dans leur bâtiment ; croix et calvaires
 n'ont jamais de hauteur (0 sur 14) et le MNH n'y lit que les arbres voisins ;
 un transformateur n'est pas une construction élevée ; la hauteur d'une
 éolienne (renseignée 45 fois sur 300) ne dit pas ce qu'elle mesure, du mât ou
 du bout de pale. Aucun de ceux-là n'est repris.
+
+**Les très hautes cheminées perdent leur sommet dans le LiDAR.** Gardanne
+(295 m) y culmine à 155 m, Porcheville (220 m) à 92 m, Saint-Avold (165 m) à
+88 m : au-dessus, plus rien, sans doute classé en bruit. La hauteur reste
+celle de la BD TOPO, mais le fût est bien là, isolé, et sa tache donne sa
+largeur (6,5 à 9 m de rayon ; à Gardanne le MNH reste à ~10 m du centre de
+75 à 150 m de haut).
+
+**Tours de refroidissement.** La BD TOPO n'en donne que l'emprise au sol,
+un bâtiment rond, et sa hauteur : à Gardanne, 139,3 m sur un disque de 55 m
+de rayon (évidé du bassin), et au centre un point « Autre construction
+élevée » de 135 m. Le LiDAR ne voit pas la coque : aucune cellule de
+l'emprise au-dessus de la mi-hauteur, quand un bâtiment plein en a la quasi-
+totalité. La vue en faisait un bâtiment d'un étage (« sous les arbres »,
+l'intérieur sombre et la ceinture boisée verdissant 37 % de l'emprise) et
+une aiguille de 135 m. Un bâtiment rond, plus haut que tout arbre, que le
+LiDAR ne voit pas est donc publié comme une tour, que la vue dessine en
+coque hyperbolique. Les centrales nucléaires sont absentes de la BD TOPO
+(sites sensibles : rien au-dessus de 12 m à Cruas ni à Golfech) ; les deux
+tours de Saint-Avold y sont encore, comme dans le LiDAR, mais démolies à
+l'orthophoto — les sources disent ce qu'elles disent.
 
 Une construction sans hauteur déclarée ni mesurée n'est pas dessinée : on
 n'invente pas un mât. Un réservoir sans hauteur garde son emprise, que la vue
@@ -104,6 +130,22 @@ ACCORD_HAUTEUR = 0.15
 ETENDUE_MAX_M = 8.0
 # Fenêtre où la tache est cherchée : assez pour constater qu'elle déborde.
 FENETRE_M = 12.0
+# Fût d'une cheminée vu sans son sommet : le LiDAR en lit au moins le tiers
+# (0,42 à 0,54 sur les trois cheminées de 165 à 295 m mesurées), et sa tache
+# est ronde autour du point — elle ne s'en écarte pas de plus que son rayon,
+# la précision du point et 2 m de bord irrégulier (Gardanne : rayon 9,0 m,
+# étendue 13,0 ; Saint-Avold 7,1 et 11,2 ; Porcheville 6,5 et 10,2). Une tache
+# fondue dans un portique s'étire bien au-delà (9,4 et 16,5 à Lyon).
+FUT_PART_VUE = 1 / 3
+FUT_BORD_M = 2.0
+
+# Tour de refroidissement : un bâtiment plus haut que le plus haut arbre (les
+# douglas records du pays passent 60 m, vue3d/houppiers.py), à l'enveloppe ronde
+# (circularité 0,99 à Gardanne, 1 pour un cercle), et dont le LiDAR voit
+# moins de la moitié de l'emprise au-dessus de sa mi-hauteur, comme un
+# réservoir qu'il ne voit pas (RESERVOIR_PART_VUE) — 0 % à Gardanne.
+TOUR_HAUTEUR_MIN_M = 60.0
+TOUR_CIRCULARITE_MIN = 0.95
 # Arrondi des coordonnées : 7 décimales, un centimètre.
 DECIMALES = 7
 
@@ -241,12 +283,51 @@ def _reservoirs(west, south, east, north, reservoirs, grille, echelles):
     return out, masque
 
 
-def _ponctuelles(west, south, east, north, ponctuelles, batiments, grille, echelles):
+def _tours(west, south, east, north, batiments, grille, echelles):
+    """Tours de refroidissement dont le centre est dans l'emprise : [(tour,
+    enveloppe en degrés)], la tour prête pour la scène."""
+    out = []
+    for f in (batiments or {}).get("features", []):
+        props = f.get("properties") or {}
+        h = props.get("hauteur")
+        if not h or h < TOUR_HAUTEUR_MIN_M:
+            continue
+        try:
+            geom = shapely.force_2d(shape(f["geometry"]))
+        except Exception:
+            continue
+        enveloppe = _en_metres(geom, echelles).convex_hull
+        if not enveloppe.area or (4 * math.pi * enveloppe.area / enveloppe.length ** 2
+                                  < TOUR_CIRCULARITE_MIN):
+            continue
+        f_mnh = grille.fenetre(*geom.bounds)
+        if f_mnh is not None:
+            H, LON, LAT = f_mnh
+            v = H[shapely.contains_xy(geom.convex_hull, LON, LAT)]
+            if v.size and (v >= h / 2).mean() >= RESERVOIR_PART_VUE:
+                continue                # plein : un bâtiment, que le toit mesure
+        centre = enveloppe.centroid
+        lon, lat = centre.x / echelles[0], centre.y / echelles[1]
+        if not (west <= lon <= east and south <= lat <= north):
+            continue
+        out.append(({"cleabs": props.get("cleabs"),
+                     "lon": round(lon, DECIMALES), "lat": round(lat, DECIMALES),
+                     "r": round(math.sqrt(enveloppe.area / math.pi), 1),
+                     "h": round(float(h), 1)},
+                    _en_degres(enveloppe, echelles)))
+    return out
+
+
+def _ponctuelles(west, south, east, north, ponctuelles, batiments, grille, echelles,
+                 tours=()):
     """(constructions ponctuelles de la scène, disques à masquer)."""
-    bati = []
+    # Une tour compte tout entière, bassin compris : le point de Gardanne est
+    # au centre, dans le trou de l'emprise.
+    bati = [(enveloppe, tour["h"]) for tour, enveloppe in tours]
     for f in (batiments or {}).get("features", []):
         try:
-            bati.append(shapely.force_2d(shape(f["geometry"])))
+            bati.append((shapely.force_2d(shape(f["geometry"])),
+                         (f.get("properties") or {}).get("hauteur")))
         except Exception:
             continue
     out, masque = [], []
@@ -259,18 +340,25 @@ def _ponctuelles(west, south, east, north, ponctuelles, batiments, grille, echel
         if not (west <= lon <= east and south <= lat <= north):
             continue
         point = Point(lon, lat)
-        if any(b.contains(point) for b in bati):
-            continue
         h_lidar, rayon, etendue = sommet_lidar(lon, lat, grille, echelles)
         h, source = props.get("hauteur"), "bdtopo"
         if not h or h <= 0:
             h, source = h_lidar, grille.source
         if not h:
             continue
+        # Dans un bâtiment, le toit la porte déjà si elle ne le dépasse pas,
+        # ou si l'on ne sait pas la hauteur du bâtiment.
+        if any(b.contains(point) and (not hb or h <= hb * (1 + ACCORD_HAUTEUR))
+               for b, hb in bati):
+            continue
         # La tache du MNH n'est celle de la construction que si son sommet
-        # est le sien, et qu'elle ne s'est pas fondue dans une voisine.
-        vue = (h_lidar is not None and abs(h_lidar - h) <= ACCORD_HAUTEUR * h
-               and etendue <= ETENDUE_MAX_M)
+        # est le sien, et qu'elle ne s'est pas fondue dans une voisine ; ou,
+        # pour une cheminée, si c'est son fût dont le LiDAR a perdu le haut.
+        vue = h_lidar is not None and (
+            (abs(h_lidar - h) <= ACCORD_HAUTEUR * h and etendue <= ETENDUE_MAX_M)
+            or (props.get("nature") == "Cheminée"
+                and FUT_PART_VUE * h <= h_lidar < (1 - ACCORD_HAUTEUR) * h
+                and etendue <= rayon + SOMMET_RAYON_M + FUT_BORD_M))
         if vue:
             pas = (grille.east - grille.west) * echelles[0] / grille.nx
             disque = Point(lon * echelles[0], lat * echelles[1]).buffer(etendue + pas)
@@ -302,18 +390,23 @@ def constructions_pour_emprise(west, south, east, north, reservoirs, ponctuelles
         (constructions, masque) :
         - constructions = dict(reservoirs=[{nature, nom, h, source, coupe,
           contour, trous}], ponctuelles=[{lon, lat, nature, detail, nom, h,
-          source, r}]) ; `source` vaut "bdtopo", ou celle de la grille quand
-          la hauteur y est lue, ou None pour un réservoir de hauteur inconnue ;
+          source, r}], tours=[{cleabs, lon, lat, r, h}]) ; `source` vaut
+          "bdtopo", ou celle de la grille quand la hauteur y est lue, ou None
+          pour un réservoir de hauteur inconnue ; une tour remplace dans la
+          vue le bâtiment `cleabs` ;
         - masque = GeoJSON des emprises à retirer du sursol avant de segmenter
           les houppiers, à joindre aux bâtiments. Jamais embarqué.
     """
     echelles = _echelles(south, north)
     g = _Grille(grille)
     cuves, masque_cuves = _reservoirs(west, south, east, north, reservoirs, g, echelles)
+    tours = _tours(west, south, east, north, batiments, g, echelles)
     points, masque_points = _ponctuelles(west, south, east, north, ponctuelles,
-                                         batiments, g, echelles)
+                                         batiments, g, echelles, tours)
     masque = {"type": "FeatureCollection", "features": [
         {"type": "Feature", "properties": {}, "geometry": mapping(m)}
         for m in masque_cuves + masque_points]}
-    journal.info("Constructions : %d réservoir(s), %d ponctuelle(s)", len(cuves), len(points))
-    return {"reservoirs": cuves, "ponctuelles": points}, masque
+    journal.info("Constructions : %d réservoir(s), %d ponctuelle(s), %d tour(s)",
+                 len(cuves), len(points), len(tours))
+    return {"reservoirs": cuves, "ponctuelles": points,
+            "tours": [tour for tour, _ in tours]}, masque

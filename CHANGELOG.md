@@ -11,6 +11,33 @@ Les plus récents en premier. Les chiffres cités sont ceux mesurés au moment d
 changement, sur des lieux publics ; le détail et la méthode sont dans les
 messages de commit et dans les commentaires des modules.
 
+## Scène v14 — 1er octobre 2026
+
+### Ajouté
+
+- **Les tours de refroidissement.** La BD TOPO n'en donne qu'un bâtiment
+  rond et une hauteur, et le LiDAR ne voit pas leur coque : à Gardanne, la
+  tour de 139 m sortait en bâtiment d'un étage « sous les arbres », avec une
+  aiguille de 135 m en son centre. Un bâtiment rond de plus de 60 m que le
+  LiDAR ne voit pas est désormais dessiné en coque hyperbolique, au galbe de
+  convention (col à 0,58 fois le pied, aux quatre cinquièmes de la hauteur).
+  Les centrales nucléaires restent absentes : la BD TOPO n'en contient rien.
+
+### Corrigé
+
+- **Une cheminée posée sur un bâtiment n'est plus effacée.** Un point de la
+  BD TOPO dans une emprise bâtie était laissé au toit du bâtiment, quelle que
+  soit sa hauteur : la cheminée de 295 m de la centrale de Provence, à
+  Gardanne, disparaissait dans son socle de 32,8 m. Elle n'est plus écartée
+  que si elle ne dépasse pas le bâtiment (de 15 %) ou si la hauteur du
+  bâtiment est inconnue. Sur 17 points en bâtiment de hauteur déclarée autour
+  de quatorze sites industriels, un seul tenait vraiment sous son toit.
+- **Les très hautes cheminées gardent leur largeur.** Le LiDAR en perd le
+  sommet (Gardanne culmine à 155 m dans le MNH, Porcheville à 92 m pour
+  220 m) : leur rayon mesuré était jeté, et la page les dessinait en aiguille
+  de 4 m de rayon au plus. Le fût, isolé, donne désormais sa largeur —
+  environ 9 m de rayon à Gardanne.
+
 ## Scène v13 — 30 septembre 2026
 
 ### Ajouté

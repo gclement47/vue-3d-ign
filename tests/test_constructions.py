@@ -156,6 +156,45 @@ def test_un_point_dans_un_batiment_est_laisse_a_son_toit():
     assert c["ponctuelles"] == [] and masque["features"] == []
 
 
+def test_un_point_au_niveau_de_son_batiment_est_laisse_a_son_toit():
+    """118,9 m dans un bâtiment de 119,1 m, à Gardanne."""
+    grille = _grille(cylindres=[(40, 40, 119.0, 3)])
+    batiment = _polygone_m(grille, 30, 30, 50, 50)
+    batiment["properties"]["hauteur"] = 119.1
+    c, _ = _construire(grille, points=[_point(grille, 40, 40, "Autre construction élevée", 118.9)],
+                       batiments=[batiment])
+    assert c["ponctuelles"] == []
+
+
+def test_une_cheminee_qui_depasse_son_batiment_est_dessinee():
+    """Une cheminée de 52,9 m sur un bâtiment de 17,9 m, à Lyon."""
+    grille = _grille(cylindres=[(40, 40, 17.9, 15), (40, 40, 52.9, 3)])
+    batiment = _polygone_m(grille, 30, 30, 50, 50)
+    batiment["properties"]["hauteur"] = 17.9
+    c, _ = _construire(grille, points=[_point(grille, 41, 40, "Cheminée", 52.9)],
+                       batiments=[batiment])
+    (p,) = c["ponctuelles"]
+    assert (p["h"], p["source"]) == (52.9, "bdtopo") and 2.5 <= p["r"] <= 3.5
+
+
+def test_le_fut_d_une_cheminee_sans_son_sommet_donne_sa_largeur():
+    """Gardanne : 295 m déclarés, le LiDAR perd le fût au-dessus de 155 m ; le
+    fût reste isolé, de 10 m de rayon, et sa tache donne la largeur."""
+    grille = _grille(cylindres=[(40, 40, 155.0, 10)])
+    c, masque = _construire(grille, points=[_point(grille, 44, 40, "Cheminée", 295.0)])
+    (p,) = c["ponctuelles"]
+    assert (p["h"], p["source"]) == (295.0, "bdtopo") and 9.0 <= p["r"] <= 10.5
+    assert masque["features"]
+
+
+def test_un_fut_a_peine_vu_ne_donne_pas_de_largeur():
+    """Sous le tiers de la hauteur déclarée, la tache est celle d'un socle."""
+    grille = _grille(cylindres=[(40, 40, 60.0, 10)])
+    c, _ = _construire(grille, points=[_point(grille, 40, 40, "Cheminée", 220.0)])
+    (p,) = c["ponctuelles"]
+    assert (p["h"], p["r"]) == (220.0, None)
+
+
 def test_les_natures_sans_forme_mesurable_sont_ecartees():
     grille = _grille(cylindres=[(40, 40, 20.0, 3)])
     points = [_point(grille, 40, 40, nature, 20.0)
@@ -181,8 +220,52 @@ def test_la_scene_ne_pose_plus_de_masse_sur_une_citerne():
             grille, None, None)
     sans = scene.assembler(*args)
     avec = scene.assembler(*args, constructions=({"features": [res]}, {"features": []}))
-    assert len(sans["masses"]) > 0 and sans["constructions"] == {"reservoirs": [], "ponctuelles": []}
+    assert len(sans["masses"]) > 0 and sans["constructions"] == {"reservoirs": [], "ponctuelles": [], "tours": []}
     assert avec["masses"] == [] and avec["houppiers"] == []
     assert len(avec["constructions"]["reservoirs"]) == 1
     # Le masque n'est pas embarqué.
-    assert set(avec["constructions"]) == {"reservoirs", "ponctuelles"}
+    assert set(avec["constructions"]) == {"reservoirs", "ponctuelles", "tours"}
+
+
+def _anneau_bati(grille, x, y, r, r_trou, hauteur, cleabs="BATIMENT_TOUR"):
+    """Bâtiment rond évidé, comme la tour de Gardanne dans la BD TOPO."""
+    def cercle(rr):
+        pts = [list(_lonlat(grille, x + rr * math.cos(a), y + rr * math.sin(a)))
+               for a in np.linspace(0, 2 * math.pi, 49)]
+        pts[-1] = pts[0]
+        return pts
+    return {"type": "Feature", "properties": {"cleabs": cleabs, "hauteur": hauteur},
+            "geometry": {"type": "Polygon", "coordinates": [cercle(r), cercle(r_trou)[::-1]]}}
+
+
+def test_un_batiment_rond_haut_que_le_lidar_ne_voit_pas_est_une_tour():
+    """Gardanne : 139,3 m déclarés, coque absente du MNH, et le point de 135 m
+    au centre, dans le trou de l'emprise, absorbé par la tour."""
+    grille = _grille()
+    c, _ = _construire(grille, points=[_point(grille, 40, 40, "Autre construction élevée", 135.0)],
+                       batiments=[_anneau_bati(grille, 40, 40, 30, 20, 139.3)])
+    (t,) = c["tours"]
+    assert (t["cleabs"], t["h"]) == ("BATIMENT_TOUR", 139.3) and 29 <= t["r"] <= 30
+    lon, lat = _lonlat(grille, 40, 40)
+    assert abs(t["lon"] - lon) < 1e-6 and abs(t["lat"] - lat) < 1e-6
+    assert c["ponctuelles"] == []
+
+
+def test_un_batiment_rond_que_le_lidar_voit_plein_reste_un_batiment():
+    grille = _grille(cylindres=[(40, 40, 70.0, 30)])
+    c, _ = _construire(grille, batiments=[_anneau_bati(grille, 40, 40, 30, 0.5, 70.0)])
+    assert c["tours"] == []
+
+
+def test_un_batiment_rond_plus_bas_que_les_arbres_n_est_pas_une_tour():
+    grille = _grille()
+    c, _ = _construire(grille, batiments=[_anneau_bati(grille, 40, 40, 30, 20, 45.0)])
+    assert c["tours"] == []
+
+
+def test_un_batiment_haut_et_carre_n_est_pas_une_tour():
+    grille = _grille()
+    batiment = _polygone_m(grille, 20, 20, 60, 60)
+    batiment["properties"]["hauteur"] = 120.0
+    c, _ = _construire(grille, batiments=[batiment])
+    assert c["tours"] == []

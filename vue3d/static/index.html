@@ -1331,10 +1331,14 @@ function construire(features, toitsEnPente) {
     meshesToits.length = 0;
     stats = { total: 0, avecToit: 0, pentes: [], lidar: 0, axes: 0, corps: 0, inconnus: 0, surfaces: 0, pans: 0, osm: 0 };
     const remplaces = batimentsRemplaces();
+    const tours = toursRemplacees();
 
     for (const f of features) {
         const p = f.properties || {};
         if (remplaces && remplaces.has(p.cleabs)) continue;
+        // Une tour de refroidissement est dessinée en coque, avec les
+        // constructions : son emprise n'en est que le pied.
+        if (tours.has(p.cleabs)) continue;
         const sol0 = p.altitude_minimale_sol;
         const hauteur = p.hauteur;
         // Le LiDAR est la référence quand sa mesure est fiable ; la BD TOPO
@@ -3028,6 +3032,34 @@ const SOURCES_HAUTEUR = { bdtopo: 'BD TOPO', lidar_hd: 'mesurée au LiDAR',
                           mns_mnt: 'estimée par photogrammétrie' };
 const enMetres = v => v.toFixed(1).replace('.', ',') + ' m';
 
+const MAT_TOUR = new THREE.MeshStandardMaterial({ color: 0xc9c4bb, roughness: 0.95,
+                                                 side: THREE.DoubleSide });
+
+/** Bâtiments que remplace une tour de refroidissement (vue3d/constructions.py). */
+function toursRemplacees() {
+    const tours = (ARTEFACT && ARTEFACT.constructions && ARTEFACT.constructions.tours) || [];
+    return new Set(tours.map(t => t.cleabs));
+}
+
+/**
+ * Coque d'une tour de refroidissement, pied à y = 0 : une hyperbole de
+ * révolution, ouverte en haut et en bas. La BD TOPO ne donne que le rayon du
+ * pied et la hauteur ; le col est pris aux quatre cinquièmes de la hauteur, à
+ * 0,58 fois le rayon du pied, la courbe passant par le pied. La bouche sort
+ * alors à 0,62 fois le pied : à Gardanne, 34 m pour 55, quand l'orthophoto
+ * montre une bouche d'environ 35 m de rayon.
+ */
+function coqueTour(t) {
+    const zCol = 0.8 * t.h, rCol = 0.58 * t.r;
+    const b = zCol / Math.sqrt((t.r / rCol) ** 2 - 1);
+    const profil = [];
+    for (let i = 0; i <= 24; i++) {
+        const z = t.h * i / 24;
+        profil.push(new THREE.Vector2(rCol * Math.sqrt(1 + ((z - zCol) / b) ** 2), z));
+    }
+    return new THREE.LatheGeometry(profil, 64);
+}
+
 /** Volume d'une construction ponctuelle, pied à y = 0, et son matériau. */
 function volumeConstruction(p) {
     const borne = (v, min, max) => Math.min(Math.max(v, min), max);
@@ -3095,6 +3127,18 @@ function construireConstructions() {
                            : `<br><i>le LiDAR ne la voit pas : largeur de convention</i>`) };
         groupeConstructions.add(mesh);
         constructionsPosees.push({ objet: mesh, lon: p.lon, lat: p.lat });
+        constructionsSurvol.push(mesh);
+    }
+    for (const t of c.tours || []) {
+        const mesh = new THREE.Mesh(coqueTour(t), MAT_TOUR);
+        mesh.castShadow = true; mesh.receiveShadow = true;
+        const [x, y] = toLocal(t.lon, t.lat);
+        mesh.position.set(x, 0, -y);
+        mesh.userData = { infobulle: '<b>Tour de refroidissement</b>'
+            + `<br>${enMetres(t.h)} <i>(BD TOPO)</i>, pied de ${enMetres(2 * t.r)}`
+            + '<br><i>le LiDAR ne voit pas sa coque : galbe de convention</i>' };
+        groupeConstructions.add(mesh);
+        constructionsPosees.push({ objet: mesh, lon: t.lon, lat: t.lat });
         constructionsSurvol.push(mesh);
     }
     document.getElementById('t-constructions').hidden = !constructionsPosees.length;
