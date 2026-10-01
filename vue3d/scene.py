@@ -426,6 +426,12 @@ class Cache:
             self._taches[nom_piscines(self.mode_vehicules)] = detection
             for detecteur in lire_vehicules.detecteurs:
                 self._taches[nom_vehicules(detecteur)] = detection
+            # L'orthophoto que les détections d'un point se partagent, lue à
+            # part : elle arrive pendant que le fil des détections finit
+            # celles d'une autre scène. Deux fils, deux scènes demandées
+            # ensemble.
+            self._orthophotos = concurrent.futures.ThreadPoolExecutor(
+                max_workers=2, thread_name_prefix="orthophoto")
 
     def _ecrire(self, dossier, nom, octets):
         """Écrit d'un bloc : un fichier temporaire, renommé une fois complet."""
@@ -630,12 +636,58 @@ class Cache:
         le service a un détecteur : les piscines d'abord (une demi-seconde),
         puis les véhicules de chaque détecteur, du rapide au lent. Quelques
         secondes à une demi-minute de calcul, qui avancent pendant que la
-        scène attend l'IGN."""
-        if self.lire_vehicules:
-            self._prelire(nom_piscines(self.mode_vehicules), lat, lon, self.lire_vehicules.piscines, zone)
-            for detecteur in self.lire_vehicules.detecteurs:
-                self._prelire(nom_vehicules(detecteur), lat, lon,
-                              self.lire_vehicules.vehicules(detecteur), zone)
+        scène attend l'IGN.
+
+        Les détections lancées ensemble se partagent une seule lecture de
+        l'orthophoto : sur une zone de 1 000 m, six tuiles de 2 048 px, lues
+        trois fois l'une après l'autre avant le partage (11 à 16 s chaque
+        fois), une fois ensemble depuis (5 s environ). Si cette lecture
+        échoue, chaque détection retente la sienne, comme avant le partage :
+        une couche ne tombe pas pour une autre."""
+        if not self.lire_vehicules:
+            return
+        lat, lon = point_normalise(lat, lon)
+        zone = zone_normalisee(zone)
+        lecteur = self.lire_vehicules
+        couches = [(nom_piscines(self.mode_vehicules), lecteur.piscines)]
+        couches += [(nom_vehicules(d), lecteur.vehicules(d)) for d in lecteur.detecteurs]
+        couches = [(nom, lire) for nom, lire in couches
+                   if not os.path.exists(self.chemin(lat, lon, nom, zone))]
+        bbox = emprise(lat, lon, zone)
+
+        def en_cours(cle):
+            """Lancée, ou attendue par une demande qui la tient (verrou de
+            _obtenir_couche) : relancée, une détection de yolo serait
+            recalculée pour rien, cinq minutes dans le conteneur."""
+            verrou = self._verrous.get(cle)
+            return cle in self._lectures or (verrou is not None and verrou.locked())
+
+        with self._verrou_global:
+            couches = [(nom, lire) for nom, lire in couches if not en_cours((nom, lat, lon, zone))]
+            if not couches:
+                return
+            image = self._orthophotos.submit(lecteur.orthophoto, *bbox)
+
+            def sur_l_image(lire):
+                try:
+                    rgb = image.result()
+                except Exception:
+                    rgb = None                  # chacune la sienne
+                return lire(*bbox, rgb=rgb)
+
+            # L'image n'est tenue que par ces tâches : libérée avec la
+            # dernière, qu'on vienne ou non chercher sa couche.
+            for nom, lire in couches:
+                self._lectures[(nom, lat, lon, zone)] = self._taches[nom].submit(sur_l_image, lire)
+
+    def _detections_si_absente(self, nom, lat, lon, zone):
+        """Une couche de l'orthophoto demandée sans tâche lancée — scène
+        gardée par le navigateur, servie avant un redémarrage, ou détection
+        en échec à refaire : les détections qui manquent au point partent
+        toutes ici, sur une seule lecture de l'orthophoto, et les demandes
+        suivantes les trouvent. Celle qui a sa tâche ne relance rien."""
+        if (nom, *point_normalise(lat, lon), zone_normalisee(zone)) not in self._lectures:
+            self.prelire_vehicules(lat, lon, zone)
 
     def obtenir_piscines(self, lat, lon, construire=construire, zone=None):
         """(dossier, nom du fichier) des piscines du point.
@@ -652,6 +704,7 @@ class Cache:
         if not self.lire_vehicules:
             raise VehiculesDesactives("service lancé sans détecteur de véhicules")
         nom = nom_piscines(self.mode_vehicules)
+        self._detections_si_absente(nom, lat, lon, zone)
         return self._obtenir_couche(
             nom, lat, lon, construire, self.lire_vehicules.piscines,
             lambda message: VehiculesIndisponibles(f"piscines illisibles : {message}"),
@@ -668,6 +721,7 @@ class Cache:
         if not self.lire_vehicules or detecteur not in self.lire_vehicules.detecteurs:
             raise VehiculesDesactives(f"service lancé sans le détecteur {detecteur!r}")
         nom = nom_vehicules(detecteur)
+        self._detections_si_absente(nom, lat, lon, zone)
         return self._obtenir_couche(
             nom, lat, lon, construire, self.lire_vehicules.vehicules(detecteur),
             lambda message: VehiculesIndisponibles(f"véhicules illisibles : {message}"),

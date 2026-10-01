@@ -86,9 +86,22 @@ def fetch_ortho_jpeg(west, south, east, north, resolution_m=ORTHO_MOSAIQUE_RESOL
     return _image_wms(west, south, east, north, largeur, hauteur), largeur, hauteur
 
 
-def fetch_ortho_rgb(west, south, east, north, resolution_m, tuile_max=2048):
+# Tuiles de l'orthophoto des détections lues en même temps. Une zone de
+# 1 000 m en compte six (5 000 px sur 3 600 à 3 800, en tuiles de 2 048),
+# l'emprise par défaut une seule. Mesuré le 2026-10-01 sur les six de Gordes,
+# trois fois en alternant, médianes : 11,4 s une à une, 7,4 s à deux, 5,1 s à
+# trois, 4,8 s à six. Les octets rendus sont ceux de la lecture une à une.
+# Sur une centaine de tuiles lues ainsi, une a été refusée en 400 trois fois
+# de suite (à deux fils, pendant qu'un autre essai sondait le service) :
+# l'image entière échoue alors, comme avant pour une tuile, et la couche
+# n'est pas écrite.
+ORTHO_RGB_FILS = 6
+
+
+def fetch_ortho_rgb(west, south, east, north, resolution_m, tuile_max=2048, fils=ORTHO_RGB_FILS):
     """Orthophoto de l'emprise à `resolution_m` exactement, en tableau RGB
-    (hauteur, largeur, 3), assemblée de tuiles d'au plus `tuile_max` pixels.
+    (hauteur, largeur, 3), assemblée de tuiles d'au plus `tuile_max` pixels,
+    lues `fils` à la fois.
 
     Pour la détection des véhicules (0,2 m), qui ne supporte pas d'image plus
     grossière : ses réseaux et ses filtres de taille comptent en pixels de
@@ -97,8 +110,14 @@ def fetch_ortho_rgb(west, south, east, north, resolution_m, tuile_max=2048):
     fois trop petites et presque toutes écartées.
 
     En EPSG:4326, pixels et degrés sont proportionnels : chaque tuile est la
-    portion exacte de l'emprise qui correspond à ses pixels.
+    portion exacte de l'emprise qui correspond à ses pixels. Le découpage ne
+    dépend pas de `fils` : une tuile coupée autrement serait compressée
+    autrement par le serveur, et l'image ne serait plus la même au pixel près.
+
+    Raises:
+        requests.RequestException si une tuile n'a pas pu être lue.
     """
+    import concurrent.futures
     import math
     from PIL import Image
     west, south, east, north = map(float, (west, south, east, north))
@@ -107,18 +126,38 @@ def fetch_ortho_rgb(west, south, east, north, resolution_m, tuile_max=2048):
     hauteur = int(max((north - south) * 111320 / resolution_m, 64))
     dlon, dlat = (east - west) / largeur, (north - south) / hauteur
     rgb = np.zeros((hauteur, largeur, 3), dtype=np.uint8)
-    for y0 in range(0, hauteur, tuile_max):
-        for x0 in range(0, largeur, tuile_max):
-            l, h = min(tuile_max, largeur - x0), min(tuile_max, hauteur - y0)
-            # Lignes depuis le nord : la tuile y0 commence à north - y0 * dlat.
-            contenu = _image_wms(west + x0 * dlon, north - (y0 + h) * dlat,
-                                 west + (x0 + l) * dlon, north - y0 * dlat, l, h)
-            morceau = np.asarray(Image.open(io.BytesIO(contenu)).convert("RGB"))
-            if morceau.shape[:2] != (h, l):
-                raise requests.RequestException(
-                    f"tuile d'orthophoto de {morceau.shape[1]} × {morceau.shape[0]} px "
-                    f"pour {l} × {h} demandés")
-            rgb[y0:y0 + h, x0:x0 + l] = morceau
+
+    def lire(y0, x0):
+        """Une tuile, lue, décodée et posée à sa place : chaque fil écrit sa
+        propre portion du tableau."""
+        l, h = min(tuile_max, largeur - x0), min(tuile_max, hauteur - y0)
+        # Lignes depuis le nord : la tuile y0 commence à north - y0 * dlat.
+        contenu = _image_wms(west + x0 * dlon, north - (y0 + h) * dlat,
+                             west + (x0 + l) * dlon, north - y0 * dlat, l, h)
+        morceau = np.asarray(Image.open(io.BytesIO(contenu)).convert("RGB"))
+        if morceau.shape[:2] != (h, l):
+            raise requests.RequestException(
+                f"tuile d'orthophoto de {morceau.shape[1]} × {morceau.shape[0]} px "
+                f"pour {l} × {h} demandés")
+        rgb[y0:y0 + h, x0:x0 + l] = morceau
+
+    tuiles = [(y0, x0) for y0 in range(0, hauteur, tuile_max) for x0 in range(0, largeur, tuile_max)]
+    if fils <= 1 or len(tuiles) == 1:
+        for t in tuiles:
+            lire(*t)
+        return rgb
+    with concurrent.futures.ThreadPoolExecutor(min(fils, len(tuiles)),
+                                               thread_name_prefix="orthophoto") as bassin:
+        taches = [bassin.submit(lire, *t) for t in tuiles]
+        try:
+            for tache in taches:
+                tache.result()
+        except BaseException:
+            # Une tuile illisible rend l'image fausse : les tuiles pas encore
+            # parties ne le sont jamais.
+            for tache in taches:
+                tache.cancel()
+            raise
     return rgb
 
 

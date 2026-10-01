@@ -45,21 +45,24 @@ def client_vehicules(tmp_path):
     def construire(lat, lon, avancer=None):
         return gzip.compress(json.dumps(scene).encode()), b"\xff\xd8jpeg"
 
-    def lire_piscines(west, south, east, north):
+    def orthophoto(west, south, east, north):
         if south < 46:
             raise ConnectionError("Read timed out")
+        return "orthophoto"
+
+    def lire_piscines(west, south, east, north, rgb=None):
+        rgb = rgb or orthophoto(west, south, east, north)
         return {"largeur": 1173, "hauteur": 1781,
                 "piscines": [[300, 400, 50, 25, 0.0, 0.3, 0x5AC8D2, "rtmdet"]]}
 
     def lire_vehicules(detecteur):
-        def lire(west, south, east, north):
-            if south < 46:
-                raise ConnectionError("Read timed out")
+        def lire(west, south, east, north, rgb=None):
+            rgb = rgb or orthophoto(west, south, east, north)
             return {"largeur": 1173, "hauteur": 1781,
                     "boites": [[586.5, 890.5, 22, 10, 0.0, 0.6, 0, 0xC81E28, detecteur]]}
         return lire
 
-    lecteur = types.SimpleNamespace(mode="rtmdet", detecteurs=("rtmdet",),
+    lecteur = types.SimpleNamespace(mode="rtmdet", detecteurs=("rtmdet",), orthophoto=orthophoto,
                                     piscines=lire_piscines, vehicules=lire_vehicules)
     appli = module_app.creer_app(str(tmp_path), construire=construire,
                                  lire_monuments=lambda *b: {"elements": []},

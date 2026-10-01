@@ -37,6 +37,18 @@ messages de commit et dans les commentaires des modules.
 
 ### Modifié
 
+- **Véhicules et piscines arrivent deux fois plus tôt.** L'orthophoto à
+  0,2 m, que les trois détections (piscines, `rtmdet`, `yolo`) relisaient
+  chacune tuile après tuile, est lue une fois, ses tuiles ensemble ; et chaque
+  réseau reçoit plusieurs tuiles à la fois. Sur Gordes en zone de 1 000 m,
+  hors conteneur sur CoreML, depuis la demande de la scène (médianes de
+  trois, réseau compris) : piscines prêtes en 5 s au lieu de 14, `rtmdet` en
+  11 s au lieu de 31 — toutes deux avec la scène désormais —, `yolo` en 52 s
+  au lieu de 94. Dans le conteneur, calcul seul, sur une machine chargée par
+  ailleurs : `yolo` en 68 s au lieu de 148 sur l'emprise par défaut, en
+  9 min au lieu de 22 sur la zone de 1 000 m. Les couches sont les mêmes à
+  l'octet, et le conteneur garde moins de mémoire après une détection
+  (350 Mo au lieu de 464 pour `yolo`).
 - **Toitures et houppiers se calculent dix fois plus vite.** Chaque
   bâtiment relisait la grille MNH entière, en Python, et la segmentation des
   arbres la parcourait toute à chaque passe. Sur Gordes en

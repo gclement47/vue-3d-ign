@@ -58,6 +58,9 @@ détecteur (ou le mode) et la version (scene.nom_vehicules, nom_piscines) :
 changer de détecteur ne ressert jamais la couche d'un autre.
 """
 
+import collections
+import concurrent.futures
+import itertools
 import logging
 import math
 import os
@@ -269,6 +272,30 @@ MOTEURS = {
                "CPUExecutionProvider"],
 }
 
+# Tuiles présentées en même temps à un réseau (_annonces) : chacune est
+# préparée (découpe, agrandissement bicubique, ~10 ms) et passée au réseau
+# dans son fil, les boîtes sont lues dans l'ordre des tuiles. Mesuré le
+# 2026-10-01 sur le M4, machine chargée par d'autres calculs (charge 50 à
+# 130), valeurs alternées tour après tour, médianes de cinq tours, en ms par
+# tuile de yolo :
+#
+#   fils                        1      2      3      4      6
+#   CoreML                     45     33     33
+#   processeur, conteneur     477    341    271    232    201
+#
+# CoreML ne sert qu'une tuile à la fois sur le GPU (deux appels simultanés :
+# 28 ms par tuile contre 29,5) : le second fil ne fait que préparer la
+# tuile suivante pendant ce temps. Au processeur, chaque appel garde tous
+# ses cœurs (intra_op_num_threads n'est pas touché, voir charger) ; les
+# appels simultanés comblent les creux de chacun, d'autant mieux que la
+# machine est chargée. Chaque appel de yolo en cours tient environ 300 Mo :
+# 4 plutôt que 6 : l'essentiel du gain, pour 1,2 Go au plus dans le
+# conteneur (7,7 Go en tout sur ce Mac). Détections entières, sans réseau,
+# médianes de trois : yolo de 59,8 s à 44,3 s sur CoreML en zone de 1 000 m
+# à Gordes ; de 148 s à 68 s dans le conteneur sur l'emprise par défaut.
+# Couches identiques à l'octet.
+FILS_INFERENCE = {"processeur": 4, "coreml": 2}
+
 
 def moteur_demande(disponibles, valeur=None):
     """Le moteur de `VUE3D_MOTEUR`, contrôlé : `auto` (défaut) prend CoreML
@@ -316,7 +343,20 @@ def charger(mode, dossier, moteur=None):
             raise VehiculesMalConfigures(
                 f"VUE3D_VEHICULES={mode} demande {chemin}, introuvable : "
                 f"python outils/exporter_vehicules.py {nom} {dossier}")
-        sessions[nom] = onnxruntime.InferenceSession(chemin, providers=MOTEURS[moteur])
+        options = onnxruntime.SessionOptions()
+        # Au processeur, sans l'arène d'onnxruntime, qui garde tout ce
+        # qu'elle a pris : après les quatre appels simultanés de
+        # FILS_INFERENCE, une session de yolo tenait encore 1 130 Mo dans le
+        # conteneur (464 Mo à un appel, avant eux) ; sans elle, 350 Mo, pour
+        # le même temps (232 et 242 ms par tuile, médianes alternées) et les
+        # mêmes sorties. CoreML ne la remplit guère : inchangé.
+        #
+        # intra_op_num_threads reste celui d'onnxruntime, exprès : dans le
+        # conteneur (Linux, dix cœurs), les sorties de yolo changent avec lui
+        # (écart de 1e-3 sur les boîtes à 1 à 9 fils, ou 11, contre 10 par
+        # défaut), et les couches avec. Sur macOS, elles n'en dépendent pas.
+        options.enable_cpu_mem_arena = moteur != "processeur"
+        sessions[nom] = onnxruntime.InferenceSession(chemin, options, providers=MOTEURS[moteur])
         # Un moteur qui ne s'initialise pas, onnxruntime le remplace par le
         # processeur sans lever. Cinq fois plus lent, ce repli passerait pour
         # une panne : il arrête le démarrage, et l'erreur dit comment le
@@ -384,7 +424,33 @@ def _couleur(rgb, cx, cy, lo, la, angle):
     return (r << 16) | (g << 8) | b
 
 
-def _annonces(image, session, lire_boites, tuile, recouvrement, seuil, classes):
+def _dans_l_ordre(fonction, elements, fils):
+    """`fonction(e)` pour chaque élément, calculés `fils` à la fois et rendus
+    dans l'ordre des éléments : ce qui en est tiré ne dépend pas de `fils`.
+
+    Au plus 2 × `fils` résultats d'avance : les tuiles d'une zone de 1 000 m
+    se comptent par milliers, leurs sorties ne s'accumulent pas.
+    """
+    if fils <= 1:
+        for e in elements:
+            yield fonction(e)
+        return
+    suivants = iter(elements)
+    with concurrent.futures.ThreadPoolExecutor(fils, thread_name_prefix="inference") as bassin:
+        en_cours = collections.deque(bassin.submit(fonction, e)
+                                     for e in itertools.islice(suivants, 2 * fils))
+        try:
+            while en_cours:
+                resultat = en_cours.popleft().result()
+                en_cours.extend(bassin.submit(fonction, e) for e in itertools.islice(suivants, 1))
+                yield resultat
+        finally:
+            # Une erreur, ici ou chez l'appelant : rien de plus n'est lancé.
+            for tache in en_cours:
+                tache.cancel()
+
+
+def _annonces(image, session, lire_boites, tuile, recouvrement, seuil, classes, fils=1):
     """Boîtes qu'un réseau annonce sur l'image, tuile après tuile.
 
     Args:
@@ -394,6 +460,9 @@ def _annonces(image, session, lire_boites, tuile, recouvrement, seuil, classes):
         classes: indices des classes gardées. La classe la plus probable doit
             en être : une boîte que le réseau prend d'abord pour un bateau
             n'est pas un véhicule.
+        fils: tuiles préparées et présentées au réseau en même temps
+            (FILS_INFERENCE) ; leurs boîtes sont lues dans l'ordre des
+            tuiles, les annonces sont les mêmes quel que soit `fils`.
 
     Returns:
         [(cx, cy, longueur, largeur, angle, score, classe)] en pixels de
@@ -403,42 +472,48 @@ def _annonces(image, session, lire_boites, tuile, recouvrement, seuil, classes):
     largeur, hauteur = image.size
     echelle = tuile / COTE
     entree = session.get_inputs()[0].name
+    origines = [(x0, y0) for y0 in _origines(hauteur, tuile, recouvrement)
+                for x0 in _origines(largeur, tuile, recouvrement)]
+
+    def inferer(origine):
+        x0, y0 = origine
+        # Une tuile plus grande que l'image est complétée de noir, en bas
+        # à droite.
+        morceau = Image.new("RGB", (tuile, tuile))
+        morceau.paste(image.crop((x0, y0, min(x0 + tuile, largeur), min(y0 + tuile, hauteur))))
+        x = np.asarray(morceau.resize((COTE, COTE), Image.BICUBIC), dtype=np.float32)
+        x = np.ascontiguousarray(x.transpose(2, 0, 1)[None] / 255.0)
+        return (origine, *lire_boites(session.run(None, {entree: x})[0]))
+
     annonces = []
-    for y0 in _origines(hauteur, tuile, recouvrement):
-        for x0 in _origines(largeur, tuile, recouvrement):
-            # Une tuile plus grande que l'image est complétée de noir, en bas
-            # à droite.
-            morceau = Image.new("RGB", (tuile, tuile))
-            morceau.paste(image.crop((x0, y0, min(x0 + tuile, largeur), min(y0 + tuile, hauteur))))
-            x = np.asarray(morceau.resize((COTE, COTE), Image.BICUBIC), dtype=np.float32)
-            x = np.ascontiguousarray(x.transpose(2, 0, 1)[None] / 255.0)
-            b, scores = lire_boites(session.run(None, {entree: x})[0])
-            classe = scores.argmax(axis=1)
-            score = scores[np.arange(len(classe)), classe]
-            # Bords de la tuile à l'intérieur de l'image : une boîte qui les
-            # touche est celle d'un objet coupé, que la tuile voisine voit
-            # entier.
-            gauche, haut = (x0 > 0) * BORD_PX, (y0 > 0) * BORD_PX
-            droite = tuile - (x0 + tuile < largeur) * BORD_PX
-            bas = tuile - (y0 + tuile < hauteur) * BORD_PX
-            for i in np.nonzero((score >= seuil) & np.isin(classe, classes))[0]:
-                cx, cy, lo, la = (float(v) * echelle for v in b[i, :4])
-                angle = float(b[i, 4])
-                if any(not (gauche <= px <= droite and haut <= py <= bas)
-                       for px, py in _coins(cx, cy, lo, la, angle)):
-                    continue
-                if la > lo:                       # grand axe d'abord
-                    lo, la, angle = la, lo, angle + math.pi / 2
-                annonces.append((cx + x0, cy + y0, lo, la, angle, float(score[i]), int(classe[i])))
+    for (x0, y0), b, scores in _dans_l_ordre(inferer, origines, fils):
+        classe = scores.argmax(axis=1)
+        score = scores[np.arange(len(classe)), classe]
+        # Bords de la tuile à l'intérieur de l'image : une boîte qui les
+        # touche est celle d'un objet coupé, que la tuile voisine voit
+        # entier.
+        gauche, haut = (x0 > 0) * BORD_PX, (y0 > 0) * BORD_PX
+        droite = tuile - (x0 + tuile < largeur) * BORD_PX
+        bas = tuile - (y0 + tuile < hauteur) * BORD_PX
+        for i in np.nonzero((score >= seuil) & np.isin(classe, classes))[0]:
+            cx, cy, lo, la = (float(v) * echelle for v in b[i, :4])
+            angle = float(b[i, 4])
+            if any(not (gauche <= px <= droite and haut <= py <= bas)
+                   for px, py in _coins(cx, cy, lo, la, angle)):
+                continue
+            if la > lo:                       # grand axe d'abord
+                lo, la, angle = la, lo, angle + math.pi / 2
+            annonces.append((cx + x0, cy + y0, lo, la, angle, float(score[i]), int(classe[i])))
     return annonces
 
 
-def detecter(rgb, sessions, detecteurs=DETECTEURS):
+def detecter(rgb, sessions, detecteurs=DETECTEURS, fils=1):
     """Véhicules d'une orthophoto.
 
     Args:
         rgb: image (hauteur, largeur, 3) uint8, à RESOLUTION_M par pixel.
         sessions: de `charger`, dans l'ordre de priorité des détecteurs.
+        fils: tuiles présentées en même temps à chaque réseau (_annonces).
 
     Returns:
         [[cx, cy, longueur, largeur, angle, score, gros, couleur, detecteur]] en
@@ -452,7 +527,8 @@ def detecter(rgb, sessions, detecteurs=DETECTEURS):
         d = detecteurs[nom]
         boites = [(*a[:6], int(a[6] == d["gros"]))
                   for a in _annonces(image, session, d["boites"], d["tuile_px"],
-                                     d["recouvrement_px"], d["seuil"], (d["petit"], d["gros"]))
+                                     d["recouvrement_px"], d["seuil"], (d["petit"], d["gros"]),
+                                     fils)
                   if a[2] * RESOLUTION_M <= d["longueur_max_m"]]
         boites = sans_doublons(boites, DOUBLON_IOU, DOUBLON_CENTRES_M / RESOLUTION_M)
         rayon2 = (DOUBLON_ENTRE_DETECTEURS_M / RESOLUTION_M) ** 2
@@ -462,7 +538,7 @@ def detecter(rgb, sessions, detecteurs=DETECTEURS):
     return toutes
 
 
-def detecter_piscines(rgb, sessions, reglages=None):
+def detecter_piscines(rgb, sessions, reglages=None, fils=1):
     """Piscines d'une orthophoto.
 
     Returns:
@@ -478,7 +554,7 @@ def detecter_piscines(rgb, sessions, reglages=None):
         r = reglages[nom]
         boites = sans_doublons(
             _annonces(image, session, DETECTEURS[nom]["boites"], r["tuile_px"],
-                      r["recouvrement_px"], r["seuil"], (r["classe"],)),
+                      r["recouvrement_px"], r["seuil"], (r["classe"],), fils),
             DOUBLON_IOU, DOUBLON_CENTRES_M / RESOLUTION_M)
         for b in boites:
             # D'un détecteur à l'autre : le centre de l'une dans la boîte de l'autre.
@@ -487,20 +563,36 @@ def detecter_piscines(rgb, sessions, reglages=None):
     return toutes
 
 
+def fils_inference(sessions):
+    """Tuiles présentées en même temps aux réseaux : FILS_INFERENCE de leur
+    moteur, 1 pour une session qui ne dit pas le sien (doublure des tests)."""
+    fils = 1
+    for session in sessions.values():
+        fournisseurs = getattr(session, "get_providers", lambda: [])()
+        if fournisseurs:
+            moteur = "coreml" if MOTEURS["coreml"][0][0] in fournisseurs else "processeur"
+            fils = max(fils, FILS_INFERENCE[moteur])
+    return fils
+
+
 class Lecteur:
     """Les lectures de la couche pour `scene.Cache` : une par fichier.
 
     Les piscines sont un fichier, et chaque détecteur de véhicules le sien :
     ce qui est vite lu est vite affiché, et le lent n'y change rien — sur
     une même machine, rtmdet met 3 s là où yolo en met 14, et les piscines
-    une demi-seconde. Chaque lecture relit l'orthophoto : trois petites
-    requêtes plutôt qu'un fichier intermédiaire sur disque.
+    une demi-seconde.
+
+    L'orthophoto est lue une fois pour toutes : `orthophoto` la rend, et
+    chaque lecture la prend en `rgb` (scene.Cache.prelire_vehicules). Sans
+    elle, une lecture lit la sienne.
     """
 
-    def __init__(self, mode, sessions):
+    def __init__(self, mode, sessions, fils=None):
         self.mode = mode
         self.sessions = sessions
         self.detecteurs = tuple(sessions)
+        self.fils = fils_inference(sessions) if fils is None else fils
 
     @staticmethod
     def _orthophoto(west, south, east, north):
@@ -511,20 +603,33 @@ class Lecteur:
         """
         return fetch_ortho_rgb(west, south, east, north, RESOLUTION_M)
 
-    def piscines(self, west, south, east, north):
-        """Les piscines de l'emprise, vues de tous les détecteurs du mode."""
-        rgb = self._orthophoto(west, south, east, north)
+    def orthophoto(self, west, south, east, north):
+        """L'orthophoto que les lectures de la même emprise se partagent :
+        une zone de 1 000 m en lit six tuiles de 2 048 px (ortho.ORTHO_RGB_FILS),
+        que chaque lecture relisait avant le partage.
+
+        Raises:
+            requests.RequestException si elle n'a pas pu être lue.
+        """
+        return self._orthophoto(west, south, east, north)
+
+    def piscines(self, west, south, east, north, rgb=None):
+        """Les piscines de l'emprise, vues de tous les détecteurs du mode ;
+        `rgb` : l'orthophoto de l'emprise, déjà lue."""
+        if rgb is None:
+            rgb = self._orthophoto(west, south, east, north)
         return {"largeur": rgb.shape[1], "hauteur": rgb.shape[0],
-                "piscines": detecter_piscines(rgb, self.sessions)}
+                "piscines": detecter_piscines(rgb, self.sessions, fils=self.fils)}
 
     def vehicules(self, detecteur):
-        """La lecture des véhicules d'un détecteur : (emprise) -> brut."""
+        """La lecture des véhicules d'un détecteur : (emprise, rgb=None) -> brut."""
         session = {detecteur: self.sessions[detecteur]}
 
-        def lire(west, south, east, north):
-            rgb = self._orthophoto(west, south, east, north)
+        def lire(west, south, east, north, rgb=None):
+            if rgb is None:
+                rgb = self._orthophoto(west, south, east, north)
             return {"largeur": rgb.shape[1], "hauteur": rgb.shape[0],
-                    "boites": detecter(rgb, session)}
+                    "boites": detecter(rgb, session, fils=self.fils)}
         return lire
 
 
