@@ -1262,6 +1262,17 @@ def processus_toits():
     return min(coeurs, TOITS_PROCESSUS_MAX)
 
 
+def toitures_au_bassin(batiments_geojson):
+    """Vrai si `toits_pour_emprise`, appelé sans `processus`, enverra ces
+    bâtiments au bassin : le processus du service ne fait alors qu'attendre
+    pendant les toitures, et peut calculer autre chose (scene.assembler).
+    Une prévision : un bassin qui casse en route rend le calcul au service."""
+    return (_bassin_autorise and processus_toits() >= 2
+            and len(batiments_geojson.get("features") or []) >= TOITS_PARALLELE_MIN
+            and _bassin_casse < TOITS_BASSIN_ESSAIS
+            and multiprocessing.parent_process() is None)
+
+
 def _bassin_de_calcul():
     """Le bassin de processus du service, créé au premier appel ; None s'il
     est hors service."""

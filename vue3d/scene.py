@@ -267,10 +267,13 @@ def assembler(west, south, east, north, batiments, vegetation, forets, routes,
     Séparée de `construire` pour être testable sans réseau. Les grilles MNH,
     ExG et de terrain ne sont PAS embarquées : ce sont des entrées de calcul
     de 1,9 Mo, 475 Ko et 1,4 Mo, sans usage une fois les toitures et les
-    houppiers obtenus. `avancer`, s'il est donné, est appelé au début de
-    chacun des deux calculs, avec son libellé. `constructions` : les couches
-    BD TOPO (réservoirs, constructions ponctuelles), None sans elles.
+    houppiers obtenus. `avancer`, s'il est donné, est appelé avec le libellé
+    de chaque calcul, toujours dans cet ordre : « toitures » au début des
+    toitures, « houppiers » à leur fin — les houppiers ont alors pu commencer
+    avec elles. `constructions` : les couches BD TOPO (réservoirs,
+    constructions ponctuelles), None sans elles.
     """
+    from .toits import toitures_au_bassin
     avancer = avancer or (lambda libelle: None)
     avancer("toitures")
     # Découpés pour les toitures et pour la vue. Les houppiers gardent les
@@ -278,24 +281,54 @@ def assembler(west, south, east, north, batiments, vegetation, forets, routes,
     # grille, et dans le retrait de la découpe un toit passerait pour du
     # sursol.
     decoupes = decouper_batiments(batiments, west, south, east, north)
-    toits = toits_pour_emprise(west, south, east, north, decoupes, grille, exg, sol)
-    avancer("houppiers")
-    # Les constructions et les houppiers lisent la grille en tableau : la
-    # liste n'est convertie qu'une fois pour les deux (0,05 s par conversion
-    # sur une grille de 1 440 × 1 985).
-    tableau = {**grille, "values": np.asarray(grille["values"], dtype=np.float32)}
-    # Réservoirs et constructions ponctuelles sortent du sursol avec les
-    # bâtiments : sans cela, une citerne se couvre de masses et de houppiers
-    # (vue3d/constructions.py).
-    construits, masque = constructions_pour_emprise(
-        west, south, east, north, *(constructions or (None, None)), batiments, tableau)
-    # L'eau aussi : entre deux quais, le MNH lit leur hauteur en pleine
-    # rivière (vue3d/eau.py).
-    nappes = masque_eau(eau[0], south, north) if eau else {"features": []}
-    bati = {"features": ((batiments or {}).get("features", []) + masque["features"]
-                         + nappes["features"])}
-    veg = houppiers_pour_emprise(west, south, east, north, bati, vegetation,
-                                 forets, tableau, exg)
+
+    def vegetation_et_constructions():
+        # Les constructions et les houppiers lisent la grille en tableau : la
+        # liste n'est convertie qu'une fois pour les deux (0,05 s par
+        # conversion sur une grille de 1 440 × 1 985).
+        tableau = {**grille, "values": np.asarray(grille["values"], dtype=np.float32)}
+        # Réservoirs et constructions ponctuelles sortent du sursol avec les
+        # bâtiments : sans cela, une citerne se couvre de masses et de
+        # houppiers (vue3d/constructions.py).
+        construits, masque = constructions_pour_emprise(
+            west, south, east, north, *(constructions or (None, None)), batiments, tableau)
+        # L'eau aussi : entre deux quais, le MNH lit leur hauteur en pleine
+        # rivière (vue3d/eau.py).
+        nappes = masque_eau(eau[0], south, north) if eau else {"features": []}
+        bati = {"features": ((batiments or {}).get("features", []) + masque["features"]
+                             + nappes["features"])}
+        return construits, houppiers_pour_emprise(west, south, east, north, bati, vegetation,
+                                                  forets, tableau, exg)
+
+    if toitures_au_bassin(decoupes):
+        # Les houppiers ne lisent pas les toits. Pendant que le bassin
+        # calcule les toitures, ce fil ne fait qu'attendre : les houppiers
+        # se calculent dans un autre. Quand les toitures tenaient le GIL,
+        # c'était plus lent (7,66 -> 8,11 s à Gordes en zone de 1 000 m).
+        # Au bassin, mesuré le 2026-10-02 sur un M4 à dix cœurs chargé par
+        # d'autres calculs (charge 100 à 135) : assembler, houppiers à la
+        # suite puis pendant les toitures, dos à dos, médianes de huit tours
+        # alternés (rapport apparié médian) :
+        #
+        #                         macOS (spawn)          conteneur (forkserver)
+        #   Gordes, défaut        0,43 -> 0,41 s (×0,99)  0,41 -> 0,27 s (×1,45)
+        #   Gordes, 1 000 m       1,83 -> 1,35 s (×1,35)  1,87 -> 1,50 s (×1,24)
+        #   Strasbourg, 1 000 m   3,66 -> 3,69 s (×1,09)  4,17 -> 3,49 s (×1,23)
+        #
+        # Quinze séries en tout, avec celles d'un premier essai : ×1,23 en
+        # médiane, de ×0,94 à ×1,51. Même scène à l'octet ; 20 à 38 Mo de
+        # plus au pic de mémoire du service, à 1 000 m. Un bassin qui casse
+        # rend les toitures à ce fil, à côté des houppiers : juste, plus lent.
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="houppiers") as fil:
+            pendant = fil.submit(vegetation_et_constructions)
+            toits = toits_pour_emprise(west, south, east, north, decoupes, grille, exg, sol)
+            avancer("houppiers")
+            construits, veg = pendant.result()
+    else:
+        toits = toits_pour_emprise(west, south, east, north, decoupes, grille, exg, sol)
+        avancer("houppiers")
+        construits, veg = vegetation_et_constructions()
     return {
         "version": SCENE_VERSION,
         "bbox": [west, south, east, north],

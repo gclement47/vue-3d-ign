@@ -441,6 +441,92 @@ def test_le_nombre_de_processus_se_regle(monkeypatch):
     assert toits.processus_toits() == 40
 
 
+def _assembler_maisons():
+    """La scène de maisons, et une rangée d'arbres le long de son bord est."""
+    from vue3d import scene
+    bbox, bats, grille, vert, sol = _scene_de_maisons()
+    n = grille["width"]
+    xs = (np.arange(n) + 0.5) * 0.5 - n * 0.5 / 2
+    X, Y = np.meshgrid(xs, -xs)
+    h = np.asarray(grille["values"]).reshape(n, n)
+    for cy in range(-70, 71, 10):
+        arbre = np.maximum(0.0, 9.0 - 3.0 * np.hypot(X - 77.0, Y - cy))
+        h = np.maximum(h, arbre)
+        vert[arbre > 2] = 20
+    grille = dict(grille, values=h.ravel().tolist())
+    etapes = []
+    art = scene.assembler(*bbox, bats, {"features": []}, None, {"features": []}, grille, vert,
+                          None, sol=sol, avancer=etapes.append)
+    return art, etapes
+
+
+def test_les_houppiers_se_calculent_pendant_les_toitures(monkeypatch):
+    """Toitures au bassin : les houppiers, qui ne lisent pas les toits, se
+    calculent pendant ce temps dans un autre fil du service. Même scène,
+    mêmes étapes annoncées, dans le même ordre (la page et
+    Cache.ETAPES_DE_CALCUL les lisent)."""
+    import threading
+    from vue3d import scene
+    seul, etapes_seul = _assembler_maisons()
+    fils = []
+    vrai = scene.houppiers_pour_emprise
+
+    def houppiers(*args, **kwargs):
+        fils.append(threading.current_thread() is threading.main_thread())
+        return vrai(*args, **kwargs)
+
+    monkeypatch.setattr(scene, "houppiers_pour_emprise", houppiers)
+    _assembler_maisons()
+    assert fils == [True], "sans bassin, les houppiers suivent les toitures, dans ce fil"
+    monkeypatch.setattr(toits, "toitures_au_bassin", lambda batiments: True)
+    ensemble, etapes = _assembler_maisons()
+    assert fils == [True, False]
+    assert len(ensemble["houppiers"]) and len(ensemble["toits"]["toits"]) > 50
+    assert json.dumps(ensemble) == json.dumps(seul)
+    assert etapes == etapes_seul == ["toitures", "houppiers"]
+
+
+@pytest.mark.parametrize("ou", ["toits_pour_emprise", "houppiers_pour_emprise"])
+def test_une_erreur_pendant_le_recouvrement_remonte(monkeypatch, ou):
+    """Rien n'est avalé : une erreur des toitures ou des houppiers fait
+    échouer la scène, et l'autre calcul a fini avant."""
+    from vue3d import scene
+    fini = []
+    vrais = {nom: getattr(scene, nom) for nom in ("toits_pour_emprise", "houppiers_pour_emprise")}
+
+    def appel(nom):
+        def f(*args, **kwargs):
+            if nom == ou:
+                raise RuntimeError(f"{nom} en échec")
+            resultat = vrais[nom](*args, **kwargs)
+            fini.append(nom)
+            return resultat
+        return f
+
+    for nom in vrais:
+        monkeypatch.setattr(scene, nom, appel(nom))
+    monkeypatch.setattr(toits, "toitures_au_bassin", lambda batiments: True)
+    with pytest.raises(RuntimeError, match=ou):
+        _assembler_maisons()
+    assert fini == [nom for nom in vrais if nom != ou]
+
+
+def test_les_toitures_au_bassin_se_prevoient(monkeypatch):
+    """La décision d'assembler suit celle de toits_pour_emprise : bassin
+    autorisé, plusieurs processus, assez de bâtiments, bassin en état."""
+    batiments = {"features": [{}] * toits.TOITS_PARALLELE_MIN}
+    monkeypatch.setenv("VUE3D_TOITS_PROCESSUS", "4")
+    assert not toits.toitures_au_bassin(batiments)        # pas autorisé (conftest)
+    monkeypatch.setattr(toits, "_bassin_autorise", True)
+    assert toits.toitures_au_bassin(batiments)
+    assert not toits.toitures_au_bassin({"features": [{}] * (toits.TOITS_PARALLELE_MIN - 1)})
+    monkeypatch.setattr(toits, "_bassin_casse", toits.TOITS_BASSIN_ESSAIS)
+    assert not toits.toitures_au_bassin(batiments)
+    monkeypatch.setattr(toits, "_bassin_casse", 0)
+    monkeypatch.setenv("VUE3D_TOITS_PROCESSUS", "1")
+    assert not toits.toitures_au_bassin(batiments)
+
+
 def _fil_du_bassin():
     import threading
     return [f for f in threading.enumerate() if f.name == "bassin-des-toitures"]
