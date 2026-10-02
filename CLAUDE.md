@@ -28,7 +28,7 @@ vue3d/
   couches.py    lecture WFS (bâtiments, végétation, BD Forêt, routes)
   batiments.py  bâtiments découpés sur l'emprise, en retrait du bord
   mnh.py        hauteurs du sursol, LiDAR HD, repli MNS − MNT
-  toits.py      gouttière, faîtage, corps de toit, surface du toit, bâtiments sous les arbres
+  toits.py      gouttière, faîtage, corps de toit, surface du toit, bâtiments sous les arbres ; bassin de processus (VUE3D_TOITS_PROCESSUS)
   pans.py       toit en pans : plans ajustés au MNH, volume fermé et vérifié
   houppiers.py  segmentation des arbres sur la grille à 0,5 m
   constructions.py  réservoirs et constructions ponctuelles BD TOPO, retirés du sursol des houppiers
@@ -80,6 +80,14 @@ l'étage `export` du Dockerfile.
   volume transmis, après quantification : chaque arête portée par exactement
   deux triangles, en sens opposés. Sinon il rend None et le toit garde sa
   surface mesurée. Ne jamais publier un volume « presque » fermé.
+- **Un calcul plus rapide rend la même scène, au bit près.** Le cache ne
+  périme pas : une scène reconstruite doit être celle d'avant. Un raccourci
+  garde les mêmes opérations flottantes dans le même ordre (`sum()` de Python
+  3.12 est compensée, `x ** 2` n'est pas `x * x`), et se vérifie contre le
+  calcul d'origine (`tests/references_toits.py`). Le bassin des toitures
+  (`toits.py`) ne sert qu'au service, qui l'autorise : ses processus
+  réexécutent le script principal, qu'un script de mesure doit garder derrière
+  `if __name__ == "__main__"` s'il passe `processus=`.
 - **La géométrie d'un houppier ne doit jamais se retourner** : rayon croissant
   avec la couronne, hauteur décroissante du sommet au bord, dessous qui remonte
   vers le tronc, lobage partagé par tous les anneaux. Un défaut ici passe

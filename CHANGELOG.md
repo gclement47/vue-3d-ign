@@ -43,6 +43,23 @@ messages de commit et dans les commentaires des modules.
   zone de 1 000 m (672 bâtiments, 19 312 houppiers), le calcul passe de 100 s
   à 8,5 s, et la scène entière, lectures comprises, de 114 s à 17 s. La
   scène est la même à l'octet : son format et son cache ne changent pas.
+- **Les toitures se calculent sur tous les cœurs, du centre vers le bord.**
+  Chaque bâtiment part, avec sa fenêtre des grilles, vers un bassin de
+  processus créé une fois par le service (« forkserver » dans le
+  conteneur, « spawn » sur macOS) ; le calcul lui-même ne fait plus ce qui
+  coûtait sans rien changer — un objet shapely par cellule testée, une
+  boucle Python par distance au faîtage, des scalaires numpy dans la
+  croissance des pans. À Strasbourg en zone de 1 000 m (1 376 bâtiments),
+  sur un Mac chargé par d'autres calculs, les toitures passent de 53 s à
+  10 s sur un cœur et à 3 s sur le bassin (1,2 s au mieux) ; dans le
+  conteneur, de 67 s à 3,6 s ; à Gordes en zone de 1 000 m, de 6,2 s à
+  0,5 s. Servie par le réseau, la scène de Strasbourg arrive en 19 s au lieu
+  de 71 s dans les mêmes conditions. Elle est la même à l'octet (horodatage
+  des réponses WFS mis à part), vérifiée sur quatre lieux sur macOS et
+  dans le conteneur : format et cache ne changent pas.
+  `VUE3D_TOITS_PROCESSUS` règle le nombre de processus (1 : aucun bassin) ;
+  s'il ne peut pas démarrer ou casse en route, les toitures se calculent
+  dans le service, comme avant, et ses processus s'arrêtent avec lui.
 
 ### Corrigé
 

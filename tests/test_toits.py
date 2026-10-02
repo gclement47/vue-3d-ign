@@ -584,10 +584,11 @@ def test_les_cellules_d_une_boite_sont_celles_de_la_grille_dans_le_meme_ordre():
     lon0, lat0 = 5.2002, 43.9001
     toutes = _cellules_locales(grille, lon0, lat0)
     xs, ys = _verdure_locale(H, grille["bbox"], lon0, lat0)[1:]
+    valeurs = np.asarray(grille["values"], dtype=np.float64).reshape(H.shape)
     # Dans la grille, à cheval sur son bord, et hors d'elle.
     for boite in ((-8.0, -6.0, 3.0, 4.5), (5.0, -40.0, 90.0, 2.0), (200.0, 200.0, 210.0, 210.0)):
         minx, miny, maxx, maxy = boite
-        attendu = [c for c in toutes if minx <= c[0] <= maxx and miny <= c[1] <= maxy]
-        assert _cellules_de_la_boite(grille["values"], xs, ys, boite) == attendu
+        attendu = [list(c) for c in toutes if minx <= c[0] <= maxx and miny <= c[1] <= maxy]
+        assert _cellules_de_la_boite(valeurs, xs, ys, boite).tolist() == attendu
     # Emprise vide : ses bornes ne sont pas des nombres.
-    assert _cellules_de_la_boite(grille["values"], xs, ys, Polygon().bounds) == []
+    assert _cellules_de_la_boite(valeurs, xs, ys, Polygon().bounds).tolist() == []

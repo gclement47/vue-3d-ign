@@ -33,6 +33,7 @@ from .scene import (NOM_MONUMENTS, NOM_ORTHO, NOM_OUVRAGES, NOM_PANNEAUX, NOM_SC
                     PanneauxIndisponibles, SceneIncomplete, VehiculesDesactives,
                     VehiculesIndisponibles, zone_normalisee)
 from .scene import construire as construire_scene
+from .toits import autoriser_bassin
 from .vehicules import MODE_PAR_DEFAUT
 from .vehicules import lecteur as lecteur_vehicules
 
@@ -281,6 +282,11 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
 
     return app
 
+
+# Les toitures se calculent sur un bassin de processus (vue3d/toits.py), que
+# le service autorise : gunicorn et flask gardent leur script principal, que
+# chaque processus du bassin réexécute.
+autoriser_bassin()
 
 # Le détecteur de VUE3D_VEHICULES et le registre de VUE3D_PANNEAUX sont
 # chargés ici, une fois : demandés sans leur réseau ou leur base, ils
