@@ -1,7 +1,10 @@
 // Chronologie des requêtes de la page, relevée dans un vrai navigateur : à
 // quel instant (depuis le début de la navigation) chaque requête au serveur
-// part et arrive, et quand la scène est affichée. Pour voir ce que la page
-// attend, et si elle l'attend en série ou en parallèle.
+// est demandée, envoyée et reçue, et quand la scène est affichée. Pour voir
+// ce que la page attend, et si elle l'attend en série ou en parallèle.
+// Demandée n'est pas envoyée : Chrome n'envoie une demande faite juste avant
+// une longue tâche qu'après elle (413 ms plus tard à Gordes en zone de
+// 1 000 m, demandes de la suite faites juste avant les maillages).
 //
 //   npm install puppeteer-core
 //   node outils/chrono-page.mjs "http://localhost:8080/?lat=43.9116&lon=5.2003" [tours] [froid]
@@ -48,14 +51,16 @@ for (let tour = 0; tour < tours; tour++) {
     .filter(e => e.name.startsWith(location.origin) || /three/.test(e.name))
     .map(e => ({ nom: e.name.replace(location.origin + '/', '').replace(/^api\/(\w+)\?.*?(detecteur=\w+)?$/, '$1 $2').trim()
                    .replace(/^https:\/\/.*\//, ''),
-                 depart: Math.round(e.startTime), fin: Math.round(e.responseEnd) })));
+                 depart: Math.round(e.startTime), envoi: Math.round(e.requestStart), fin: Math.round(e.responseEnd) })));
+  // [demandée, envoyée, reçue] ; envoyée vaut 0 pour un autre domaine sans
+  // Timing-Allow-Origin.
   const resume = { tour, affichee: Math.round(affichee), avancement: 0 };
   for (const e of entrees) {
     if (e.nom === 'avancement') { resume.avancement++; continue; }
-    if (resume[e.nom]) { resume[e.nom + ' (bis)'] = [e.depart, e.fin]; continue; }
-    resume[e.nom] = [e.depart, e.fin];
+    if (resume[e.nom]) { resume[e.nom + ' (bis)'] = [e.depart, e.envoi, e.fin]; continue; }
+    resume[e.nom] = [e.depart, e.envoi, e.fin];
   }
-  for (const e of entrees) if (e.nom !== 'avancement') console.log(`${String(e.depart).padStart(7)} -> ${String(e.fin).padStart(7)} ms  ${e.nom}`);
+  for (const e of entrees) if (e.nom !== 'avancement') console.log(`${String(e.depart).padStart(7)} -> ${String(e.envoi).padStart(7)} -> ${String(e.fin).padStart(7)} ms  ${e.nom}`);
   console.log(JSON.stringify(resume));
 }
 console.log(erreurs.length ? erreurs.join('\n') : 'aucune erreur JavaScript');
