@@ -56,7 +56,8 @@ def test_l_orthophoto_des_detections_garde_sa_resolution_en_tuiles(monkeypatch):
     monkeypatch.setattr(ortho, "_image_wms", image)
     lat, delta = 45.7, 1000 / 2 / 111320
     o, s, e, n = 4.8 - delta, lat - delta, 4.8 + delta, lat + delta
-    rgb = ortho.fetch_ortho_rgb(o, s, e, n, 0.2)
+    # Une à une : l'ordre des demandes est celui des tuiles.
+    rgb = ortho.fetch_ortho_rgb(o, s, e, n, 0.2, fils=1)
     assert rgb.shape[0] == 4999 or rgb.shape[0] == 5000
     assert len(demandes) == 3 * 2 and max(max(d[4], d[5]) for d in demandes) <= 2048
     assert sum(d[4] * d[5] for d in demandes) == rgb.shape[0] * rgb.shape[1]
@@ -64,3 +65,56 @@ def test_l_orthophoto_des_detections_garde_sa_resolution_en_tuiles(monkeypatch):
     assert demandes[0][0] == pytest.approx(o) and demandes[0][3] == pytest.approx(n)
     assert demandes[-1][2] == pytest.approx(e) and demandes[-1][1] == pytest.approx(s)
     assert rgb[0, 0, 0] == 1 and rgb[-1, -1, 0] == 6 and rgb[0, 2048, 0] == 2
+
+
+def _tuile_de_sa_place(demandes, delai=None):
+    """Doublure du WMS : chaque tuile peinte d'une valeur tirée de son
+    emprise, quel que soit l'ordre des appels ; `delai(o, n)` la retient, pour
+    que les tuiles arrivent dans le désordre."""
+    import threading
+    import time
+    verrou = threading.Lock()
+
+    def image(o, s, e, n, largeur, hauteur):
+        with verrou:
+            demandes.append((o, s, e, n, largeur, hauteur))
+        if delai:
+            time.sleep(delai(o, n))
+        valeur = (round(o * 1e5) * 7 + round(n * 1e5) * 13) % 251
+        return _jpeg(np.full((hauteur, largeur, 3), valeur))
+    return image
+
+
+def test_les_tuiles_lues_ensemble_font_la_meme_image_qu_une_a_une(monkeypatch):
+    """Les six tuiles d'une zone de 1 000 m, lues en même temps et rendues
+    dans le désordre (la première la dernière) : mêmes demandes, même image."""
+    from vue3d import ortho
+    lat, delta = 45.7, 1000 / 2 / 111320
+    o, s, e, n = 4.8 - delta, lat - delta, 4.8 + delta, lat + delta
+    une_a_une, ensemble = [], []
+    monkeypatch.setattr(ortho, "_image_wms", _tuile_de_sa_place(une_a_une))
+    attendue = ortho.fetch_ortho_rgb(o, s, e, n, 0.2, fils=1)
+    monkeypatch.setattr(ortho, "_image_wms", _tuile_de_sa_place(
+        ensemble, lambda o_, n_: 0.05 if (o_, n_) == (une_a_une[0][0], une_a_une[0][3]) else 0))
+    rgb = ortho.fetch_ortho_rgb(o, s, e, n, 0.2, fils=6)
+    assert np.array_equal(rgb, attendue) and len(set(np.unique(rgb))) == 6
+    assert sorted(ensemble) == sorted(une_a_une) and ensemble[0] == une_a_une[0]
+
+
+def test_une_tuile_illisible_fait_echouer_toute_l_orthophoto(monkeypatch):
+    """Une tuile perdue ne laisse pas un trou noir dans l'image : la lecture
+    lève, et la couche n'est pas écrite."""
+    import requests
+    from vue3d import ortho
+    demandes = []
+    image = _tuile_de_sa_place(demandes)
+
+    def en_panne(o, s, e, n, largeur, hauteur):
+        if hauteur < 2048:                  # les tuiles de la rangée du sud
+            raise requests.RequestException("HTTP 400")
+        return image(o, s, e, n, largeur, hauteur)
+
+    monkeypatch.setattr(ortho, "_image_wms", en_panne)
+    lat, delta = 45.7, 1000 / 2 / 111320
+    with pytest.raises(requests.RequestException):
+        ortho.fetch_ortho_rgb(4.8 - delta, lat - delta, 4.8 + delta, lat + delta, 0.2, fils=6)

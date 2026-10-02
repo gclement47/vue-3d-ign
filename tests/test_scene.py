@@ -537,27 +537,43 @@ def _scene_nue(lat, lon, avancer=None):
     return gzip.compress(json.dumps({"batiments": {"features": []}, "eau": None}).encode()), b"jpeg"
 
 
-def _lecteur_vehicules(mode, appels=None, en_panne=None):
-    """Doublure de vehicules.Lecteur : `appels` note chaque lecture, par
-    fichier ('piscines' ou le détecteur)."""
+def _lecteur_vehicules(mode, appels=None, en_panne=None, images=None):
+    """Doublure de vehicules.Lecteur : `appels` note chaque lecture de
+    l'orthophoto ('orthophoto') et chaque détection, par fichier ('piscines'
+    ou le détecteur). `en_panne` : [n] — les n lectures de l'orthophoto à
+    venir échouent, toutes si n est True. `images` : chaque orthophoto lue."""
     import types
+
+    import numpy as np
     from vue3d.vehicules import MODES
 
+    def orthophoto(*bbox):
+        if appels is not None:
+            appels.append("orthophoto")
+        if en_panne and en_panne[0]:
+            if en_panne[0] is not True:
+                en_panne[0] -= 1
+            raise ConnectionError("Read timed out")
+        rgb = np.zeros((1781, 1173, 3), dtype=np.uint8)
+        if images is not None:
+            images.append(rgb)
+        return rgb
+
     def lecture(quoi):
-        def lire(*bbox):
+        def lire(*bbox, rgb=None):
+            if rgb is None:
+                rgb = orthophoto(*bbox)
             if appels is not None:
                 appels.append(quoi)
-            if en_panne and en_panne[0]:
-                raise ConnectionError("Read timed out")
             if quoi == "piscines":
-                return {"largeur": 1173, "hauteur": 1781,
+                return {"largeur": rgb.shape[1], "hauteur": rgb.shape[0],
                         "piscines": [[300, 400, 50, 25, 0.0, 0.3, 0x5AC8D2, mode]]}
-            return {"largeur": 1173, "hauteur": 1781,
+            return {"largeur": rgb.shape[1], "hauteur": rgb.shape[0],
                     "boites": [[586.5, 890.5, 22, 10, 0.0, 0.6, 0, 0x808080, quoi]]}
         return lire
 
-    return types.SimpleNamespace(mode=mode, detecteurs=MODES[mode], piscines=lecture("piscines"),
-                                 vehicules=lecture)
+    return types.SimpleNamespace(mode=mode, detecteurs=MODES[mode], orthophoto=orthophoto,
+                                 piscines=lecture("piscines"), vehicules=lecture)
 
 
 def test_sans_detecteur_les_couches_de_l_orthophoto_n_existent_pas(tmp_path):
@@ -572,7 +588,9 @@ def test_sans_detecteur_les_couches_de_l_orthophoto_n_existent_pas(tmp_path):
 def test_un_fichier_par_detecteur_et_un_pour_les_piscines(tmp_path):
     """Le nom du fichier porte le détecteur (ou le mode, pour les piscines)
     et la version : relancer le service avec un autre détecteur ne ressert
-    jamais la couche du précédent, et chaque fichier n'est lu qu'une fois."""
+    jamais la couche du précédent, et chaque fichier n'est lu qu'une fois.
+    Demandée sans la scène, la première couche lance toutes les détections
+    du point, sur une seule orthophoto."""
     import gzip
     import json
     appels = []
@@ -588,7 +606,7 @@ def test_un_fichier_par_detecteur_et_un_pour_les_piscines(tmp_path):
     assert nom_piscines == f"piscines-tous-v{scene.PISCINES_VERSION}.json.gz"
     couche = json.loads(gzip.decompress(open(os.path.join(dossier, nom_piscines), "rb").read()))
     assert couche["mode"] == "tous" and len(couche["piscines"]) == 1
-    assert appels == ["rtmdet", "yolo", "piscines"]
+    assert appels == ["orthophoto", "piscines", "rtmdet", "yolo"]
     # Un détecteur que ce service n'a pas.
     with pytest.raises(scene.VehiculesDesactives):
         cache.obtenir_vehicules(48.8049, 2.1204, "inconnu", construire=_scene_nue)
@@ -613,7 +631,8 @@ def test_une_panne_de_detection_ne_met_rien_en_cache_et_epargne_la_scene(tmp_pat
 
 def test_les_detections_sont_lancees_pendant_que_la_scene_se_construit(tmp_path):
     """La lecture anticipée sert la demande : une seule détection par
-    fichier, les piscines d'abord, puis les détecteurs du rapide au lent."""
+    fichier, les piscines d'abord, puis les détecteurs du rapide au lent,
+    et une seule lecture de l'orthophoto pour toutes."""
     appels = []
     cache = Cache(str(tmp_path), lire_vehicules=_lecteur_vehicules("tous", appels))
     cache.prelire_vehicules(48.8049, 2.1204)
@@ -621,7 +640,99 @@ def test_les_detections_sont_lancees_pendant_que_la_scene_se_construit(tmp_path)
     cache.obtenir_piscines(48.8049, 2.1204, construire=_scene_nue)
     cache.obtenir_vehicules(48.8049, 2.1204, "yolo", construire=_scene_nue)
     cache.obtenir_vehicules(48.8049, 2.1204, "rtmdet", construire=_scene_nue)
-    assert appels == ["piscines", "rtmdet", "yolo"]
+    assert appels == ["orthophoto", "piscines", "rtmdet", "yolo"]
+
+
+def test_l_orthophoto_partagee_ne_sert_qu_aux_couches_qui_manquent(tmp_path):
+    """Une couche déjà écrite n'est pas recalculée ; les autres se partagent
+    une nouvelle lecture."""
+    appels = []
+    cache = Cache(str(tmp_path), lire_vehicules=_lecteur_vehicules("tous", appels))
+    cache.obtenir_piscines(48.8049, 2.1204, construire=_scene_nue)
+    for detecteur in ("rtmdet", "yolo"):
+        cache.obtenir_vehicules(48.8049, 2.1204, detecteur, construire=_scene_nue)
+    os.remove(cache.chemin(48.8049, 2.1204, scene.nom_vehicules("yolo")))
+    os.remove(cache.chemin(48.8049, 2.1204, scene.nom_vehicules("rtmdet")))
+    del appels[:]
+    cache.prelire_vehicules(48.8049, 2.1204)
+    cache.obtenir_vehicules(48.8049, 2.1204, "yolo", construire=_scene_nue)
+    cache.obtenir_vehicules(48.8049, 2.1204, "rtmdet", construire=_scene_nue)
+    assert appels == ["orthophoto", "rtmdet", "yolo"]
+
+
+def test_si_l_orthophoto_partagee_echoue_chaque_detection_retente_la_sienne(tmp_path):
+    """Une lecture manquée ne fait pas tomber trois couches : chacune relit
+    l'orthophoto, comme avant le partage. Ici, la lecture partagée et la
+    première reprise (celle des piscines) échouent ; les deux suivantes
+    passent."""
+    appels = []
+    cache = Cache(str(tmp_path), lire_vehicules=_lecteur_vehicules("tous", appels, en_panne=[2]))
+    cache.prelire_vehicules(48.8049, 2.1204)
+    for tache in list(cache._lectures.values()):
+        tache.exception()
+    assert appels == ["orthophoto", "orthophoto", "orthophoto", "rtmdet", "orthophoto", "yolo"]
+    with pytest.raises(scene.VehiculesIndisponibles):
+        cache.obtenir_piscines(48.8049, 2.1204, construire=_scene_nue)
+    assert not os.path.exists(cache.chemin(48.8049, 2.1204, scene.nom_piscines("tous")))
+    cache.obtenir_vehicules(48.8049, 2.1204, "rtmdet", construire=_scene_nue)
+    cache.obtenir_vehicules(48.8049, 2.1204, "yolo", construire=_scene_nue)
+    # La demande suivante d'une couche du point relance celle qui manque :
+    # les piscines, sur une nouvelle lecture.
+    cache.obtenir_piscines(48.8049, 2.1204, construire=_scene_nue)
+    assert appels[6:] == ["orthophoto", "piscines"]
+
+
+def test_une_detection_attendue_par_une_demande_n_est_pas_relancee(tmp_path):
+    """yolo met cinq minutes dans le conteneur : pendant qu'une demande
+    l'attend (sa tâche retirée de la file), une page rechargée ne la relance
+    pas."""
+    appels = []
+    lecteur = _lecteur_vehicules("tous", appels)
+    lire_vehicules, libre = lecteur.vehicules, threading.Event()
+
+    def vehicules(quoi):
+        lire = lire_vehicules(quoi)
+
+        def lent(*bbox, rgb=None):
+            if quoi == "yolo":
+                assert libre.wait(10)
+            return lire(*bbox, rgb=rgb)
+        return lent
+
+    lecteur.vehicules = vehicules
+    cache = Cache(str(tmp_path), lire_vehicules=lecteur)
+    cache.obtenir(48.8049, 2.1204, construire=_scene_nue)
+    cache.prelire_vehicules(48.8049, 2.1204)
+    attente = threading.Thread(target=cache.obtenir_vehicules,
+                               args=(48.8049, 2.1204, "yolo"), kwargs={"construire": _scene_nue})
+    attente.start()
+    cle = (scene.nom_vehicules("yolo"), 48.8049, 2.1204, None)
+    for _ in range(1000):                       # la demande a pris la tâche de yolo
+        if cle not in cache._lectures:
+            break
+        threading.Event().wait(0.01)
+    cache.prelire_vehicules(48.8049, 2.1204)      # page rechargée
+    libre.set()
+    attente.join(10)
+    assert appels.count("yolo") == 1 and appels.count("orthophoto") == 1
+    assert os.path.exists(cache.chemin(48.8049, 2.1204, scene.nom_vehicules("yolo")))
+
+
+def test_l_orthophoto_partagee_est_liberee_avec_la_derniere_detection(tmp_path):
+    """54 Mo pour une zone de 1 000 m : l'image ne survit pas aux détections,
+    même si l'on ne vient jamais chercher leurs couches."""
+    import gc
+    import weakref
+    images = []
+    cache = Cache(str(tmp_path), lire_vehicules=_lecteur_vehicules("tous", images=images))
+    cache.prelire_vehicules(48.8049, 2.1204)
+    for tache in list(cache._lectures.values()):
+        tache.result()
+    (image,) = images
+    reste = weakref.ref(image)
+    del images[:], image
+    gc.collect()
+    assert reste() is None
 
 
 # --- Panneaux solaires : le registre ------------------------------------------------

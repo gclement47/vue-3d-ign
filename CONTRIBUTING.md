@@ -375,7 +375,10 @@ trois particularités. Elles sont optionnelles : leur lecteur vient de
 `vehicules.lecteur()`, qui rend `None` sans `VUE3D_VEHICULES`, et les routes
 répondent alors `{"mode": "aucun"}` plutôt qu'une erreur. Leur « lecture »
 est un calcul — l'orthophoto à 0,2 m, puis la détection — lancé en tâche de
-fond sur un seul fil pendant que la scène se construit. Et il y a un fichier
+fond sur un seul fil pendant que la scène se construit ; l'orthophoto est lue
+une fois pour toutes les détections du point (`Cache.prelire_vehicules`), et
+chaque détection présente plusieurs tuiles à la fois à son réseau
+(`FILS_INFERENCE`), lues dans leur ordre. Et il y a un fichier
 par résultat — les piscines, puis les véhicules de chaque détecteur — pour
 que la page dessine chacun dès qu'il est prêt : c'est elle qui réunit les
 détecteurs, dans l'ordre que `/api/sante` lui donne. Les poids des réseaux ne sont pas dans le dépôt et ne doivent pas y

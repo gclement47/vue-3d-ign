@@ -71,15 +71,20 @@ def _faux_onnxruntime(monkeypatch, tmp_path, pris):
     ses sessions disent avoir gardés. Rend la liste des moteurs demandés."""
     demandes = []
 
+    class Options:
+        enable_cpu_mem_arena = True
+        intra_op_num_threads = 0
+
     class Session:
-        def __init__(self, chemin, providers):
+        def __init__(self, chemin, options=None, providers=None):
             demandes.append(providers)
+            self.options = options
 
         def get_providers(self):
             return pris
 
     monkeypatch.setitem(sys.modules, "onnxruntime", types.SimpleNamespace(
-        InferenceSession=Session,
+        InferenceSession=Session, SessionOptions=Options,
         get_available_providers=lambda: ["CoreMLExecutionProvider", "CPUExecutionProvider"]))
     (tmp_path / vehicules.DETECTEURS["yolo"]["fichier"]).write_bytes(b"")
     return demandes
@@ -93,6 +98,18 @@ def test_les_reseaux_sont_charges_sur_le_moteur_demande(monkeypatch, tmp_path):
     assert demandes[-1] == vehicules.MOTEURS["coreml"]
     vehicules.charger("yolo", str(tmp_path), "processeur")
     assert demandes[-1] == ["CPUExecutionProvider"]
+
+
+def test_au_processeur_les_sessions_rendent_leur_memoire(monkeypatch, tmp_path):
+    """Sans arène au processeur : après quatre tuiles simultanées, la mémoire
+    retourne au système. Le nombre de fils d'onnxruntime n'est pas touché :
+    sous Linux, les sorties en dépendent."""
+    monkeypatch.delenv("VUE3D_MOTEUR", raising=False)
+    _faux_onnxruntime(monkeypatch, tmp_path, ["CoreMLExecutionProvider", "CPUExecutionProvider"])
+    processeur = vehicules.charger("yolo", str(tmp_path), "processeur")["yolo"].options
+    assert processeur.enable_cpu_mem_arena is False and processeur.intra_op_num_threads == 0
+    coreml = vehicules.charger("yolo", str(tmp_path), "coreml")["yolo"].options
+    assert coreml.enable_cpu_mem_arena is True and coreml.intra_op_num_threads == 0
 
 
 def test_un_repli_muet_sur_le_processeur_arrete_le_demarrage(monkeypatch, tmp_path):
@@ -381,3 +398,99 @@ def test_le_lecteur_a_une_lecture_par_fichier(monkeypatch):
     assert [b[8] for b in brut["boites"]] == ["yolo"] and (brut["largeur"], brut["hauteur"]) == (512, 512)
     assert [b[8] for b in lecteur.vehicules("rtmdet")(0, 0, 1, 1)["boites"]] == ["rtmdet"]
     assert lecteur.piscines(0, 0, 1, 1)["piscines"] == []
+
+
+def test_le_lecteur_prend_l_orthophoto_deja_lue(monkeypatch):
+    """L'orthophoto partagée (scene.Cache.prelire_vehicules) est passée en
+    `rgb` : la lecture ne la relit pas."""
+    lues = []
+    monkeypatch.setattr(Lecteur, "_orthophoto", staticmethod(lambda *bbox: lues.append(bbox)))
+    rgb = np.zeros((300, 400, 3), dtype=np.uint8)
+    lecteur = Lecteur("rtmdet", {"rtmdet": FauxReseau([])})
+    assert lecteur.vehicules("rtmdet")(0, 0, 1, 1, rgb=rgb)["largeur"] == 400
+    assert lecteur.piscines(0, 0, 1, 1, rgb=rgb)["hauteur"] == 300
+    assert lues == []
+
+
+# --- Tuiles présentées en même temps ------------------------------------------------
+
+class ReseauParContenu:
+    """Doublure qui lit la tuile qu'on lui présente : une voiture en son
+    centre, au score de sa luminosité moyenne, quel que soit l'ordre des
+    appels. Compte les appels simultanés ; `attendre` : le premier appel
+    attend qu'un second commence (une seconde au plus), pour que les fils
+    se recouvrent à coup sûr."""
+
+    def __init__(self, en_panne_a=None, attendre=False):
+        import threading
+        self.verrou = threading.Lock()
+        self.en_cours = self.simultanes = self.appels = 0
+        self.en_panne_a = en_panne_a
+        self.ensemble = threading.Event() if attendre else None
+
+    def get_inputs(self):
+        return [types.SimpleNamespace(name="image")]
+
+    def run(self, _, entree):
+        with self.verrou:
+            self.appels += 1
+            self.en_cours += 1
+            self.simultanes = max(self.simultanes, self.en_cours)
+            panne = self.appels == self.en_panne_a
+            if self.ensemble and self.en_cours > 1:
+                self.ensemble.set()
+        try:
+            if self.ensemble:
+                self.ensemble.wait(1)
+            if panne:
+                raise RuntimeError("inférence en échec")
+            sortie = np.zeros((1, 1, 20), dtype=np.float32)
+            sortie[0, 0, :5] = COTE / 2, COTE / 2, 44, 20, 0.0
+            sortie[0, 0, 5 + PETIT] = float(entree["image"].mean())
+            return [sortie]
+        finally:
+            with self.verrou:
+                self.en_cours -= 1
+
+
+def _image_bruitee():
+    """896 × 1 024 px : six tuiles de rtmdet (512 px, 128 de recouvrement),
+    chacune de luminosité différente."""
+    return np.random.default_rng(7).integers(0, 256, size=(896, 1024, 3), dtype=np.uint8)
+
+
+@pytest.mark.parametrize("fils", [2, 4])
+def test_les_tuiles_presentees_ensemble_donnent_les_memes_boites(fils):
+    """Préparées et passées au réseau dans plusieurs fils, les tuiles sont
+    lues dans leur ordre : mêmes boîtes, au même rang, qu'une à une."""
+    rgb = _image_bruitee()
+    une_a_une = detecter(rgb, {"rtmdet": ReseauParContenu()})
+    reseau = ReseauParContenu(attendre=True)
+    ensemble = detecter(rgb, {"rtmdet": reseau}, fils=fils)
+    assert ensemble == une_a_une and len(une_a_une) == 6
+    assert reseau.appels == 6 and 1 < reseau.simultanes <= fils
+    piscines = {"rtmdet": {"tuile_px": 512, "recouvrement_px": 128, "seuil": 0.1, "classe": PETIT}}
+    assert (detecter_piscines(rgb, {"rtmdet": ReseauParContenu()}, piscines, fils=fils)
+            == detecter_piscines(rgb, {"rtmdet": ReseauParContenu()}, piscines))
+
+
+def test_une_tuile_en_echec_fait_echouer_la_detection():
+    """Une tuile manquée laisserait un trou dans la couche : l'erreur remonte,
+    rien n'est écrit."""
+    with pytest.raises(RuntimeError, match="inférence"):
+        detecter(_image_bruitee(), {"rtmdet": ReseauParContenu(en_panne_a=3)}, fils=2)
+
+
+def test_les_tuiles_presentees_ensemble_dependent_du_moteur():
+    """CoreML sert une tuile à la fois sur le GPU : deux fils, pour préparer
+    la suivante pendant ce temps ; le processeur en prend plus. Une session
+    qui ne dit pas son moteur (doublure) en reste à une."""
+    def session(*fournisseurs):
+        return types.SimpleNamespace(get_providers=lambda: list(fournisseurs))
+    coreml = session("CoreMLExecutionProvider", "CPUExecutionProvider")
+    processeur = session("CPUExecutionProvider")
+    assert vehicules.fils_inference({"yolo": coreml}) == vehicules.FILS_INFERENCE["coreml"]
+    assert vehicules.fils_inference({"yolo": processeur}) == vehicules.FILS_INFERENCE["processeur"]
+    assert vehicules.fils_inference({"yolo": FauxReseau([])}) == 1
+    assert Lecteur("yolo", {"yolo": FauxReseau([])}).fils == 1
+    assert Lecteur("yolo", {"yolo": processeur}).fils == vehicules.FILS_INFERENCE["processeur"]
