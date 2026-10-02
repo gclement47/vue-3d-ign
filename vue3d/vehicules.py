@@ -294,6 +294,22 @@ MOTEURS = {
 # médianes de trois : yolo de 59,8 s à 44,3 s sur CoreML en zone de 1 000 m
 # à Gordes ; de 148 s à 68 s dans le conteneur sur l'emprise par défaut.
 # Couches identiques à l'octet.
+#
+# Ce que les appels simultanés coûtent en mémoire : yolo seul sur l'emprise
+# par défaut de Gordes, mesuré le 2026-10-02 à la contre-vérification, un
+# appel à la fois avec l'arène (avant) contre quatre sans elle (FILS_INFERENCE,
+# charger). Dans le conteneur, le pic passe de 734-740 Mo à 1 046-1 137 Mo,
+# ce qui reste après coup de 695-700 Mo à 441-535 Mo ; au processeur hors
+# conteneur, le pic passe de 966-978 Mo à 1 879-1 949 Mo. Le service entier
+# dans le conteneur (cgroup memory.peak, de 6 à 12 essais), scène et trois
+# détections de l'emprise par défaut : 811 à 827 Mo à bc716ba, 1 351 à
+# 1 508 Mo depuis, dont 373 à 382 Mo sans détecteur (scène et bassin des
+# toitures) ; en zone de 1 000 m, scène, piscines et rtmdet, yolo en cours :
+# 1 114 à 1 447 Mo, puis 1 906 à 2 144 Mo.
+#
+# Au processeur, jamais plus de la moitié des cœurs (fils_inference) : 4 n'a
+# été mesuré qu'à dix cœurs, chaque appel y prend déjà tous les cœurs, et
+# chacun ajoute environ 300 Mo au pic.
 FILS_INFERENCE = {"processeur": 4, "coreml": 2}
 
 
@@ -563,15 +579,21 @@ def detecter_piscines(rgb, sessions, reglages=None, fils=1):
     return toutes
 
 
-def fils_inference(sessions):
+def fils_inference(sessions, coeurs=None):
     """Tuiles présentées en même temps aux réseaux : FILS_INFERENCE de leur
-    moteur, 1 pour une session qui ne dit pas le sien (doublure des tests)."""
+    moteur, 1 pour une session qui ne dit pas le sien (doublure des tests).
+    Au processeur, jamais plus de la moitié des `coeurs` (ceux de la machine
+    par défaut), et au moins un."""
+    coeurs = coeurs or os.cpu_count() or 2
     fils = 1
     for session in sessions.values():
         fournisseurs = getattr(session, "get_providers", lambda: [])()
         if fournisseurs:
             moteur = "coreml" if MOTEURS["coreml"][0][0] in fournisseurs else "processeur"
-            fils = max(fils, FILS_INFERENCE[moteur])
+            n = FILS_INFERENCE[moteur]
+            if moteur == "processeur":
+                n = min(n, max(1, coeurs // 2))
+            fils = max(fils, n)
     return fils
 
 
