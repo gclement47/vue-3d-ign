@@ -369,7 +369,9 @@ def _axe_et_nettete(points):
 # l'ordre de 1e-15, mille fois sous ce seuil.
 CORPS_EGALITE_REL = 1e-12
 # Cellules traitées d'un bloc : la matrice des distances (cellules × points
-# d'un faîtage, 60 au plus) reste sous 4 Mo.
+# d'un faîtage) et chacun de ses temporaires restent sous 8 Mo. Un faîtage
+# sous-échantillonné par f[::max(1, len(f) // 60)] garde jusqu'à 119 points
+# (119 cellules, pas de 1) : 8 192 × 119 × 8 octets = 7,8 Mo.
 CORPS_BLOC = 8192
 
 
@@ -430,7 +432,8 @@ def corps_de_toit(dedans, seuil_haut, pas=TOITS_RESOLUTION_M):
     if len(comps) < 2:
         return []
     faitages = [[(a * pas, b * pas) for a, b in c] for c in comps]
-    # Sous-échantillon des faîtages pour la distance : 60 points suffisent.
+    # Sous-échantillon des faîtages pour la distance : environ 60 points
+    # suffisent (119 au plus selon la longueur du faîtage, CORPS_BLOC).
     echant = [f[::max(1, len(f) // 60)] for f in faitages]
     choix = _faitage_le_plus_proche(dedans, echant)
     groupes = [[] for _ in comps]
@@ -538,6 +541,16 @@ def _mediane_3x3(grille, valides):
     masqués ni son avertissement par cellule toute en NaN : 1,36 s -> 0,17 s
     sur les 732 fenêtres de Strasbourg en zone de 1 000 m (médianes de six
     mesures alternées, machine chargée), mêmes valeurs au bit près.
+
+    Précondition de cette égalité : aucune cellule valide ne vaut −0,0 ni
+    NaN. cellules_du_toit la tient : une cellule valide a h ≥
+    SURFACE_SOL_PART × gouttière, comparaison que NaN ne passe pas, et la
+    gouttière, percentile de hauteurs du MNH positives et arrondies au
+    décimètre (vue3d/mnh.py), vaut au moins 0,1 m. Hors de là, le résultat
+    s'écarte de nanmedian : −0,0 au lieu de 0,0 quand les deux cellules du
+    milieu sont des −0,0, NaN placés autrement quand une cellule valide est
+    NaN (sur 3 000 grilles tirées au sort, 1 467 et 429 écarts ; aucun avec
+    des +0,0, des négatifs ou des infinis).
     """
     g = np.where(valides, grille, np.nan)
     p = np.pad(g, 1, constant_values=np.nan)
@@ -1125,7 +1138,11 @@ def toits_pour_emprise(west, south, east, north, batiments_geojson, grille, exg,
 # mêmes nombres avec les mêmes index (`_Fenetre`) et fait les mêmes
 # opérations. Les bâtiments partent du centre de la scène vers le bord, mais
 # les profils sont rangés dans l'ordre des bâtiments : le dictionnaire des
-# toits est le même, à l'octet.
+# toits est le même, à l'octet. Cet ordre d'envoi est sans effet visible : la
+# scène n'est écrite, et la page ne l'affiche, qu'une fois tous les toits
+# rendus. Livrer les toits du centre d'abord demanderait une couche à part,
+# écartée : les toits sont tirés du MNH, et ce qui touche au MNH va dans la
+# scène (CLAUDE.md).
 #
 # Des fils plutôt que des processus ? Mesuré à Strasbourg en zone de
 # 1 000 m : 6,1 s dans un seul fil, 7,0 s sur dix fils (le GIL), 1,3 s sur
@@ -1152,6 +1169,18 @@ TOITS_BASSIN_ESSAIS = 3
 # service vit encore (`_veiller_parent`) : un appel système par seconde, et
 # un service tué ne laisse rien derrière lui plus d'une seconde.
 TOITS_VEILLE_S = 1.0
+# Processus du bassin au plus, sans VUE3D_TOITS_PROCESSUS. Le gain croît
+# encore à dix sur les dix cœurs du M4 — toitures de Strasbourg en zone de
+# 1 000 m, bassin chaud, médianes de trois tours, machine chargée par
+# d'autres calculs (charge 70 à 100) : 1 processus 8,3 s ; 2, 6,7 s ; 4,
+# 4,2 s ; 6, 3,7 s ; 8, 2,2 s ; 10, 1,5 s. Mais chaque processus garde sa
+# mémoire, après cette scène : 95 à 275 Mo (RSS) sous macOS (spawn), 27 à
+# 41 Mo (PSS) dans le conteneur (forkserver) ; et le service garde sa part,
+# environ 0,3 s à Strasbourg (grilles en tableaux, envoi des fenêtres) :
+# de 16 à 64 processus, la loi d'Amdahl n'en promet qu'environ 0,5 s de
+# moins, pour 48 processus permanents de plus. Au-delà de 16 :
+# VUE3D_TOITS_PROCESSUS.
+TOITS_PROCESSUS_MAX = 16
 
 _bassin = None
 # Réentrant : un bassin qui ne se crée pas est abandonné sous le verrou de
@@ -1168,14 +1197,58 @@ _bassin_autorise = False
 
 def autoriser_bassin(oui=True):
     """Autorise le bassin pour les appels sans `processus` : le service le
-    fait au démarrage."""
+    fait au démarrage, et le bassin démarre aussitôt, dans un fil à part
+    (`_chauffer_bassin`), plutôt qu'à la première scène."""
     global _bassin_autorise
     _bassin_autorise = oui
+    if oui and processus_toits() >= 2:
+        threading.Thread(target=_chauffer_bassin, name="bassin-des-toitures",
+                         daemon=True).start()
+
+
+def _chauffer_bassin():
+    """Fait naître le bassin et ses processus, sans attendre de scène.
+
+    Un processus du bassin met du temps à naître — un Python neuf qui
+    importe numpy, shapely et ce module (spawn), ou un fork du serveur
+    forkserver — et la première scène après le démarrage du service le
+    payait. Toitures de la première scène, Gordes, emprise par défaut
+    (médianes de cinq, en alternant, M4 chargé par d'autres calculs), le
+    bassin né à la première scène, puis au démarrage :
+
+        rejouée 1 s après le démarrage, macOS (spawn)       0,77 -> 0,28 s
+        rejouée 1 s après le démarrage, conteneur           0,97 -> 0,50 s
+        rejouée dès le démarrage, macOS                     0,83 -> 0,72 s
+        rejouée dès le démarrage, conteneur                 0,90 -> 0,64 s
+        servie par flask, demandée dès qu'il répond, macOS  0,53 -> 0,20 s
+
+    Servies par flask, les toitures commencent 0,9 à 1 s après le
+    démarrage, à la fin des lectures ; la scène arrive en 1,07 s au lieu de
+    1,57 (houppiers pendant les toitures compris, scene.assembler). Sur un
+    cœur, ces toitures prennent 0,55 à 0,67 s : le bassin froid faisait
+    pire que pas de bassin.
+
+    Un envoi au bassin fait naître un processus tant qu'aucun n'est libre :
+    une tâche vide par processus les lance tous.
+    """
+    bassin = _bassin_de_calcul()
+    if bassin is None:
+        return
+    try:
+        for tache in [bassin.submit(os.getpid) for _ in range(max(2, processus_toits()))]:
+            tache.result()
+    except concurrent.futures.BrokenExecutor as exc:
+        _abandonner_bassin(f"bassin cassé au démarrage ({exc})", bassin)
+    except Exception as exc:
+        # Rien de perdu : le bassin naîtra à la première scène, ou celle-ci
+        # se calculera dans le service.
+        journal.warning("Toitures : le bassin n'a pas démarré d'avance (%r)", exc)
 
 
 def processus_toits():
     """Processus du calcul des toitures : VUE3D_TOITS_PROCESSUS s'il est
-    donné (1 : pas de bassin), sinon les cœurs dont dispose le service."""
+    donné (1 : pas de bassin), sinon les cœurs dont dispose le service,
+    TOITS_PROCESSUS_MAX au plus."""
     valeur = os.environ.get("VUE3D_TOITS_PROCESSUS", "").strip()
     if valeur:
         try:
@@ -1183,9 +1256,10 @@ def processus_toits():
         except ValueError:
             journal.warning("VUE3D_TOITS_PROCESSUS=%r n'est pas un nombre : ignoré", valeur)
     try:
-        return len(os.sched_getaffinity(0))        # Linux : les cœurs du conteneur
+        coeurs = len(os.sched_getaffinity(0))      # Linux : les cœurs du conteneur
     except AttributeError:
-        return os.cpu_count() or 1
+        coeurs = os.cpu_count() or 1
+    return min(coeurs, TOITS_PROCESSUS_MAX)
 
 
 def _bassin_de_calcul():
@@ -1304,13 +1378,22 @@ class _Fenetre:
 
 
 def _bornes_geojson(geometrie):
-    """(ouest, sud, est, nord) des sommets d'une géométrie GeoJSON, ou None."""
+    """(ouest, sud, est, nord) des sommets d'une géométrie GeoJSON ; None si
+    elle n'en a pas que les fenêtres sachent borner — pas un dict, aucune
+    coordonnée, un sommet sans deux nombres finis. Ce bâtiment-là est
+    calculé dans le service, comme sur un cœur : shape() y échoue ou non,
+    de même."""
+    if not isinstance(geometrie, dict):
+        return None
     lons, lats = [], []
     pile = [geometrie.get("coordinates")]
     while pile:
         c = pile.pop()
         if isinstance(c, (list, tuple)) and c:
             if isinstance(c[0], (int, float)):
+                if (len(c) < 2 or not isinstance(c[1], (int, float))
+                        or not (math.isfinite(c[0]) and math.isfinite(c[1]))):
+                    return None
                 lons.append(c[0])
                 lats.append(c[1])
             else:
@@ -1343,8 +1426,8 @@ def _toits_en_parallele(features, valeurs, hauteurs, exg, sol, verdure, xs, ys,
     s'il n'y a pas lieu (peu de bâtiments, processus=1, bassin hors service)
     ou si le bassin a échoué : l'appelant calcule alors tout lui-même.
 
-    Les bâtiments partent du centre de la scène vers le bord : ceux qu'on
-    regarde d'abord sont prêts les premiers.
+    Les bâtiments partent du centre de la scène vers le bord, sans effet sur
+    le résultat ni sur l'affichage : la scène attend tous les profils.
 
     Args:
         processus: None, le bassin du service s'il est autorisé

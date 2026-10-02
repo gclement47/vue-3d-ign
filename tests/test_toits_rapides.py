@@ -95,6 +95,32 @@ def test_la_mediane_3x3_est_celle_de_nanmedian():
         assert _octets(toits._mediane_3x3(g, valides)) == _octets(ref.mediane_3x3(g, valides))
 
 
+def test_la_mediane_3x3_tient_sa_precondition():
+    """L'égalité au bit près avec nanmedian suppose qu'aucune cellule valide
+    ne vaut −0,0 ni NaN : cellules_du_toit n'en retient pas, ni ailleurs
+    que dans les valides elles ne changent rien. Hors de là, seul le signe
+    d'un zéro diffère."""
+    rng = np.random.default_rng(13)
+    pieges = np.array([-0.0, 0.0, np.nan, -1.0])
+    for h, xs, ys, emprise in _maisons():
+        # Hauteurs au décimètre, comme le MNH, et des pièges partout : dans
+        # l'emprise comme autour.
+        h = np.round(h.astype(np.float64), 1)
+        tire = rng.random(h.shape) < 0.15
+        h[tire] = rng.choice(pieges, int(tire.sum()))
+        c = toits.cellules_du_toit(emprise, h, xs, ys, 0.1)
+        fen = h[c["j0"]:c["j1"], c["i0"]:c["i1"]]
+        assert tire[c["j0"]:c["j1"], c["i0"]:c["i1"]].any()
+        v = fen[c["valides"]]
+        assert not np.isnan(v).any() and not (v == 0).any()
+        assert _octets(c["lisse"]) == _octets(ref.mediane_3x3(fen, c["valides"]))
+    # Des −0,0 parmi les valides : mêmes valeurs, au signe d'un zéro près.
+    g = np.array([[-0.0, -0.0, 1.0], [-0.0, 2.0, -0.0], [3.0, -0.0, -0.0]])
+    valides = np.ones(g.shape, dtype=bool)
+    m, attendu = toits._mediane_3x3(g, valides), ref.mediane_3x3(g, valides)
+    assert np.array_equal(m, attendu) and _octets(m) != _octets(attendu)
+
+
 def test_combler_rend_les_memes_bits():
     """Remplissage de proche en proche, borné aux cellules qui touchent les
     dernières remplies : mêmes moyennes, même ordre des sommes."""
@@ -201,6 +227,23 @@ def test_une_fenetre_se_lit_avec_les_index_de_la_grille():
             f[cle]
 
 
+GEOMETRIES_ILLISIBLES = ["pas une géométrie", [[5.0, 45.0]],
+                         {"type": "Polygon", "coordinates": [[[5.0]]]}]
+
+
+def test_les_bornes_d_une_geometrie_illisible_sont_inconnues():
+    """None plutôt qu'une erreur : le bâtiment se calcule alors dans le
+    service, où shape() le refuse comme sur un cœur."""
+    for geometrie in GEOMETRIES_ILLISIBLES + [
+            {"type": "Polygon", "coordinates": [[[5.0, "45"]]]},
+            {"type": "Polygon", "coordinates": [[[5.0, 45.0], [float("nan"), 45.1], [5.1, 45.0]]]},
+            {"type": "GeometryCollection", "geometries": []}, {"type": "Polygon"}]:
+        assert toits._bornes_geojson(geometrie) is None, geometrie
+    carre = {"type": "Polygon", "coordinates": [[[5.0, 45.0], [5.1, 45.0], [5.1, 45.2, 30.0],
+                                                 [5.0, 45.2], [5.0, 45.0]]]}
+    assert toits._bornes_geojson(carre) == (5.0, 45.0, 5.1, 45.2)
+
+
 def _scene_de_maisons(n_maisons=72):
     """Une scène de 160 m, assez de bâtiments pour le bassin : toits à deux
     pans tournés, marches, plats, quelques arbres, un terrain en pente."""
@@ -239,6 +282,11 @@ def _scene_de_maisons(n_maisons=72):
     # Un bâtiment sans identifiant et un autre sans géométrie : sans profil.
     features.insert(5, {"type": "Feature", "properties": {}, "geometry": features[0]["geometry"]})
     features.insert(9, {"type": "Feature", "properties": {"cleabs": "SANS"}, "geometry": None})
+    # Des géométries que shape() refuse, ni bornées ni envoyées au bassin :
+    # calculées ici, sans profil, comme sur un cœur.
+    for k, geometrie in enumerate(GEOMETRIES_ILLISIBLES):
+        features.insert(12 + 3 * k, {"type": "Feature", "properties": {"cleabs": f"ILLISIBLE{k}"},
+                                     "geometry": geometrie})
     demi = n * pas / 2
     bbox = (lon0 - demi / m_lon, lat0 - demi / 111320, lon0 + demi / m_lon, lat0 + demi / 111320)
     grille = {"bbox": list(bbox), "width": n, "height": n, "couvert": True,
@@ -270,7 +318,8 @@ def test_le_bassin_rend_les_memes_toits_dans_le_meme_ordre(bassin_de_deux):
     # La scène a de tout : des pans, des surfaces, des profils minimaux.
     profils = ici["toits"].values()
     assert sum("pans" in p for p in profils) >= 5 and sum("surface" in p for p in profils) >= 1
-    assert "SANS" not in ici["toits"] and len(ici["toits"]) == len(bats["features"]) - 2
+    assert "SANS" not in ici["toits"] and not any(c.startswith("ILLISIBLE") for c in ici["toits"])
+    assert len(ici["toits"]) == len(bats["features"]) - 2 - len(GEOMETRIES_ILLISIBLES)
     # Sans orthophoto ni terrain aussi.
     assert json.dumps(toits.toits_pour_emprise(*bbox, bats, grille, None, None, processus=2)) == \
         json.dumps(toits.toits_pour_emprise(*bbox, bats, grille, None, None, processus=1))
@@ -379,3 +428,41 @@ def test_le_nombre_de_processus_se_regle(monkeypatch):
     assert toits.processus_toits() == 1
     monkeypatch.setenv("VUE3D_TOITS_PROCESSUS", "beaucoup")
     assert toits.processus_toits() >= 1
+    # Sans réglage, les cœurs, plafonnés ; le réglage, lui, n'a pas de plafond.
+    import os
+    monkeypatch.delenv("VUE3D_TOITS_PROCESSUS")
+    monkeypatch.setattr(os, "sched_getaffinity", lambda pid: set(range(64)), raising=False)
+    monkeypatch.setattr(os, "cpu_count", lambda: 64)
+    assert toits.processus_toits() == toits.TOITS_PROCESSUS_MAX == 16
+    monkeypatch.setattr(os, "sched_getaffinity", lambda pid: {0, 1, 2}, raising=False)
+    monkeypatch.setattr(os, "cpu_count", lambda: 3)
+    assert toits.processus_toits() == 3
+    monkeypatch.setenv("VUE3D_TOITS_PROCESSUS", "40")
+    assert toits.processus_toits() == 40
+
+
+def _fil_du_bassin():
+    import threading
+    return [f for f in threading.enumerate() if f.name == "bassin-des-toitures"]
+
+
+def test_le_service_fait_naitre_le_bassin_des_son_demarrage(bassin_de_deux):
+    """autoriser_bassin, au démarrage du service, lance ses processus dans
+    un fil à part : la première scène les trouve prêts."""
+    assert toits._bassin is None
+    toits.autoriser_bassin()
+    for fil in _fil_du_bassin():
+        fil.join(60)
+    assert toits._bassin is not None
+    processus = list(toits._bassin._processes.values())
+    assert len(processus) == 2 and all(p.is_alive() for p in processus)
+
+
+def test_sans_processus_le_service_ne_fait_rien_naitre(monkeypatch):
+    """VUE3D_TOITS_PROCESSUS=1 (celui de toute la suite, tests/conftest.py) :
+    ni fil, ni bassin."""
+    monkeypatch.setenv("VUE3D_TOITS_PROCESSUS", "1")
+    monkeypatch.setattr(toits, "_bassin_de_calcul", lambda: pytest.fail("bassin lancé"))
+    avant = len(_fil_du_bassin())
+    toits.autoriser_bassin()
+    assert len(_fil_du_bassin()) == avant and toits._bassin_autorise

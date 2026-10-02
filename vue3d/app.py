@@ -285,7 +285,8 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
 
 # Les toitures se calculent sur un bassin de processus (vue3d/toits.py), que
 # le service autorise : gunicorn et flask gardent leur script principal, que
-# chaque processus du bassin réexécute.
+# chaque processus du bassin réexécute. Il naît dès maintenant, dans un fil à
+# part, et non à la première scène, qui le trouve prêt.
 autoriser_bassin()
 
 # Le détecteur de VUE3D_VEHICULES et le registre de VUE3D_PANNEAUX sont
