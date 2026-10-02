@@ -9,9 +9,8 @@ from vue3d import geopf
 
 @pytest.fixture(autouse=True)
 def places_neuves(monkeypatch):
-    """Des places à soi : une lecture laissée en cours par un autre test (une
-    requête réelle d'un lecteur par défaut) n'en prend aucune ici."""
-    monkeypatch.setattr(geopf, "_places", geopf._Places(geopf.GEOPF_SIMULTANEES, geopf.GEOPF_FOND))
+    """Des places à soi, que les autres tests ne tiennent pas."""
+    monkeypatch.setattr(geopf, "_places", geopf._Places(geopf.GEOPF_SIMULTANEES))
 
 
 class _Reponse:
@@ -114,11 +113,9 @@ def test_en_parallele_n_attend_pas_les_autres_pour_echouer():
         libere.set()
 
 
-@pytest.mark.parametrize("de_scene", [True, False])
-def test_les_requetes_simultanees_sont_bornees(monkeypatch, de_scene):
+def test_les_requetes_simultanees_sont_bornees(monkeypatch):
     """Tout le processus partage GEOPF_SIMULTANEES places : trois fois plus
-    de lectures WFS lancées ensemble n'en ont jamais davantage en cours.
-    Hors d'une scène, GEOPF_FOND au plus."""
+    de lectures WFS lancées ensemble n'en ont jamais davantage en cours."""
     import concurrent.futures
     import threading
     import time
@@ -147,8 +144,8 @@ def test_les_requetes_simultanees_sont_bornees(monkeypatch, de_scene):
     lecture = functools.partial(geopf.en_parallele, *(lambda: couches._requete("X", 0, 0, 1, 1)
                                                       for _ in range(3 * geopf.GEOPF_SIMULTANEES)))
     with concurrent.futures.ThreadPoolExecutor(1) as bassin:
-        geopf.Groupe(de_scene=de_scene).soumettre(bassin, lecture).result(timeout=10)
-    assert pic[0] == (geopf.GEOPF_SIMULTANEES if de_scene else geopf.GEOPF_FOND)
+        geopf.Groupe().soumettre(bassin, lecture).result(timeout=10)
+    assert pic[0] == geopf.GEOPF_SIMULTANEES
 
 
 def test_en_parallele_abandonne_les_lectures_qui_attendent_leur_place(monkeypatch):
@@ -164,7 +161,7 @@ def test_en_parallele_abandonne_les_lectures_qui_attendent_leur_place(monkeypatc
             demandes.release()
             return super().prendre(groupe)
 
-    monkeypatch.setattr(geopf, "_places", Places(1, 1))
+    monkeypatch.setattr(geopf, "_places", Places(1))
     parties = []
 
     def en_panne():
@@ -219,12 +216,11 @@ def test_en_parallele_rapporte_l_echec_et_non_l_abandon(monkeypatch):
 
 
 def test_un_groupe_imbrique_n_abandonne_pas_celui_qui_le_contient():
-    scene = geopf.Groupe(de_scene=True)
+    scene = geopf.Groupe()
     quarts = geopf.Groupe(scene)
-    assert quarts.de_scene
     quarts.abandonner()
     assert quarts.abandonne() and not scene.abandonne()
-    scene_2 = geopf.Groupe(de_scene=True)
+    scene_2 = geopf.Groupe()
     terrain = geopf.Groupe(scene_2)
     scene_2.abandonner()
     assert terrain.abandonne()
@@ -237,7 +233,7 @@ def test_une_lecture_abandonnee_ne_reessaie_pas(monkeypatch):
     la lecture ne réessaie pas : pendant une panne, chaque essai peut tenir
     sa place 30 s."""
     import concurrent.futures
-    groupe = geopf.Groupe(de_scene=True)
+    groupe = geopf.Groupe()
     appels = []
 
     def get(url, timeout):

@@ -20,7 +20,7 @@ import io
 import numpy as np
 import requests
 
-from .geopf import get_avec_reprise, place
+from .geopf import Groupe, get_avec_reprise, place
 
 ORTHO_LAYER = "ORTHOIMAGERY.ORTHOPHOTOS"
 # Même seuil que le classement de la végétation côté rendu.
@@ -147,18 +147,19 @@ def fetch_ortho_rgb(west, south, east, north, resolution_m, tuile_max=2048, fils
         for t in tuiles:
             lire(*t)
         return rgb
+    # Les tuiles forment un groupe (geopf.Groupe) : une tuile illisible rend
+    # l'image fausse, et dès son échec les autres ne partent plus et ne
+    # réessaient plus. Un cancel() n'y suffisait pas : chaque tuile a son fil,
+    # toutes « en cours » pour l'exécuteur, et deux partaient encore après
+    # l'échec de la première (reproduit hors réseau le 2 octobre 2026).
+    groupe = Groupe()
     with concurrent.futures.ThreadPoolExecutor(min(fils, len(tuiles)),
                                                thread_name_prefix="orthophoto") as bassin:
-        taches = [bassin.submit(lire, *t) for t in tuiles]
-        try:
-            for tache in taches:
-                tache.result()
-        except BaseException:
-            # Une tuile illisible rend l'image fausse : les tuiles pas encore
-            # parties ne le sont jamais.
-            for tache in taches:
-                tache.cancel()
-            raise
+        taches = [groupe.soumettre(bassin, lire, *t) for t in tuiles]
+        for tache in concurrent.futures.as_completed(taches):
+            if tache.exception() is not None:
+                # La cause plutôt que l'abandon d'une voisine, fini avant elle.
+                raise groupe.cause or tache.exception()
     return rgb
 
 

@@ -483,7 +483,7 @@ def _lire_ensemble(lectures, avancer, terrain):
     # fil, seulement une place vers la Géoplateforme (geopf.place).
     bassin = concurrent.futures.ThreadPoolExecutor(max_workers=len(lectures) + 1,
                                                    thread_name_prefix="lecture")
-    groupe = Groupe(de_scene=True)
+    groupe = Groupe()
     terrain_probable = Groupe(groupe)
     lu, terrain_tenu = {}, None
 
@@ -643,6 +643,9 @@ class Cache:
     # 1 000 m, dure de 5,3 à 6,7 s (trois essais), Gordes en zone de 1 000 m
     # jusqu'à 6,3 s sous une charge de 82 : 30 s laissent passer une scène,
     # même quatre fois plus lente, sans qu'une inférence ne la retarde.
+    # Pendant une panne de la Géoplateforme, une construction qui attend ses
+    # reprises (jusqu'à 96 s par requête, geopf) retient les détections des
+    # autres points à ce rythme d'une tuile toutes les 30 s par appel.
     CEDER_AU_PLUS_S = 30
 
     # Orthophotos partagées (prelire_vehicules) tenues en mémoire à la fois :

@@ -15,9 +15,8 @@ idempotents sur des URL dont la forme est vérifiée par ailleurs : réessayer n
 coûte qu'un aller-retour, publier une scène amputée coûte bien plus.
 
 Chaque requête prend une place (`place()`) : GEOPF_SIMULTANEES pour tout le
-processus, dont GEOPF_FOND au plus pour ce qui n'est pas une scène. Les
-lectures lancées ensemble forment un `Groupe` : dès que l'une échoue, les
-autres ne partent plus et ne réessaient plus.
+processus. Les lectures lancées ensemble forment un `Groupe` : dès que
+l'une échoue, les autres ne partent plus et ne réessaient plus.
 """
 
 import concurrent.futures
@@ -49,28 +48,18 @@ GEOPF_ATTENTE_S = 3
 # 15 % des requêtes WMS une à une (39 sur 264), 12 % à 4 à 32 à la fois (75
 # sur 612), sans reprise. get_avec_reprise les absorbe ; en parallèle, leurs
 # attentes se recouvrent au lieu de s'additionner.
-GEOPF_SIMULTANEES = 8
-# Places que peuvent prendre ensemble les lectures qui ne sont pas celles
-# d'une scène : les ouvrages et l'orthophoto à 0,2 m des détections, lus en
-# tâche de fond, partent juste avant la scène (Cache.prelire_*). Sans borne,
-# les six tuiles d'une zone de 1 000 m prenaient une fois sur deux les places
-# avant la scène, qui attendait derrière elles. Elle en garde ainsi au moins
-# 4, autant qu'il lui en faut (2,7 s à 4 et 2,9 s à 8, plus haut).
 #
-# Mesuré le 2 octobre 2026 à Gordes, zone de 1 000 m, réseau réel,
-# fetch_ortho_rgb et fetch_ouvrages lancés dans des fils juste avant
-# construire, comme le fait une demande ; Mac M4 chargé par d'autres
-# calculs, essais alternés, médianes [quartiles] :
-# - lectures de la scène : 3,20 s [2,83 ; 3,60] sans borne, 2,92 s
-#   [2,63 ; 3,59] avec (16 essais chacun) ; 2,6 à 2,9 s sans orthophoto à
-#   côté. Sans borne, la dernière requête de la scène partait après 1,8 à
-#   3,1 s dans 7 essais sur 16, au lieu de 0,5 à 0,7 s ;
-# - orthophoto des détections : 3,53 s → 4,12 s pendant la scène, 2,46 s →
-#   2,98 s seule (trois tuiles à la fois tant que les ouvrages lisent) ;
-# - « la scène prend d'abord » (une lecture de fond attend tant qu'une de
-#   scène attend), ajouté à la borne, 8 essais : 3,11 s pour la scène, 4,60 s
-#   pour l'orthophoto. Rien de gagné sur le réseau : écarté.
-GEOPF_FOND = 4
+# Les lectures de fond (ouvrages, orthophoto à 0,2 m des détections, ses six
+# tuiles en zone de 1 000 m) partent juste avant celles de la scène et
+# partagent ces places sans priorité : elles ne la ralentissent pas de façon
+# mesurable. Le 2 octobre 2026 à Gordes, zone de 1 000 m, réseau réel,
+# essais alternés, médianes [quartiles] : lectures de la scène 2,91 s
+# [2,82 ; 3,01] avec l'orthophoto lue à côté, 2,96 s seule (14 et 6
+# essais). Une borne de 4 places pour le fond, essayée : scène 3,00 s [2,84 ;
+# 3,56], orthophoto +0,7 s, ouvrages lus à côté d'elle +1,7 s ; écartée. Une
+# première série, sur une machine plus chargée, montrait l'effet inverse
+# (3,20 s sans borne, 2,92 s avec) : l'écart est dans le bruit.
+GEOPF_SIMULTANEES = 8
 
 
 class LectureAbandonnee(requests.RequestException):
@@ -106,15 +95,11 @@ class Groupe:
     Un groupe n'est abandonné que quand plus rien de ce qu'il lit ne sera
     utilisé — la scène échoue, `en_parallele` lève, le terrain lu d'avance
     n'est pas de la bonne source — : l'abandon ne change aucun résultat
-    rendu, il épargne des requêtes. `de_scene` non plus : il ne change que
-    l'ordre où partent les requêtes (`_Places`).
+    rendu, il épargne des requêtes.
     """
 
-    def __init__(self, parent=None, de_scene=False):
+    def __init__(self, parent=None):
         self.parent = parent
-        # Les lectures d'une scène ne comptent pas dans GEOPF_FOND, celles
-        # qu'elles lancent non plus.
-        self.de_scene = de_scene or (parent is not None and parent.de_scene)
         self.cause = None
         self._verrou = threading.Lock()
         self._abandonne = threading.Event()
@@ -153,36 +138,27 @@ class Groupe:
 
 
 class _Places:
-    """Les GEOPF_SIMULTANEES places du processus, dont GEOPF_FOND au plus
-    pour les lectures hors scène. Une condition plutôt qu'un sémaphore : une
-    lecture abandonnée quitte la file aussitôt, au lieu d'attendre une place
-    pour la rendre."""
+    """Les GEOPF_SIMULTANEES places du processus. Une condition plutôt
+    qu'un sémaphore : une lecture abandonnée quitte la file aussitôt, au
+    lieu d'attendre une place pour la rendre."""
 
-    def __init__(self, toutes, fond):
+    def __init__(self, toutes):
         self._condition = threading.Condition()
         self._libres = toutes
-        self._fond_libres = fond
 
     def prendre(self, groupe):
-        """Attend une place ; rend vrai si c'est une place de scène."""
-        de_scene = groupe is not None and groupe.de_scene
         with self._condition:
             while True:
                 if groupe is not None:
                     groupe.verifier()
-                if self._libres and (de_scene or self._fond_libres):
+                if self._libres:
                     break
                 self._condition.wait()
             self._libres -= 1
-            if not de_scene:
-                self._fond_libres -= 1
-        return de_scene
 
-    def rendre(self, de_scene):
+    def rendre(self):
         with self._condition:
             self._libres += 1
-            if not de_scene:
-                self._fond_libres += 1
             self._condition.notify_all()
 
     def reveiller(self):
@@ -191,7 +167,7 @@ class _Places:
             self._condition.notify_all()
 
 
-_places = _Places(GEOPF_SIMULTANEES, GEOPF_FOND)
+_places = _Places(GEOPF_SIMULTANEES)
 
 
 @contextlib.contextmanager
@@ -207,14 +183,15 @@ def place():
     """
     # Une requête en échec n'abandonne pas le groupe ici : la lecture peut
     # s'en remettre. C'est la lecture entière qui, en échouant, l'abandonne
-    # (Groupe._lancer) ; entre la place rendue et cet abandon, quelques
-    # microsecondes où une lecture en attente pourrait encore partir.
+    # (Groupe._lancer). Entre la place rendue et cet abandon — la fin de la
+    # lecture en échec, contrôles de sa réponse compris (image, BIL, JSON) —,
+    # une lecture en attente peut encore prendre la place et partir.
     places = _places                            # rendue là où elle a été prise
-    de_scene = places.prendre(_groupe.get())
+    places.prendre(_groupe.get())
     try:
         yield
     finally:
-        places.rendre(de_scene)
+        places.rendre()
 
 
 def en_parallele(*lectures):

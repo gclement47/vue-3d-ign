@@ -104,11 +104,11 @@ def test_un_repli_en_echec_n_abandonne_pas_la_scene(monkeypatch):
         valeur = 110.0 if f"LAYERS={mnh.MNT_LAYER}&" in url else 0.0
         return Reponse(struct.pack("<4f", *[valeur] * 4))
 
-    monkeypatch.setattr(geopf, "_places", geopf._Places(geopf.GEOPF_SIMULTANEES, geopf.GEOPF_FOND))
+    monkeypatch.setattr(geopf, "_places", geopf._Places(geopf.GEOPF_SIMULTANEES))
     monkeypatch.setattr(geopf.requests, "get", get)
     monkeypatch.setattr(geopf.time, "sleep", lambda s: None)
     monkeypatch.setattr(mnh, "dimensions_grille", lambda *a, **k: (2, 2))
-    groupe = geopf.Groupe(de_scene=True)
+    groupe = geopf.Groupe()
     with concurrent.futures.ThreadPoolExecutor(1) as bassin:
         grille = groupe.soumettre(bassin, mnh.fetch_mnh_grid, 5.19, 43.90, 5.1902,
                                   43.9002).result(timeout=5)

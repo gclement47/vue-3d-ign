@@ -16,9 +16,8 @@ _GRILLE = {"couvert": True, "width": 2, "height": 2, "source": "lidar_hd",
 
 @pytest.fixture(autouse=True)
 def places_neuves(monkeypatch):
-    """Des places à soi : une lecture laissée en cours par un autre test (une
-    requête réelle d'un lecteur par défaut) n'en prend aucune ici."""
-    monkeypatch.setattr(geopf, "_places", geopf._Places(geopf.GEOPF_SIMULTANEES, geopf.GEOPF_FOND))
+    """Des places à soi, que les autres tests ne tiennent pas."""
+    monkeypatch.setattr(geopf, "_places", geopf._Places(geopf.GEOPF_SIMULTANEES))
 
 
 class _Reponse:
@@ -102,7 +101,11 @@ def test_aucune_requete_ne_part_apres_une_scene_incomplete(monkeypatch):
         _attendre_les_fils("lecture")
     assert [url for url, apres in parties if apres] == []
     assert [url for url, _ in parties].count("grille") == geopf.GEOPF_ESSAIS
-    assert len(parties) == geopf.GEOPF_ESSAIS + geopf.GEOPF_SIMULTANEES - 1
+    # Au plus une de plus que les sept en vol : entre la place que rend la
+    # grille et l'abandon de son groupe, une lecture en attente peut la
+    # prendre (geopf.place). Forcé par sys.setswitchinterval(1e-6), cela
+    # arrivait 7 fois sur 10 ; jamais dans 300 passages ordinaires.
+    assert len(parties) <= geopf.GEOPF_ESSAIS + geopf.GEOPF_SIMULTANEES
 
 
 def test_l_echec_rapporte_est_celui_de_la_lecture_en_panne(monkeypatch):
@@ -183,7 +186,7 @@ def test_le_terrain_devenu_inutile_ne_part_pas_s_il_attend_sa_place(monkeypatch)
         terrain_attend.wait(5)
         return {**_GRILLE, "source": "mns_mnt"}
 
-    monkeypatch.setattr(geopf, "_places", Places(1, 1))
+    monkeypatch.setattr(geopf, "_places", Places(1))
     monkeypatch.setattr(geopf.requests, "get", get)
     monkeypatch.setattr(scene, "fetch_mnh_grid", grille)
     monkeypatch.setattr(scene, "fetch_sol_grid", sol)
@@ -247,48 +250,3 @@ def test_un_echec_du_terrain_lu_d_avance_n_arrete_pas_la_scene(monkeypatch):
     # couches WFS et le terrain relu.
     assert len(parties) == geopf.GEOPF_ESSAIS + 1 + 4 + 10 + 1
     assert parties.count("terrain mns_mnt") == 1
-
-
-def test_les_lectures_de_fond_laissent_des_places_a_la_scene():
-    """L'orthophoto des détections et les ouvrages, lus en tâche de fond,
-    partent juste avant la scène : ils ne prennent jamais plus de GEOPF_FOND
-    places, et la scène a les autres."""
-    import concurrent.futures
-    verrou = threading.Lock()
-    en_cours, pics = {"fond": 0, "scene": 0}, {"fond": 0, "scene": 0, "toutes": 0}
-    libere = threading.Event()
-    arrivees = threading.Semaphore(0)
-
-    def lecture(classe):
-        with geopf.place():
-            with verrou:
-                en_cours[classe] += 1
-                pics[classe] = max(pics[classe], en_cours[classe])
-                pics["toutes"] = max(pics["toutes"], sum(en_cours.values()))
-            arrivees.release()
-            libere.wait(5)
-            with verrou:
-                en_cours[classe] -= 1
-
-    fond = concurrent.futures.ThreadPoolExecutor(2 * geopf.GEOPF_SIMULTANEES)
-    lectures = concurrent.futures.ThreadPoolExecutor(2 * geopf.GEOPF_SIMULTANEES)
-    groupe = geopf.Groupe(de_scene=True)
-    try:
-        taches = [fond.submit(lecture, "fond") for _ in range(2 * geopf.GEOPF_SIMULTANEES)]
-        for _ in range(geopf.GEOPF_FOND):
-            assert arrivees.acquire(timeout=5)
-        taches += [groupe.soumettre(lectures, lecture, "scene")
-                   for _ in range(2 * geopf.GEOPF_SIMULTANEES)]
-        for _ in range(geopf.GEOPF_SIMULTANEES - geopf.GEOPF_FOND):
-            assert arrivees.acquire(timeout=5)
-        with verrou:
-            assert en_cours == {"fond": geopf.GEOPF_FOND,
-                                "scene": geopf.GEOPF_SIMULTANEES - geopf.GEOPF_FOND}
-    finally:
-        libere.set()
-    for tache in taches:
-        tache.result(timeout=5)
-    fond.shutdown()
-    lectures.shutdown()
-    assert pics["fond"] == geopf.GEOPF_FOND
-    assert pics["toutes"] == geopf.GEOPF_SIMULTANEES

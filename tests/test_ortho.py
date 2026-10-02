@@ -118,3 +118,35 @@ def test_une_tuile_illisible_fait_echouer_toute_l_orthophoto(monkeypatch):
     lat, delta = 45.7, 1000 / 2 / 111320
     with pytest.raises(requests.RequestException):
         ortho.fetch_ortho_rgb(4.8 - delta, lat - delta, 4.8 + delta, lat + delta, 0.2, fils=6)
+
+
+def test_une_tuile_en_echec_retient_celles_qui_attendent_leur_place(monkeypatch):
+    """Une seule place : la tuile du nord-ouest la tient, les autres
+    l'attendent, et celle du sud-est échoue. Aucune de celles qui attendaient
+    ne part, et l'erreur rapportée est celle de la tuile en panne. Avant le
+    groupe, deux tuiles partaient encore après l'échec de la première."""
+    import threading
+    import requests
+    from vue3d import geopf, ortho
+    monkeypatch.setattr(geopf, "_places", geopf._Places(1))
+    lat, delta = 45.7, 1000 / 2 / 111320
+    o, s, e, n = 4.8 - delta, lat - delta, 4.8 + delta, lat + delta
+    parties, tient, libere, echec = [], threading.Event(), threading.Event(), threading.Event()
+
+    def image(o_, s_, e_, n_, largeur, hauteur):
+        if abs(e_ - e) < 1e-9 and abs(s_ - s) < 1e-9:      # sud-est : en panne
+            tient.wait(5)
+            threading.Timer(0.3, libere.set).start()     # le nord-ouest finira ensuite
+            echec.set()
+            raise requests.RequestException("HTTP 400 sur la tuile du sud-est")
+        with geopf.place():
+            parties.append(((o_, n_), echec.is_set()))
+            if abs(o_ - o) < 1e-9 and abs(n_ - n) < 1e-9:  # nord-ouest : tient la place
+                tient.set()
+                libere.wait(5)
+        return _jpeg(np.zeros((hauteur, largeur, 3)))
+
+    monkeypatch.setattr(ortho, "_image_wms", image)
+    with pytest.raises(requests.RequestException, match="sud-est"):
+        ortho.fetch_ortho_rgb(o, s, e, n, 0.2, fils=6)
+    assert [apres for _, apres in parties] == [False]

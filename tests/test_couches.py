@@ -46,10 +46,8 @@ def test_les_quarts_sont_lus_ensemble(monkeypatch):
     import threading
 
     from vue3d import geopf
-    # Des places à soi : hors d'une scène, les quarts n'en ont que
-    # GEOPF_FOND, et une requête laissée en cours par un autre test (celle
-    # d'un lecteur par défaut) en tiendrait une.
-    monkeypatch.setattr(geopf, "_places", geopf._Places(geopf.GEOPF_SIMULTANEES, geopf.GEOPF_FOND))
+    # Des places à soi, que les autres tests ne tiennent pas.
+    monkeypatch.setattr(geopf, "_places", geopf._Places(geopf.GEOPF_SIMULTANEES))
     objets = [(f"b.{i}", 0.1 + 0.2 * (i % 5), 0.1 + 0.2 * (i // 5)) for i in range(25)]
     objets.append(("b.milieu", 0.5, 0.5))
     service = _service(objets, plafond=10)

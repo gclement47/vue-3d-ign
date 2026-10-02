@@ -64,9 +64,12 @@ def client_vehicules(tmp_path):
 
     lecteur = types.SimpleNamespace(mode="rtmdet", detecteurs=("rtmdet",), orthophoto=orthophoto,
                                     piscines=lire_piscines, vehicules=lire_vehicules)
+    # Les ouvrages aussi sont doublés : sans cela, /api/scene lançait le vrai
+    # fetch_ouvrages, et la suite appelait la Géoplateforme (six connexions
+    # par passage, relevées le 2 octobre 2026).
     appli = module_app.creer_app(str(tmp_path), construire=construire,
                                  lire_monuments=lambda *b: {"elements": []},
-                                 lire_vehicules=lecteur)
+                                 lire_ouvrages=lambda *b: {}, lire_vehicules=lecteur)
     return appli.test_client()
 
 
