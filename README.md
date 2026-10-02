@@ -75,20 +75,30 @@ les détecteurs sur CoreML (voir plus bas), que le conteneur n'atteint pas.
 Il prend les mêmes variables que `docker-compose.yml` (`VUE3D_VEHICULES`,
 mais `tous` par défaut ; `VUE3D_PANNEAUX=oui` ; `VUE3D_PORT`), et `VUE3D_MOTEUR`. Ses
 fichiers sont à côté du dépôt, ignorés par git : `./cache` pour les scènes,
-`./modeles` pour les réseaux. À préparer une fois :
+`./modeles` pour les réseaux.
+
+Seul prérequis : [uv](https://docs.astral.sh/uv/) (`brew install uv`) ou
+`python3.12`. Au premier lancement, le script prépare tout seul :
+
+- **le `.venv`**, en Python 3.12 comme l'image. Il refuse un `.venv` dans une
+  autre version : en 3.14, la segmentation des arbres rend 0 houppier sans
+  la moindre erreur. À chaque lancement, il y installe les versions exactes
+  des dépendances, une fraction de seconde quand elles y sont déjà ;
+- **les réseaux** dans `./modeles` (`outils/preparer_modeles.sh`), les mêmes
+  que ceux de l'image Docker : environ 1 Go à télécharger dans un
+  environnement jetable, effacé ensuite, et une minute sur un Mac M4.
+
+Si une image a déjà été construite avec `VUE3D_VEHICULES`, copier ses
+réseaux est plus rapide, et ses scènes avec :
 
 ```bash
-python3.12 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt -r requirements-vehicules.txt
-docker cp vue-3d-ign-vue3d-1:/modeles ./modeles   # les réseaux d'une image construite avec VUE3D_VEHICULES
-docker cp vue-3d-ign-vue3d-1:/cache ./cache       # facultatif : les scènes déjà construites dans Docker
-docker compose stop                               # libère le port 8080
+docker cp vue-3d-ign-vue3d-1:/modeles ./modeles
+docker cp vue-3d-ign-vue3d-1:/cache ./cache       # facultatif : les scènes déjà construites
 ```
 
-Un `.venv` créé par uv n'a pas pip : `uv pip install --python .venv/bin/python
--r …`. Le script refuse de démarrer, en disant quoi faire, si le port est
-déjà écouté (le conteneur), si onnxruntime manque ou s'il n'y a pas de
-`.venv`. Revenir à Docker : Ctrl-C, puis `docker compose start`.
+Le script refuse de démarrer, en disant quoi faire, si le port est déjà
+écouté : `docker compose stop` libère celui du conteneur. Revenir à Docker :
+Ctrl-C, puis `docker compose start`.
 
 ### Les véhicules et les piscines, en option
 
@@ -182,12 +192,13 @@ pip install -r requirements.txt
 VUE3D_CACHE=./cache flask --app vue3d.app run --port 8080
 ```
 
-Les véhicules, sans Docker : exporter les réseaux une fois, dans un
-environnement à part (les commandes d'installation sont dans le `Dockerfile`,
-étage `export`), puis lancer le serveur avec le moteur d'inférence.
+Les véhicules, sans Docker : exporter les réseaux une fois (dans un
+environnement jetable, avec les versions de l'étage `export` du
+`Dockerfile`), puis lancer le serveur avec le moteur d'inférence.
+`run_macOS_CoreML.sh` fait les deux.
 
 ```bash
-python outils/exporter_vehicules.py rtmdet modeles/     # dans l'environnement d'export
+outils/preparer_modeles.sh rtmdet ./modeles           # rtmdet | yolo | tous
 pip install -r requirements-vehicules.txt               # dans .venv
 VUE3D_VEHICULES=rtmdet VUE3D_MODELES=./modeles VUE3D_CACHE=./cache flask --app vue3d.app run --port 8080
 ```

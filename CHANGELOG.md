@@ -128,6 +128,16 @@ messages de commit et dans les commentaires des modules.
 
 ### Corrigé
 
+- **`run_macOS_CoreML.sh` démarre sur un clone neuf.** Lancé avec les deux
+  détecteurs par défaut, il s'arrêtait aussitôt : les réseaux ne sont pas
+  dans le dépôt, seule l'image Docker les fabriquait. Au premier lancement,
+  il les exporte désormais lui-même (`outils/preparer_modeles.sh`, une
+  minute environ sur un Mac M4), avec les versions de l'image : RTMDet-R
+  identique à l'octet, YOLO à la date d'export près. Il crée aussi le
+  `.venv` en Python 3.12 et y installe les dépendances, et refuse un
+  `.venv` dans une autre version (en 3.14, 0 houppier) : seul prérequis,
+  uv ou python3.12. L'erreur, pour qui lance le serveur autrement, donne la
+  commande d'export.
 - **Une scène en échec ne lance plus de requête.** Quand une lecture
   échoue, celles qui attendent leur place ne partent plus et celles en cours
   ne réessaient plus : dans un scénario rejoué hors réseau, 16 requêtes

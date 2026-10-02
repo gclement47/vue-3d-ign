@@ -361,7 +361,8 @@ def charger(mode, dossier, moteur=None):
         if not os.path.exists(chemin):
             raise VehiculesMalConfigures(
                 f"VUE3D_VEHICULES={mode} demande {chemin}, introuvable : "
-                f"python outils/exporter_vehicules.py {nom} {dossier}")
+                f"outils/preparer_modeles.sh {nom} {dossier} l'exporte (sans Docker), "
+                "ou VUE3D_VEHICULES=aucun démarre sans détecteur")
         options = onnxruntime.SessionOptions()
         # Au processeur, sans l'arène d'onnxruntime, qui garde tout ce
         # qu'elle a pris : après les quatre appels simultanés de

@@ -316,5 +316,9 @@ autoriser_bassin(chauffer=not (os.environ.get("FLASK_DEBUG") == "1"
 
 # Le détecteur de VUE3D_VEHICULES et le registre de VUE3D_PANNEAUX sont
 # chargés ici, une fois : demandés sans leur réseau ou leur base, ils
-# arrêtent le démarrage, avec la commande qui les produit.
-app = creer_app(lire_vehicules=lecteur_vehicules(), lire_panneaux=lecteur_panneaux())
+# arrêtent le démarrage, avec la commande qui les produit. Sur deux lignes :
+# une trace d'erreur sur la ligne commune laissait croire que les panneaux
+# étaient en cause quand c'était le réseau des véhicules qui manquait.
+lire_vehicules = lecteur_vehicules()
+lire_panneaux = lecteur_panneaux()
+app = creer_app(lire_vehicules=lire_vehicules, lire_panneaux=lire_panneaux)

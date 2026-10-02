@@ -490,6 +490,7 @@ direct. Ils écrivent leurs sorties dans `cache/mesures/`, ignoré par git.
 | `mesure_constructions.py` | Réservoirs, constructions ponctuelles et ouvrages sur des lieux réels : hauteurs, effet du masque sur les houppiers, masses expliquées |
 | `mesure_vehicules.py` | Véhicules et piscines sur des lieux réels, par le vrai chemin de la couche : comptes selon le seuil, la tuile et son recouvrement, gabarits, accord entre les deux détecteurs, images annotées, planches de vignettes des piscines ; demande les réseaux exportés et `requirements-vehicules.txt` |
 | `exporter_vehicules.py` | Pas une mesure : télécharge les poids de RTMDet-R ou de YOLO11-OBB et les convertit en ONNX ; tourne dans l'étage `export` du Dockerfile |
+| `preparer_modeles.sh` | Pas une mesure : le même export sans Docker, dans un environnement Python jetable aux versions du Dockerfile ; seuls les `.onnx` restent. `run_macOS_CoreML.sh` l'appelle quand un réseau manque |
 | `preparer_panneaux.py` | Pas une mesure : télécharge le registre OpenPVMapper et en fait la base SQLite de la couche des panneaux ; même étage du Dockerfile |
 | `prototype_plans.py` | Couverture de la segmentation en plans selon les tolérances |
 | `prototype_brep.py` | Étanchéité des volumes, avec export OBJ et visionneuse 3D |
