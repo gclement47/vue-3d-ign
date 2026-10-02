@@ -362,15 +362,23 @@ attente.innerHTML = 'Construction de la scène…<br><small>20 à 40 s la premi�
 const demandeScene = window.DEMANDE_SCENE && window.DEMANDE_SCENE.url === URL_VUE3D
     ? window.DEMANDE_SCENE.reponse : fetch(URL_VUE3D);
 // Premières demandes de l'orthophoto et des couches à part, envoyées dès que
-// la scène répond : elle est alors écrite, et le serveur prépare le reste
-// pendant que la page lit la scène et construit ses maillages. Elles
-// partaient après le relief et les bâtiments, et les piscines après la
-// végétation et la première image : à Gordes, scène en cache, à 3,1 s et
-// 9,0 s de la navigation, contre 1,4 s pour toutes désormais (médianes de
-// trois chargements, outils/chrono-page.mjs). Pas les véhicules : à six
-// connexions par serveur, des demandes qui attendent une détection de
-// plusieurs minutes bloqueraient les autres. Chaque chargeur prend la sienne
-// à son premier essai (requete).
+// la scène est reçue : elle est alors écrite, et le serveur prépare le reste
+// pendant que la page construit ses maillages. Elles partaient après le
+// relief et les bâtiments, et les piscines après la végétation et la
+// première image : à Gordes, scène en cache, à 3,1 s et 9,0 s de la
+// navigation, contre 1,4 s pour toutes désormais (médianes de trois
+// chargements, outils/chrono-page.mjs). Une fois le corps de la scène reçu,
+// pas dès ses en-têtes : l'orthophoto (138 Ko à Gordes, 670 Ko en zone de
+// 1 000 m) et cinq autres demandes partaient pendant que la scène (245 Ko,
+// 1,1 à 1,4 Mo en zone de 1 000 m) arrivait encore ; sur un lien lent, elles
+// lui prenaient de la bande passante, et sept demandes à la fois dépassent
+// les six connexions par serveur de HTTP/1.1. En local, cela ne coûte que le
+// décodage du JSON : les réponses arrivent 20 à 30 ms après la fin de la
+// scène au lieu de 0 à 30 ms avant (Gordes en zone de 1 000 m, scène en
+// cache, Chrome), pourvu que la page rende la main une fois avant ses
+// maillages (plus bas). Pas les véhicules : des demandes qui attendent une
+// détection de plusieurs minutes bloqueraient les autres. Chaque chargeur
+// prend la sienne à son premier essai (requete).
 const demandesAnticipees = new Map();
 function demanderSuite() {
     for (const [url, options] of [
@@ -393,8 +401,14 @@ function requete(url, options, charger = fetch) {
 const chargementArtefact = demandeScene
     .then(async r => {
         if (r.ok) {
+            const a = await r.json();
             demanderSuite();
-            return r.json();
+            // La main rendue une fois : Chrome n'envoie ces demandes qu'à une
+            // tâche suivante. Sans cela, elles partaient après les maillages,
+            // 413 ms après la fin de la scène à Gordes en zone de 1 000 m,
+            // contre 20 ms ainsi.
+            await new Promise(ok => setTimeout(ok));
+            return a;
         }
         const corps = await r.json().catch(() => ({}));
         throw new Error(corps.erreur || `HTTP ${r.status}`);
@@ -408,6 +422,29 @@ const chargementArtefact = demandeScene
 // Suivi de la construction : pendant l'attente, le serveur dit à quelle étape
 // il en est (/api/avancement). Une scène déjà en cache arrive avant la
 // première question. Un confort : son échec ne touche pas la scène.
+//
+// Part de la barre que remplissent les lectures, puis les toitures ; les
+// houppiers et l'envoi de la scène ont le reste. Les étapes comptées une à
+// une, les seize lectures faisaient 89 % de la barre : elles finissent
+// ensemble en 3 s environ, et la barre restait à 89 % pendant tout le calcul.
+// Durées mesurées en zone de 1 000 m, depuis /api/avancement (médianes de six
+// constructions, trois natives et trois dans le conteneur, charge de 56 à 72) :
+// lectures 3,1 s, toitures 0,7 s, houppiers et envoi 1,1 s à Gordes
+// (63 / 14 / 23 %) ; 2,7, 2,8 et 1,3 s à Strasbourg (40 / 41 / 19 %). En
+// moyenne 52 / 27 / 21 %, arrondi. L'emprise par défaut donne 68 et 70 % aux
+// lectures (1,2 et 1,8 s en tout) : la barre y passe vite de toute façon.
+const PART_LECTURES = 0.5, PART_TOITURES = 0.3;
+/**
+ * Part de la construction faite quand le serveur annonce l'étape `etape` sur
+ * `total` : les étapes terminées, pas celle en cours. Les deux dernières sont
+ * les toitures et les houppiers (scene.ETAPES_SCENE), les autres des
+ * lectures, comptées chacune pour autant.
+ */
+function partConstruite(etape, total) {
+    const lectures = total - 2;
+    if (etape <= lectures) return PART_LECTURES * Math.max(etape - 1, 0) / lectures;
+    return etape === lectures + 1 ? PART_LECTURES : PART_LECTURES + PART_TOITURES;
+}
 const suiviConstruction = setInterval(async () => {
     try {
         const r = await fetch(`api/avancement?${REQUETE}`, { cache: 'no-store' });
@@ -415,8 +452,7 @@ const suiviConstruction = setInterval(async () => {
         if (!a || a.etat !== 'construction' || ARTEFACT || ERREUR_SCENE) return;
         attente.innerHTML = '<div>Construction de la scène…<br><small>'
             + `étape ${a.etape} sur ${a.total} : ${a.libelle} · ${a.secondes} s</small>`
-            // La barre compte les étapes terminées, pas celle en cours.
-            + `<div class="avancement"><i style="width:${Math.round(100 * (a.etape - 1) / a.total)}%"></i></div></div>`;
+            + `<div class="avancement"><i style="width:${Math.round(100 * partConstruite(a.etape, a.total))}%"></i></div></div>`;
     } catch (e) { /* réseau coupé : le message d'attente d'origine reste */ }
 }, 500);
 chargementArtefact.finally(() => clearInterval(suiviConstruction));
@@ -614,10 +650,10 @@ function geometrieFacettes(pos) {
 /**
  * Normales pliées : ce que rend toCreasedNormals(geo, angle) de
  * BufferGeometryUtils (three r160) sur une géométrie non indexée. Les sommets
- * sont regroupés au centimètre comme là-bas (~~(v × 100,000001) par
- * composante), mais sans en faire des chaînes ; la normale d'un sommet est la
- * somme, dans l'ordre des faces, des normales des faces de son groupe à moins
- * de `angle` de la sienne, normée.
+ * sont regroupés au centimètre comme là-bas (~~(v × (1 + 1e-10) × 100), soit
+ * v × 100,00000001, par composante), mais sans en faire des chaînes ; la
+ * normale d'un sommet est la somme, dans l'ordre des faces, des normales des
+ * faces de son groupe à moins de `angle` de la sienne, normée.
  */
 function normalesPliees(geo, angle) {
     const pos = geo.attributes.position.array;
@@ -5574,19 +5610,25 @@ dimensionner();
 // image à Gordes (profil CPU de Chrome). Ils sont compilés ici, pendant que le
 // serveur répond, sur un triangle par matériau, éclairé comme la scène ; la
 // scène n'en reçoit rien, et three.js retrouve chaque programme par sa clé.
+// Un confort, rien de plus : un échec, même levé avant la promesse, laisse la
+// première image compiler ce qui lui manque, et la boucle de rendu démarre.
 {
     const triangle = new THREE.BufferGeometry();
-    triangle.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0], 3));
-    triangle.setAttribute('normal', new THREE.Float32BufferAttribute([0, 0, 1, 0, 0, 1, 0, 0, 1], 3));
-    const essai = new THREE.Group();
-    for (const m of [MAT_CIBLE, MAT_VOISIN, MAT_TOIT_VOISIN, MAT_TOIT_SURFACE, MAT_INCONNU, MAT_DESSUS,
-                     MAT_TERRAIN, MAT_EAU, MAT_EAU_INTERMITTENTE, MAT_ROUTE, MAT_CHEMIN, MAT_PYLONE,
-                     MAT_RESERVOIR, MAT_CHEMINEE, MAT_TOUR, MAT_FEUILLAGE, MAT_MASSE]) {
-        essai.add(new THREE.Mesh(triangle, m));
+    try {
+        triangle.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0], 3));
+        triangle.setAttribute('normal', new THREE.Float32BufferAttribute([0, 0, 1, 0, 0, 1, 0, 0, 1], 3));
+        const essai = new THREE.Group();
+        for (const m of [MAT_CIBLE, MAT_VOISIN, MAT_TOIT_VOISIN, MAT_TOIT_SURFACE, MAT_INCONNU, MAT_DESSUS,
+                         MAT_TERRAIN, MAT_EAU, MAT_EAU_INTERMITTENTE, MAT_ROUTE, MAT_CHEMIN, MAT_PYLONE,
+                         MAT_RESERVOIR, MAT_CHEMINEE, MAT_TOUR, MAT_FEUILLAGE, MAT_MASSE]) {
+            essai.add(new THREE.Mesh(triangle, m));
+        }
+        essai.add(new THREE.InstancedMesh(triangle, MAT_TRONC, 1));
+        essai.add(new THREE.LineSegments(triangle, MAT_CABLE), new THREE.LineSegments(triangle, MAT_CONTOUR_CIBLE));
+        renderer.compileAsync(essai, camera, scene).catch(() => {}).finally(() => triangle.dispose());
+    } catch (e) {
+        triangle.dispose();          // préchauffage manqué : la première image compilera
     }
-    essai.add(new THREE.InstancedMesh(triangle, MAT_TRONC, 1));
-    essai.add(new THREE.LineSegments(triangle, MAT_CABLE), new THREE.LineSegments(triangle, MAT_CONTOUR_CIBLE));
-    renderer.compileAsync(essai, camera, scene).catch(() => {}).finally(() => triangle.dispose());
 }
 
 let precedent = performance.now();

@@ -8,7 +8,7 @@
 //   npm install three@0.160.0          # ignoré par git, comme puppeteer-core
 //   node outils/verifier-geometrie.mjs
 //
-// Deux familles de contrôles :
+// Les contrôles :
 // - volumes des ouvrages (prismeLeLong, dalle) : fermés — chaque arête portée
 //   par deux triangles, en sens opposés — et de volume positif, donc orientés
 //   vers l'extérieur ;
@@ -21,13 +21,15 @@
 // - normales et sphères englobantes que la page calcule elle-même, pour aller
 //   plus vite (normalesFacettes, normalesPliees, normalesIndexees,
 //   sphereEnglobante) : identiques à l'octet à celles de three.js
-//   (computeVertexNormals, toCreasedNormals, computeBoundingSphere) ; tampon
-//   des houppiers en tableaux typés : identique à l'ancien, en tableaux
-//   JavaScript, et à la taille annoncée par facesHouppier ; végétation sans
-//   les masses qu'expliquent les ouvrages (vegetationExtraite) : identique à
-//   sa reconstruction.
+//   (computeVertexNormals, toCreasedNormals, computeBoundingSphere) ;
+//   houppiers (ajouterHouppier) et leur tampon en tableaux typés : identiques
+//   à ceux de la page d'origine (bc716ba), recopiés ici, et à la taille
+//   annoncée par facesHouppier ; végétation sans les masses qu'expliquent les
+//   ouvrages (vegetationExtraite) : identique à sa reconstruction ;
+// - barre d'avancement (partConstruite) : croissante, d'accord avec les étapes
+//   que compte le serveur.
 //
-// Sort en erreur au premier contrôle manqué.
+// Sort en erreur si un contrôle est manqué, après les avoir tous faits.
 import * as THREE from 'three';
 import { toCreasedNormals } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import fs from 'fs';
@@ -64,14 +66,15 @@ const NOMS = ['couperPolygone', 'enveloppeConvexe', 'rectangleMin', 'rectangleSe
               'blocsVehicule', 'repereVehicule', 'normalesFacettes', 'poserNormaleFacette', 'geometrieFacettes',
               'normalesPliees', 'normalesIndexees', 'sphereEnglobante',
               'alea', 'portDe', 'portMesure', 'facesHouppier', 'ajouterHouppier', 'nouveauTampon',
-              'vegetationExtraite'];
+              'vegetationExtraite', 'partConstruite'];
 const CONSTS = ['PORTS', 'SEGMENTS_HOUPPIER', 'ANGLES_HOUPPIER', 'COS_HOUPPIER', 'BOSSES_HOUPPIER',
-                'EMPRISE_HOUPPIER', 'HAUTEUR_MIN_TRONC'];
+                'EMPRISE_HOUPPIER', 'HAUTEUR_MIN_TRONC', 'PART_LECTURES'];
 const { rectangleMin, rectangleSelonAxe, geometrieToitDecoupe, stationsLeLong, prismeLeLong, dalle,
         blocsVehicule, repereVehicule, normalesFacettes, normalesPliees, normalesIndexees, sphereEnglobante,
-        facesHouppier, ajouterHouppier, nouveauTampon, vegetationExtraite } =
+        alea, portDe, facesHouppier, ajouterHouppier, nouveauTampon, vegetationExtraite, partConstruite,
+        SEGMENTS_HOUPPIER, EMPRISE_HOUPPIER, HAUTEUR_MIN_TRONC, PART_LECTURES } =
   new Function('THREE', 'toLocal', CONSTS.map(extraireConst).join('\n') + '\n' + NOMS.map(extraire).join('\n')
-               + `\nreturn { ${NOMS.join(', ')} };`)(THREE, toLocal);
+               + `\nreturn { ${NOMS.concat(CONSTS).join(', ')} };`)(THREE, toLocal);
 let tout = true;
 
 // --- Volumes des ouvrages ---------------------------------------------------
@@ -346,10 +349,72 @@ tout = tout && ok;
 }
 
 // --- Tampon des houppiers ----------------------------------------------------------
-// L'ancien tampon, en tableaux JavaScript et computeVertexNormals, sert de
-// référence : le nouveau, en tableaux typés, doit rendre les mêmes octets, à
-// la taille exacte annoncée par facesHouppier comme en s'agrandissant.
+// La page d'origine (bc716ba) sert de référence : son tampon, en tableaux
+// JavaScript et computeVertexNormals, et son ajouterHouppier, dont la boucle
+// d'anneaux tirait le lobage (th, bosse) et ses cosinus et sinus à chaque
+// anneau. La page les calcule une fois par houppier, et écrit dans des
+// tableaux typés : elle doit rendre les mêmes octets, à la taille exacte
+// annoncée par facesHouppier comme en s'agrandissant. Prendre des deux côtés
+// l'ajouterHouppier de la page laissait passer tout écart dans sa boucle.
+// Une forme de houppier changée exprès se reporte ici, dans la référence.
 {
+function ajouterHouppierOrigine(tampon, el, sol) {
+  const port = portDe(el);
+  const h = el.h;
+  const p = el.profil && el.profil.length ? el.profil : [1, 0.9, 0.8, 0.7, 0.6, 0.5];
+  const nb = p.length;
+  const etirement = Math.sqrt(Math.max(el.allongement || 1, 1));
+  const rBase = Math.max(el.r * EMPRISE_HOUPPIER, 0.5);
+  const a = rBase * etirement;
+  const b = Math.max(rBase / etirement, 0.4);
+  const axe = (el.axe_deg || 0) * Math.PI / 180;
+  const hBase = h >= HAUTEUR_MIN_TRONC ? h * port.tronc : 0;
+  const hMin = hBase + Math.max(0.4, h * 0.08);
+  const g = alea(el.lon, el.lat);
+  const teinte = 0.9 + g * 0.2;
+  const anneaux = [{ u: 0, y: h }];
+  for (let k = 0; k < nb; k++) anneaux.push({ u: (k + 0.5) / nb, y: Math.max(p[k] * h, hMin) });
+  const yBord = Math.max(p[nb - 1] * h - Math.min(0.8, (h - hBase) * 0.08), hBase + 0.3);
+  anneaux.push({ u: 1.0, y: yBord });
+  const montee = Math.min(0.6, (h - hBase) * 0.04);
+  anneaux.push({ u: 1.0, y: hBase });
+  anneaux.push({ u: 0.6, y: hBase + montee * 0.7 });
+  anneaux.push({ u: 0, y: hBase + montee });
+  const couleur = new THREE.Color();
+  const cx = el.x, cz = -el.y;
+  const cosA = Math.cos(axe), sinA = Math.sin(axe);
+  const pts = [];
+  for (let i = 0; i < anneaux.length; i++) {
+    const { u, y } = anneaux[i];
+    const t = (y - hBase) / Math.max(h - hBase, 0.1);
+    couleur.copy(port.base).lerp(port.cime, Math.max(0, Math.min(1, t))).multiplyScalar(teinte);
+    const ligne = [];
+    const interieur = u > 0 && u < 1;
+    for (let s = 0; s < SEGMENTS_HOUPPIER; s++) {
+      const th = s / SEGMENTS_HOUPPIER * Math.PI * 2;
+      const bosse = 1 + 0.10 * Math.sin(3 * th + g * 6.28)
+                      + 0.08 * (alea(el.lon + s, el.lat) - 0.5);
+      const ex = a * u * bosse * Math.cos(th), ez = b * u * bosse * Math.sin(th);
+      const x = cx + ex * cosA - ez * sinA;
+      const z = cz - (ex * sinA + ez * cosA);
+      const dy = interieur
+        ? (alea(el.lat + i, el.lon + s) - 0.5) * Math.min(0.9, (h - hBase) * 0.07)
+        : 0;
+      ligne.push(tampon.sommet(x, sol + y + dy, z, couleur));
+    }
+    pts.push(ligne);
+  }
+  let faces = 0;
+  for (let i = 0; i + 1 < anneaux.length; i++) {
+    for (let s = 0; s < SEGMENTS_HOUPPIER; s++) {
+      const s1 = (s + 1) % SEGMENTS_HOUPPIER;
+      tampon.face(pts[i][s], pts[i + 1][s], pts[i + 1][s1]);
+      tampon.face(pts[i][s], pts[i + 1][s1], pts[i][s1]);
+      faces += 2;
+    }
+  }
+  return faces;
+}
 function ancienTampon() {
   const sommets = [], positions = [], couleurs = [], elements = [];
   let courant = 0;
@@ -381,22 +446,28 @@ const elements = Array.from({ length: 300 }, (_, k) => {
            axe_deg: 360 * hasard(), profil, classe: k % 3 ? 'vegetation' : 'sursol',
            essence: ['Pin', 'Chêne', 'Mixte', ''][k % 4], nature: ['Bois', 'Haie', ''][k % 3] };
 });
-const construireAvec = tampon => {
+// Base à 0, comme la page (construireVegetation) : placerVegetation la pose.
+const construireAvec = (tampon, ajouter = ajouterHouppier) => {
   let faces = 0, annonce = 0;
-  elements.forEach((el, n) => { tampon.element(n); const f = ajouterHouppier(tampon, el, 0); faces += f; annonce += facesHouppier(el); if (f !== facesHouppier(el)) faces = NaN; });
+  elements.forEach((el, n) => { tampon.element(n); const f = ajouter(tampon, el, 0); faces += f; annonce += facesHouppier(el); if (f !== facesHouppier(el)) faces = NaN; });
   return { geo: tampon.geometrie(), faces, annonce };
 };
-const ref = construireAvec(ancienTampon());
-let ok = Number.isFinite(ref.faces) && ref.faces === ref.annonce;
 const memes = (a, b) => a.length === b.length && Buffer.compare(Buffer.from(a.buffer, a.byteOffset, a.byteLength),
                                                                  Buffer.from(b.buffer, b.byteOffset, b.byteLength)) === 0;
-for (const t of [nouveauTampon(ref.annonce), nouveauTampon(7), nouveauTampon()]) {
-  const { geo } = construireAvec(t);
-  for (const n of ['position', 'color', 'normal']) ok = memes(geo.attributes[n].array, ref.geo.attributes[n].array) && ok;
-  for (const n of ['baseY', 'elements']) ok = memes(geo.userData[n], ref.geo.userData[n]) && ok;
-}
+const pareilles = (a, b) => ['position', 'color', 'normal'].every(n => memes(a.attributes[n].array, b.attributes[n].array))
+                            && ['baseY', 'elements'].every(n => memes(a.userData[n], b.userData[n]));
+// La page d'origine entière, tampon et houppier : la référence.
+const ref = construireAvec(ancienTampon(), ajouterHouppierOrigine);
+// Le houppier de la page seul, dans l'ancien tampon : un écart ici est dans
+// sa boucle d'anneaux, pas dans le tampon.
+const seul = construireAvec(ancienTampon());
+const okH = Number.isFinite(ref.faces) && seul.faces === ref.faces && pareilles(seul.geo, ref.geo);
+console.log(`${okH ? 'OK ' : 'KO '} houppiers de la page contre la boucle d'anneaux d'origine (bc716ba) : ${elements.length} éléments, ${seul.faces} faces, ${okH ? 'identiques à l\'octet' : 'DIFFÉRENTS'}`);
+// Puis le nouveau tampon : la page d'aujourd'hui contre celle d'origine.
+let ok = Number.isFinite(ref.faces) && ref.faces === ref.annonce;
+for (const t of [nouveauTampon(ref.annonce), nouveauTampon(7), nouveauTampon()]) ok = pareilles(construireAvec(t).geo, ref.geo) && ok;
 console.log(`${ok ? 'OK ' : 'KO '} tampon des houppiers : ${elements.length} éléments, ${ref.faces} faces (${ref.annonce} annoncées), identique à l'ancien en tableaux JavaScript`);
-tout = tout && ok;
+tout = tout && okH && ok;
 
 // Masses retirées par les ouvrages : la géométrie recopiée d'un maillage déjà
 // posé sur le relief doit être celle du tampon pour les éléments restants.
@@ -421,6 +492,23 @@ for (const n of ['baseY', 'elements']) okE = okE && memes(extrait.geometrie.user
 okE = okE && vegetationExtraite(mesh, [elements[5], elements[2]]) === null;          // hors d'ordre
 console.log(`${okE ? 'OK ' : 'KO '} végétation sans les masses retirées : ${restants.length} éléments sur ${elements.length}, recopiés à l'identique de la reconstruction`);
 tout = tout && okE;
+}
+
+// --- Barre d'avancement ---------------------------------------------------------
+// Pas de la géométrie, mais du code de la page qu'aucun test Python ne voit.
+// partConstruite suppose que les deux dernières étapes du serveur sont les
+// toitures et les houppiers (vue3d/scene.py) : lu là-bas, pas recopié ici.
+{
+const scene = fs.readFileSync(fileURLToPath(new URL('../vue3d/scene.py', import.meta.url)), 'utf8');
+const total = Number(/^ETAPES_SCENE = (\d+)$/m.exec(scene)?.[1]);
+const calculs = (/ETAPES_DE_CALCUL = frozenset\(\{([^}]*)\}\)/.exec(scene)?.[1].match(/"[^"]*"/g) || []).length;
+const parts = Array.from({ length: total }, (_, k) => partConstruite(k + 1, total));
+const croissante = parts.every((p, k) => k === 0 || p > parts[k - 1]);
+const ok = total > 2 && calculs === 2 && parts[0] === 0 && croissante && parts[total - 1] < 1
+           && parts[total - 2] === PART_LECTURES && parts[total - 3] < PART_LECTURES;
+console.log(`${ok ? 'OK ' : 'KO '} barre d'avancement : ${total} étapes dont ${calculs} de calcul, `
+            + `${parts.map(p => Math.round(100 * p)).join(' ')} %`);
+tout = tout && ok;
 }
 
 process.exit(tout ? 0 : 1);
