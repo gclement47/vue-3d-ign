@@ -406,8 +406,15 @@ const chargementArtefact = demandeScene
             // La main rendue une fois : Chrome n'envoie ces demandes qu'à une
             // tâche suivante. Sans cela, elles partaient après les maillages,
             // 413 ms après la fin de la scène à Gordes en zone de 1 000 m,
-            // contre 20 ms ainsi.
-            await new Promise(ok => setTimeout(ok));
+            // contre 20 ms ainsi. Par un MessageChannel plutôt qu'un
+            // setTimeout : dans un onglet en arrière-plan, Chrome aligne les
+            // minuteries sur des réveils d'une seconde, pas les messages
+            // (envoi à +16 à +23 ms, mesuré à la contre-vérification).
+            await new Promise(ok => {
+                const canal = new MessageChannel();
+                canal.port1.onmessage = () => ok();
+                canal.port2.postMessage(0);
+            });
             return a;
         }
         const corps = await r.json().catch(() => ({}));
