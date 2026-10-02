@@ -1,6 +1,7 @@
 """Cache des scènes (vue3d/scene.py) : clé, complétude, verrou."""
 import os
 import threading
+import time
 
 import pytest
 
@@ -906,11 +907,14 @@ def test_une_detection_n_attend_pas_plus_de_ceder_au_plus_s(tmp_path, monkeypatc
     fil_scene.start()
     lectures.wait(5)
     fil_detection = threading.Thread(target=session.run, args=(None, {}))
+    # Borné par le temps écoulé plutôt que par un join court : un fil
+    # principal privé de la main 150 ms faisait échouer l'essai (3 fois sur
+    # 50 sous charge). wait_for mesure son délai sur time.monotonic.
+    debut = time.monotonic()
     fil_detection.start()
-    fil_detection.join(0.05)
-    assert fil_detection.is_alive()
     fil_detection.join(5)
     assert not fil_detection.is_alive() and journal == ["inférence"] and fil_scene.is_alive()
+    assert time.monotonic() - debut >= Cache.CEDER_AU_PLUS_S
     fin.set()
     fil_scene.join(5)
 

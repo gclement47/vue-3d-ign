@@ -497,17 +497,27 @@ def test_les_tuiles_presentees_ensemble_dependent_du_moteur():
 
 @pytest.mark.parametrize("coeurs,attendus", [(16, 4), (10, 4), (6, 3), (4, 2), (2, 1), (1, 1)])
 def test_au_processeur_jamais_plus_de_la_moitie_des_coeurs(monkeypatch, coeurs, attendus):
-    """Chaque appel prend déjà tous les cœurs et environ 300 Mo : sur un
+    """Chaque appel prend déjà tous les cœurs et 100 à 300 Mo : sur un
     petit hôte, pas plus d'appels simultanés que la moitié de ses cœurs.
     CoreML, qui ne sert qu'une tuile à la fois, n'en dépend pas."""
     def session(*fournisseurs):
         return types.SimpleNamespace(get_providers=lambda: list(fournisseurs))
     processeur = session("CPUExecutionProvider")
     coreml = session("CoreMLExecutionProvider", "CPUExecutionProvider")
-    monkeypatch.setattr(vehicules.os, "cpu_count", lambda: coeurs)
+    monkeypatch.setattr(vehicules, "_coeurs_disponibles", lambda: coeurs)
     assert vehicules.fils_inference({"yolo": processeur}) == attendus
     assert Lecteur("yolo", {"yolo": processeur}).fils == attendus
     assert vehicules.fils_inference({"yolo": coreml}) == vehicules.FILS_INFERENCE["coreml"]
     # Le nombre de cœurs inconnu : deux supposés, un seul appel à la fois.
-    monkeypatch.setattr(vehicules.os, "cpu_count", lambda: None)
+    monkeypatch.setattr(vehicules, "_coeurs_disponibles", lambda: None)
     assert vehicules.fils_inference({"yolo": processeur}) == 1
+
+
+def test_les_coeurs_disponibles_sont_ceux_du_processus(monkeypatch):
+    """Sous Linux, un cpuset (docker --cpuset-cpus) borne les cœurs que
+    le processus peut prendre, ce que os.cpu_count ignore."""
+    monkeypatch.setattr(vehicules.os, "sched_getaffinity", lambda pid: {0, 1, 2}, raising=False)
+    monkeypatch.setattr(vehicules.os, "cpu_count", lambda: 10)
+    assert vehicules._coeurs_disponibles() == 3
+    monkeypatch.delattr(vehicules.os, "sched_getaffinity")
+    assert vehicules._coeurs_disponibles() == 10

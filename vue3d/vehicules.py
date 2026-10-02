@@ -288,7 +288,8 @@ MOTEURS = {
 # tuile suivante pendant ce temps. Au processeur, chaque appel garde tous
 # ses cœurs (intra_op_num_threads n'est pas touché, voir charger) ; les
 # appels simultanés comblent les creux de chacun, d'autant mieux que la
-# machine est chargée. Chaque appel de yolo en cours tient environ 300 Mo :
+# machine est chargée. Chaque appel de yolo en cours tient environ 300 Mo
+# hors conteneur, 100 à 130 Mo dans le conteneur (pics ci-dessous) :
 # 4 plutôt que 6 : l'essentiel du gain, pour 1,2 Go au plus dans le
 # conteneur (7,7 Go en tout sur ce Mac). Détections entières, sans réseau,
 # médianes de trois : yolo de 59,8 s à 44,3 s sur CoreML en zone de 1 000 m
@@ -309,7 +310,9 @@ MOTEURS = {
 #
 # Au processeur, jamais plus de la moitié des cœurs (fils_inference) : 4 n'a
 # été mesuré qu'à dix cœurs, chaque appel y prend déjà tous les cœurs, et
-# chacun ajoute environ 300 Mo au pic.
+# chacun ajoute au pic environ 300 Mo hors conteneur, 100 à 130 Mo dedans.
+# Les cœurs sont ceux que le processus peut prendre (sched_getaffinity sous
+# Linux : un --cpuset-cpus de Docker y compte, pas dans os.cpu_count).
 FILS_INFERENCE = {"processeur": 4, "coreml": 2}
 
 
@@ -579,12 +582,19 @@ def detecter_piscines(rgb, sessions, reglages=None, fils=1):
     return toutes
 
 
+def _coeurs_disponibles():
+    """Les cœurs que le processus peut prendre ; None s'ils sont inconnus."""
+    if hasattr(os, "sched_getaffinity"):
+        return len(os.sched_getaffinity(0)) or None
+    return os.cpu_count()
+
+
 def fils_inference(sessions, coeurs=None):
     """Tuiles présentées en même temps aux réseaux : FILS_INFERENCE de leur
     moteur, 1 pour une session qui ne dit pas le sien (doublure des tests).
     Au processeur, jamais plus de la moitié des `coeurs` (ceux de la machine
     par défaut), et au moins un."""
-    coeurs = coeurs or os.cpu_count() or 2
+    coeurs = coeurs or _coeurs_disponibles() or 2
     fils = 1
     for session in sessions.values():
         fournisseurs = getattr(session, "get_providers", lambda: [])()
