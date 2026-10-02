@@ -427,32 +427,78 @@ function requete(url, options, charger = fetch) {
     demandesAnticipees.delete(url);
     return reponse || charger(url, options);
 }
-const chargementArtefact = demandeScene
-    .then(async r => {
-        if (r.ok) {
-            const a = await r.json();
-            demanderSuite();
-            // La main rendue une fois : Chrome n'envoie ces demandes qu'à une
-            // tâche suivante. Sans cela, elles partaient après les maillages,
-            // 413 ms après la fin de la scène à Gordes en zone de 1 000 m,
-            // contre 20 ms ainsi. Par un MessageChannel plutôt qu'un
-            // setTimeout : dans un onglet en arrière-plan, Chrome aligne les
-            // minuteries sur des réveils d'une seconde, pas les messages
-            // (envoi à +16 à +23 ms, mesuré à la contre-vérification).
-            await new Promise(ok => {
-                const canal = new MessageChannel();
-                canal.port1.onmessage = () => ok();
-                canal.port2.postMessage(0);
-            });
-            return a;
+// Une scène indisponible est redemandée seule, sans recharger la page : un
+// 503 (un service de l'IGN n'a pas répondu, rien n'a été mis en cache) ou une
+// connexion coupée (le serveur relancé pendant l'attente). Le 2 octobre 2026,
+// la Géoplateforme a mis plus de dix minutes à se remettre : deux
+// constructions du même point ont échoué à dix minutes d'écart (orthophoto
+// expirée en 160 s, relief refusé en 400 au bout de 89 s), et une même
+// requête WMS répondait en 60, 20 puis 4 s. D'où des attentes croissantes, et
+// une fin : une page oubliée ouverte ne relance pas l'IGN toute la nuit. Huit
+// essais de plus, une demi-heure d'attente en tout, chacun d'une quinzaine de
+// requêtes vers l'IGN, loin de ses quotas. Une autre erreur (point invalide,
+// hors de France, erreur du serveur) n'est pas réessayée : elle reviendrait.
+const ATTENTES_SCENE_S = [30, 60, 120, 300, 300, 300, 300, 300];
+class ScenePasDisponible extends Error {}
+const echapper = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+async function lireScene(demande) {
+    let r;
+    try { r = await demande; }
+    catch (err) { throw new ScenePasDisponible(`le serveur ne répond pas (${err.message})`); }
+    if (r.ok) {
+        const a = await r.json();
+        demanderSuite();
+        // La main rendue une fois : Chrome n'envoie ces demandes qu'à une
+        // tâche suivante. Sans cela, elles partaient après les maillages,
+        // 413 ms après la fin de la scène à Gordes en zone de 1 000 m,
+        // contre 20 ms ainsi. Par un MessageChannel plutôt qu'un
+        // setTimeout : dans un onglet en arrière-plan, Chrome aligne les
+        // minuteries sur des réveils d'une seconde, pas les messages
+        // (envoi à +16 à +23 ms, mesuré à la contre-vérification).
+        await new Promise(ok => {
+            const canal = new MessageChannel();
+            canal.port1.onmessage = () => ok();
+            canal.port2.postMessage(0);
+        });
+        return a;
+    }
+    const corps = await r.json().catch(() => ({}));
+    const message = corps.erreur || `HTTP ${r.status}`;
+    throw [502, 503, 504].includes(r.status) ? new ScenePasDisponible(message) : new Error(message);
+}
+/** Le message d'une scène pas encore disponible, avec le temps avant le prochain essai. */
+function attendreNouvelEssai(message, secondes) {
+    return new Promise(ok => {
+        const fin = Date.now() + secondes * 1000;
+        const afficher = () => {
+            const reste = Math.max(0, Math.ceil((fin - Date.now()) / 1000));
+            attente.innerHTML = 'Scène indisponible pour l\'instant<br><small>' + echapper(message)
+                + `</small><br><small>Nouvel essai dans ${reste} s…</small>`;
+            if (reste > 0) return;
+            clearInterval(minuterie);
+            attente.innerHTML = 'Construction de la scène…<br><small>nouvel essai</small>';
+            ok();
+        };
+        const minuterie = setInterval(afficher, 1000);
+        afficher();
+    });
+}
+async function obtenirScene() {
+    for (let essai = 0; ; essai++) {
+        try {
+            return await lireScene(essai === 0 ? demandeScene : fetch(URL_VUE3D));
+        } catch (err) {
+            if (!(err instanceof ScenePasDisponible) || essai >= ATTENTES_SCENE_S.length) throw err;
+            await attendreNouvelEssai(err.message, ATTENTES_SCENE_S[essai]);
         }
-        const corps = await r.json().catch(() => ({}));
-        throw new Error(corps.erreur || `HTTP ${r.status}`);
-    })
+    }
+}
+const chargementArtefact = obtenirScene()
     .then(a => { ARTEFACT = a; attente.hidden = true; return a; })
     .catch(err => {
         ERREUR_SCENE = err.message;
-        attente.innerHTML = 'Scène indisponible<br><small>' + err.message + '</small>';
+        attente.innerHTML = 'Scène indisponible<br><small>' + echapper(err.message) + '</small>'
+            + (err instanceof ScenePasDisponible ? '<br><small>Recharger la page pour réessayer.</small>' : '');
         return null;
     });
 // Suivi de la construction : pendant l'attente, le serveur dit à quelle étape

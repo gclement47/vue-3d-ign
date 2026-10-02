@@ -128,6 +128,14 @@ messages de commit et dans les commentaires des modules.
 
 ### Corrigé
 
+- **La page réessaie seule quand la scène n'est pas disponible.** Après un
+  503 (un service de l'IGN n'a pas répondu) ou une connexion coupée (le
+  serveur relancé pendant l'attente, que Firefox annonçait par « NetworkError
+  when attempting to fetch resource »), elle affiche la cause et redemande
+  la scène après 30 s, 1 min, 2 min puis 5 min, huit fois au plus : il
+  n'est plus besoin de la recharger. Le 2 octobre 2026, la Géoplateforme a
+  mis plus de dix minutes à se remettre. Un point invalide ou hors de France
+  n'est pas réessayé.
 - **`run_macOS_CoreML.sh` démarre sur un clone neuf.** Lancé avec les deux
   détecteurs par défaut, il s'arrêtait aussitôt : les réseaux ne sont pas
   dans le dépôt, seule l'image Docker les fabriquait. Au premier lancement,
