@@ -545,6 +545,30 @@ Pièges déjà rencontrés, à reconnaître vite :
 
 Des chantiers mesurés, prêts à être repris :
 
+- **Respecter les quotas de la Géoplateforme.** Elle limite chaque adresse IP,
+  service par service ([limites
+  d'usage](https://cartes.gouv.fr/aide/fr/guides-utilisateur/utiliser-les-services-de-la-geoplateforme/limites-d-usage/)) :
+  WMS 40 requêtes/s, WFS 30/s, téléchargement 10/s, WMTS sans limite. Au-delà,
+  une erreur 429 bloque ce service environ 5 s, avec un en-tête `Retry-After`.
+  Les réponses le confirment (`ratelimit-limit: 40` en WMS, `30` en WFS,
+  relevé le 2 octobre 2026). Une scène seule reste loin des quotas : environ
+  16 requêtes en 3 s, 8 au plus en même temps (`GEOPF_SIMULTANEES`). Mais
+  plusieurs scènes neuves construites ensemble peuvent dépasser 30 requêtes
+  WFS par seconde : ces requêtes ne durent que 0,1 à 0,3 s, et 8 en vol en
+  font jusqu'à 80. `get_avec_reprise` réessaie alors après 3 s fixes
+  (`GEOPF_ATTENTE_S`), dans le blocage de 5 s. À faire dans `geopf.py` :
+  (1) un débit maximal par service, avec de la marge (par exemple 25/s en
+  WFS, 35/s en WMS), en plus des places ; (2) sur un 429, attendre la durée
+  de `Retry-After` plutôt que `GEOPF_ATTENTE_S`. Tester sans réseau, comme
+  les places (`test_geopf.py`), puis mesurer plusieurs scènes construites
+  ensemble. Pour un fort trafic public, la suite serait de télécharger une
+  fois la BD TOPO par département et les dalles LiDAR HD, et de les servir en
+  local. Écarté : faire lire l'IGN par les navigateurs (ses services
+  répondent `Access-Control-Allow-Origin: *`), puis envoyer les données au
+  serveur. La charge totale sur l'IGN ne baisse pas, puisque le cache lit
+  déjà chaque scène une seule fois. Un navigateur bogué ou malveillant
+  empoisonnerait pour toujours une scène partagée. Et il faudrait renvoyer
+  des dizaines de Mo par une ligne domestique en zone de 1 000 m.
 - **Toits en pans à Strasbourg.** 55 % des toits concernés y passent en pans,
   contre 87 % à Gordes. Parmi les refus, douze prolongent un plan plus de 2 m
   au-dessus des cellules mesurées : ils méritent une inspection visuelle avant
