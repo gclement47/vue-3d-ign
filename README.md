@@ -61,7 +61,7 @@ macOS après de grandes scènes.
 
 ```bash
 ./run_docker.sh                              # Docker, depuis zéro, les deux détecteurs
-VUE3D_VEHICULES=tous ./run_macOS_CoreML.sh   # sans Docker, détecteurs sur CoreML
+./run_macOS_CoreML.sh                        # sans Docker, les deux détecteurs sur CoreML
 ```
 
 `run_docker.sh` enchaîne les deux commandes ci-dessus avec
@@ -72,7 +72,7 @@ lancement, puis reconstruit l'image avec les deux détecteurs.
 `.venv`, sur le port 8080 : c'est sur un Mac la seule façon de faire tourner
 les détecteurs sur CoreML (voir plus bas), que le conteneur n'atteint pas.
 Il prend les mêmes variables que `docker-compose.yml` (`VUE3D_VEHICULES`,
-défaut `aucun` ; `VUE3D_PANNEAUX=oui` ; `VUE3D_PORT`), et `VUE3D_MOTEUR`. Ses
+mais `tous` par défaut ; `VUE3D_PANNEAUX=oui` ; `VUE3D_PORT`), et `VUE3D_MOTEUR`. Ses
 fichiers sont à côté du dépôt, ignorés par git : `./cache` pour les scènes,
 `./modeles` pour les réseaux. À préparer une fois :
 

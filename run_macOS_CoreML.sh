@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Lance le serveur sans Docker, avec le Python du .venv : le même service que
 # `docker compose up -d`, sur le même port, au choix de l'un ou de l'autre.
-# Les variables sont celles de docker-compose.yml, avec les mêmes défauts.
+# Les variables sont celles de docker-compose.yml, avec les mêmes défauts,
+# sauf VUE3D_VEHICULES : `tous` ici, comme run_docker.sh, puisque faire
+# tourner les détecteurs sur CoreML est la raison de lancer ce script.
 #
-#   ./run_macOS_CoreML.sh                        # sans détecteur ni registre
-#   VUE3D_VEHICULES=tous ./run_macOS_CoreML.sh   # aucun | rtmdet | yolo | tous
+#   ./run_macOS_CoreML.sh                        # les deux détecteurs, sur CoreML
+#   VUE3D_VEHICULES=rtmdet ./run_macOS_CoreML.sh # aucun | rtmdet | yolo | tous
 #   VUE3D_PANNEAUX=oui ./run_macOS_CoreML.sh     # ou le chemin de la base
 #   VUE3D_PORT=8081 ./run_macOS_CoreML.sh        # à côté du conteneur, qui garde le 8080
-#   VUE3D_MOTEUR=processeur VUE3D_VEHICULES=tous ./run_macOS_CoreML.sh   # sans CoreML
+#   VUE3D_MOTEUR=processeur ./run_macOS_CoreML.sh  # sans CoreML
 #
 # Sur un Mac, les détecteurs tournent ici sur CoreML, que le conteneur n'a
 # pas (vue3d/vehicules.py, MOTEURS) : c'est la raison de lancer sans Docker.
@@ -23,7 +25,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 PORT="${VUE3D_PORT:-8080}"
-export VUE3D_VEHICULES="${VUE3D_VEHICULES:-aucun}"
+export VUE3D_VEHICULES="${VUE3D_VEHICULES:-tous}"
 export VUE3D_MODELES="${VUE3D_MODELES:-./modeles}"
 export VUE3D_CACHE="${VUE3D_CACHE:-./cache}"
 # docker-compose.yml dit « oui », le serveur attend le chemin de la base.

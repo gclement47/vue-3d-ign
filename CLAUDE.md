@@ -15,7 +15,7 @@ VUE3D_CACHE=./cache flask --app vue3d.app run --port 8080   # serveur local
 docker compose up -d --build                     # conteneur, port 8080 (VUE3D_PORT)
 VUE3D_VEHICULES=rtmdet docker compose up -d --build   # avec la couche des véhicules (aucun | rtmdet | yolo | tous)
 VUE3D_PANNEAUX=oui docker compose up -d --build        # avec les panneaux solaires du registre OpenPVMapper (CC-BY 4.0)
-VUE3D_VEHICULES=tous ./run_macOS_CoreML.sh       # sans Docker, détecteurs sur CoreML (Mac)
+./run_macOS_CoreML.sh                            # sans Docker, les deux détecteurs sur CoreML (Mac)
 node outils/verifier-geometrie.mjs               # géométrie de la page, exécutée sous Node
 npm install puppeteer-core && node outils/essai-navigateur.mjs "http://localhost:8080/?lat=43.9116&lon=5.2003"
 ```
