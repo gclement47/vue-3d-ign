@@ -37,97 +37,93 @@ messages de commit et dans les commentaires des modules.
 
 ### Modifié
 
-- **Les lectures d'une scène partent ensemble.** Ses seize lectures de la
-  Géoplateforme (couches WFS, grille MNH, orthophoto, terrain, relief,
-  mosaïque) se suivaient une à une. Elles partent désormais toutes à la
-  fois, huit requêtes au plus en cours pour tout le service, et l'orthophoto
-  et le terrain, qui ont la taille de la grille MNH, sont demandés avec elle
-  plutôt qu'après : cette taille ne dépend que de l'emprise. Médianes de
-  trois passages avant et après, dos à dos : en zone de 1 000 m, les
-  lectures passent de 13,8 à 2,9 s à Gordes et de 13,3 à 3,3 s à
-  Strasbourg ; dans l'emprise par défaut, de 4,2 à 0,9 s et de 5,1 à 0,8 s.
-  Deux scènes de 1 000 m demandées ensemble sont lues en 4,5 s au lieu de
-  14,2. La scène et l'orthophoto sont les mêmes à l'octet. Pendant
-  l'attente, la page compte les lectures finies et nomme celles qu'on attend
-  encore : « étape 14 sur 18 : hauteurs du sursol, orthophoto et 1 autre ».
-- **Véhicules et piscines arrivent deux fois plus tôt.** L'orthophoto à
-  0,2 m, que les trois détections (piscines, `rtmdet`, `yolo`) relisaient
-  chacune tuile après tuile, est lue une fois, ses tuiles ensemble ; et chaque
-  réseau reçoit plusieurs tuiles à la fois. Sur Gordes en zone de 1 000 m,
-  hors conteneur sur CoreML, depuis la demande de la scène (médianes de
-  trois, réseau compris) : piscines prêtes en 5 s au lieu de 14, `rtmdet` en
-  11 s au lieu de 31 — toutes deux avec la scène désormais —, `yolo` en 52 s
-  au lieu de 94. Dans le conteneur, calcul seul, sur une machine chargée par
-  ailleurs : `yolo` en 68 s au lieu de 148 sur l'emprise par défaut, en
-  9 min au lieu de 22 sur la zone de 1 000 m. Les couches sont les mêmes à
-  l'octet, et le conteneur garde moins de mémoire après une détection
-  (350 Mo au lieu de 464 pour `yolo`).
-- **Les détections laissent le processeur à la scène.** Lancées à la
-  demande de la scène pour être prêtes avec elle, les détections des
-  véhicules et des piscines occupaient tous les cœurs pendant qu'elle
-  calculait ses toitures et ses houppiers : dans le conteneur, ce calcul
-  prenait 20,1 s au lieu de 11,9 à côté de `yolo` (Gordes, zone de
-  1 000 m, rejoué). Elles s'interrompent désormais entre deux tuiles tant
-  qu'une scène calcule, et avancent pendant qu'elle attend l'IGN. Gordes en
-  zone de 1 000 m avec `tous`, dans le conteneur, de la demande à la scène
-  servie : 27,5 s au lieu de 43,2 (médianes de quatre essais alternés) ;
-  les piscines arrivent 5 s plus tard, `rtmdet` pas plus tard. Sur CoreML,
-  hors conteneur, rien ne change : le GPU ne prenait que 8 % au calcul.
-- **La page demande sa scène sans attendre three.js**, et l'orthophoto et
-  les couches à part dès que la scène répond, sans attendre d'avoir construit
-  ses maillages. À Gordes, scène en cache, dans Chrome à cache vide : la
-  scène part avec three.js au lieu de 0,1 s après lui ; l'orthophoto et les
-  couches partent à 1,4 s de la navigation au lieu de 3,1 s, les piscines au
-  lieu de 9,0 s (médianes de trois chargements).
 - **Toitures et houppiers se calculent dix fois plus vite.** Chaque
   bâtiment relisait la grille MNH entière, en Python, et la segmentation des
   arbres la parcourait toute à chaque passe. Sur Gordes en
   zone de 1 000 m (672 bâtiments, 19 312 houppiers), le calcul passe de 100 s
   à 8,5 s, et la scène entière, lectures comprises, de 114 s à 17 s. La
   scène est la même à l'octet : son format et son cache ne changent pas.
-- **Les toitures se calculent sur tous les cœurs, du centre vers le bord.**
-  Chaque bâtiment part, avec sa fenêtre des grilles, vers un bassin de
-  processus créé une fois par le service (« forkserver » dans le
-  conteneur, « spawn » sur macOS) ; le calcul lui-même ne fait plus ce qui
-  coûtait sans rien changer — un objet shapely par cellule testée, une
-  boucle Python par distance au faîtage, des scalaires numpy dans la
-  croissance des pans. À Strasbourg en zone de 1 000 m (1 376 bâtiments),
-  sur un Mac chargé par d'autres calculs, les toitures passent de 53 s à
-  10 s sur un cœur et à 3 s sur le bassin (1,2 s au mieux) ; dans le
-  conteneur, de 67 s à 3,6 s ; à Gordes en zone de 1 000 m, de 6,2 s à
-  0,5 s. Servie par le réseau, la scène de Strasbourg arrive en 19 s au lieu
-  de 71 s dans les mêmes conditions. Elle est la même à l'octet (horodatage
-  des réponses WFS mis à part), vérifiée sur quatre lieux sur macOS et
-  dans le conteneur : format et cache ne changent pas.
-  `VUE3D_TOITS_PROCESSUS` règle le nombre de processus (1 : aucun bassin) ;
-  s'il ne peut pas démarrer ou casse en route, les toitures se calculent
-  dans le service, comme avant, et ses processus s'arrêtent avec lui.
-- **Les houppiers, encore quatre à cinq fois plus vite.** La descente
-  réévaluait tout son front à chaque passe, les sommets dilataient la grille
-  entière une fois par rayon, chaque bâtiment, zone de végétation et parcelle
-  de forêt était testé sur toutes les cellules de sa boîte, et chaque arbre
-  était décrit un à un. Seul ce qui peut changer est désormais recalculé, et
-  un polygone n'est testé qu'aux cellules où sa réponse compte. Sur Gordes en
-  zone de 1 000 m, ce qui suit les toitures passe de 5,0 s à 1,1 s ; à
-  Strasbourg, de 3,3 s à 0,8 s (machine partagée avec d'autres calculs :
-  médianes de trois, en alternant). La scène reste la même à l'octet, sur le
-  Mac comme dans le conteneur.
+- **Une scène se construit quatre à quinze fois plus vite.** De la demande à
+  la scène servie, cache vide, au calme, médianes de trois essais alternés
+  sur un Mac M4 hors conteneur : Gordes 5,7 s → 0,84 s ; Gordes en zone de
+  1 000 m 16,7 s → 3,9 s ; Strasbourg en zone de 1 000 m 42,3 s → 6,3 s.
+  Dans le conteneur, mêmes conditions : Gordes 7,8 s → 1,0 s ; Gordes en zone
+  de 1 000 m 24,6 s → 3,9 s ; Strasbourg en zone de 1 000 m 67,5 s → 4,5 s.
+  La scène est la même à l'octet (horodatage des réponses WFS mis à part) :
+  ni son format ni le cache ne changent.
+  - Les seize lectures de la Géoplateforme partent ensemble, huit requêtes
+    au plus en cours pour tout le service : en zone de 1 000 m, environ 3 s
+    au lieu de 11 à 14 s. Pendant l'attente, la page nomme celles qu'on
+    attend encore (« étape 14 sur 18 : hauteurs du sursol, orthophoto et
+    1 autre »).
+  - Les toitures se calculent sur un bassin de processus, un par cœur et
+    seize au plus (`VUE3D_TOITS_PROCESSUS`, 1 pour aucun), qui naît au
+    démarrage du service ; sur un cœur, chaque toit se calcule déjà cinq
+    fois plus vite. Strasbourg en zone de 1 000 m : 28 s de toitures avant,
+    environ 1 s au bassin. La scène arrive toujours d'un seul tenant : une
+    couche des toits à part, calculée du centre vers le bord, a été évaluée
+    puis écartée (1 à 3 s à gagner, au prix de deux invariants).
+  - Les houppiers se calculent trois à cinq fois plus vite, et pendant les
+    toitures du bassin, qu'ils ne lisent pas.
+  - Tout le calcul (toitures, houppiers et le reste), bassin chaud, au
+    calme : Strasbourg en zone de 1 000 m 30 s → 1,25 s ; Gordes en zone de
+    1 000 m 5,5 s → 0,69 s.
+- **Véhicules et piscines arrivent jusqu'à six fois plus tôt.** L'orthophoto
+  à 0,2 m, que chaque détection relisait, est lue une seule fois, ses tuiles
+  ensemble, et chaque réseau reçoit plusieurs tuiles à la fois (au
+  processeur, jamais plus d'appels que la moitié des cœurs). Hors conteneur
+  sur CoreML, au calme, depuis la demande de la scène, médianes de trois :
+
+  | | piscines | `rtmdet` | `yolo` |
+  |---|---|---|---|
+  | Gordes | 5,7 → 1,8 s | 5,7 → 2,4 s | 9,8 → 6,4 s |
+  | Gordes, zone de 1 000 m | 16,8 → 5,2 s | 25,9 → 9,1 s | 73 → 41 s |
+  | Strasbourg, zone de 1 000 m | 42,6 → 6,5 s | 42,7 → 9,7 s | 73 → 39 s |
+
+  Dans le conteneur, au processeur, mêmes conditions :
+
+  | | piscines | `rtmdet` | `yolo` |
+  |---|---|---|---|
+  | Gordes | 7,9 → 3,2 s | 11,4 → 7,0 s | 46 → 28 s |
+  | Gordes, zone de 1 000 m | 27,7 → 12,5 s | 73 → 36 s | 5 min 37 → 3 min 21 |
+  | Strasbourg, zone de 1 000 m | 68 → 13 s | 82 → 35 s | 5 min 30 → 3 min 08 |
+
+  Les couches sont les mêmes à l'octet. Au processeur, donc dans le
+  conteneur, les détections s'interrompent tant qu'une scène se construit,
+  30 s au plus par tuile, pour lui laisser les cœurs ; deux orthophotos lues
+  d'avance au plus restent en mémoire. Le service en demande davantage avec `tous` : dans le
+  conteneur, 1,2 Go au pic sur l'emprise par défaut au lieu de 0,8 ; 1,9 à
+  2,0 Go en zone de 1 000 m au lieu de 1,4.
 - **La page affiche une scène deux à trois fois plus vite.** De la réponse
-  du serveur à la première image complète, scène en cache, sur un Mac M4
-  (médianes de trois essais) : Gordes 0,40 s → 0,17 s, Gordes en zone de
-  1 000 m 1,7 s → 0,57 s, Strasbourg en zone de 1 000 m 2,4 s → 0,94 s. La
-  végétation s'écrit dans des tableaux typés, normales et sphères
+  du serveur à la première image complète, scène en cache, Chrome sur un Mac
+  M4, médianes de trois essais alternés : Gordes 0,51 s → 0,20 s ; Gordes en
+  zone de 1 000 m 1,8 s → 0,56 s ; Strasbourg en zone de 1 000 m 2,4 s →
+  0,88 s. La végétation s'écrit dans des tableaux typés, normales et sphères
   englobantes se calculent sans les objets intermédiaires de three.js, une
   surface de toit mesurée ne recoupe plus l'emprise entière à chaque maille,
-  et les programmes du GPU se compilent pendant que le serveur répond. Les
-  ouvrages et les monuments, en arrivant, reconstruisaient la végétation ou
-  les toits mesurés : une fois la scène affichée, l'image se figeait encore
-  1,3 à 1,7 s à Gordes en zone de 1 000 m, 1,2 puis 0,6 s à Strasbourg ; ils
-  ne refont plus que ce qui change, en 0,09 s au plus. Les géométries
-  affichées sont les mêmes à l'octet.
+  et les programmes du GPU se compilent pendant que le serveur répond. À
+  l'arrivée des ouvrages et des monuments, l'image ne se fige plus que 0,07 s
+  à Gordes en zone de 1 000 m au lieu de 1,7 s, et 0,2 s à Strasbourg au
+  lieu de 1,4 s. Les géométries affichées sont les mêmes à l'octet.
+- **La page demande sa scène en même temps que three.js**, et l'orthophoto
+  et les couches à part dès la scène reçue, avant de construire ses
+  maillages. Le gain se limite à un aller-retour par couche en local ; sur un
+  lien lent, les couches ne prennent plus de bande passante à la scène.
+- **La barre d'attente avance au rythme réel de la construction** :
+  lectures 50 %, toitures 30 %, houppiers 20 %, d'après les durées mesurées
+  à Gordes et à Strasbourg en zone de 1 000 m. Les lectures finissant
+  désormais en 3 s environ, elle restait à 89 % pendant tout le calcul.
 
 ### Corrigé
 
+- **Une scène en échec ne lance plus de requête.** Quand une lecture
+  échoue, celles qui attendent leur place ne partent plus et celles en cours
+  ne réessaient plus : dans un scénario rejoué hors réseau, 16 requêtes
+  partaient, dont 7 après l'échec, contre 8 et aucune depuis. Le message
+  d'erreur nomme la lecture en panne. Il en va de même des tuiles de
+  l'orthophoto des détections.
+- **La suite de tests n'appelle plus la Géoplateforme.** Une application de
+  test lançait la vraie lecture des ouvrages.
 - **Une cheminée posée sur un bâtiment n'est plus effacée.** Un point de la
   BD TOPO dans une emprise bâtie était laissé au toit du bâtiment, quelle que
   soit sa hauteur : la cheminée de 295 m de la centrale de Provence, à

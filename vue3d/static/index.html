@@ -355,7 +355,7 @@ let ARTEFACT = null;
 let ERREUR_SCENE = null;
 const attente = document.getElementById('attente');
 attente.hidden = false;
-attente.innerHTML = 'Construction de la scène…<br><small>20 à 40 s la première fois, '
+attente.innerHTML = 'Construction de la scène…<br><small>quelques secondes la première fois, '
     + 'instantané ensuite</small>';
 // La demande partie avant three.js (DEMANDE_SCENE, en tête de page), si elle
 // vise bien cette scène.
@@ -4379,7 +4379,7 @@ function demarrerSuivi() {
                 // Premier relevé hors de la scène, cercle de précision compris :
                 // la page se recentre sur soi, une seule fois. Pas à chaque
                 // relevé — on bouge en marchant, et chaque recentrage relance
-                // une construction de 20 à 40 s.
+                // une construction de plusieurs secondes.
                 if (!RELANCE_MOI && distanceAEmprise(moi.lon, moi.lat) > (moi.precision || 0)) {
                     note.textContent = "Hors de la scène : recentrage sur votre position…";
                     location.assign(urlRecentree());
@@ -5311,9 +5311,9 @@ btnMonuments.addEventListener('click', () => {
     majCredits();
 });
 
-// L'orbite démarre avec la scène, pas avec la page : pendant les 20 à 40 s de
-// la construction, elle tournait autour d'un sol vide, et un glissement de
-// souris pendant l'attente l'arrêtait avant même que la scène n'apparaisse.
+// L'orbite démarre avec la scène, pas avec la page : pendant la construction,
+// elle tournait autour d'un sol vide, et un glissement de souris pendant
+// l'attente l'arrêtait avant même que la scène n'apparaisse.
 // Seul un choix fait au bouton pendant l'attente l'emporte.
 let orbite = false;
 let orbiteChoisie = false;

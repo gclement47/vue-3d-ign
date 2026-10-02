@@ -323,9 +323,15 @@ def assembler(west, south, east, north, batiments, vegetation, forets, routes,
         #   Strasbourg, 1 000 m   3,66 -> 3,69 s (×1,09)  4,17 -> 3,49 s (×1,23)
         #
         # Quinze séries en tout, avec celles d'un premier essai : ×1,23 en
-        # médiane, de ×0,94 à ×1,51. Même scène à l'octet ; 20 à 38 Mo de
-        # plus au pic de mémoire du service, à 1 000 m. Un bassin qui casse
-        # rend les toitures à ce fil, à côté des houppiers : juste, plus lent.
+        # médiane, de ×0,94 à ×1,51. Au calme (charge 4 à 12), dans un même
+        # processus, bassin chaud, médianes de dix tours alternés, macOS :
+        # Gordes 0,151 -> 0,123 s, Gordes en zone de 1 000 m 0,721 ->
+        # 0,686 s, Strasbourg en zone de 1 000 m 1,54 -> 1,25 s. Le gain ne
+        # dépasse pas la durée des toitures, qui s'allongent un peu : le GIL
+        # est partagé avec le fil des houppiers (0,24 -> 0,30 s à Gordes en
+        # zone de 1 000 m). Même scène à l'octet ; 20 à 40 Mo de plus au pic
+        # de mémoire du service, à 1 000 m. Un bassin qui casse rend les
+        # toitures à ce fil, à côté des houppiers : juste, plus lent.
         with concurrent.futures.ThreadPoolExecutor(
                 max_workers=1, thread_name_prefix="houppiers") as fil:
             pendant = fil.submit(vegetation_et_constructions)

@@ -15,6 +15,7 @@ VUE3D_CACHE=./cache flask --app vue3d.app run --port 8080   # serveur local
 docker compose up -d --build                     # conteneur, port 8080 (VUE3D_PORT)
 VUE3D_VEHICULES=rtmdet docker compose up -d --build   # avec la couche des véhicules (aucun | rtmdet | yolo | tous)
 VUE3D_PANNEAUX=oui docker compose up -d --build        # avec les panneaux solaires du registre OpenPVMapper (CC-BY 4.0)
+VUE3D_VEHICULES=tous ./run_macOS_CoreML.sh       # sans Docker, détecteurs sur CoreML (Mac)
 node outils/verifier-geometrie.mjs               # géométrie de la page, exécutée sous Node
 npm install puppeteer-core && node outils/essai-navigateur.mjs "http://localhost:8080/?lat=43.9116&lon=5.2003"
 ```
@@ -28,7 +29,7 @@ vue3d/
   couches.py    lecture WFS (bâtiments, végétation, BD Forêt, routes)
   batiments.py  bâtiments découpés sur l'emprise, en retrait du bord
   mnh.py        hauteurs du sursol, LiDAR HD, repli MNS − MNT
-  toits.py      gouttière, faîtage, corps de toit, surface du toit, bâtiments sous les arbres ; bassin de processus (VUE3D_TOITS_PROCESSUS)
+  toits.py      gouttière, faîtage, corps de toit, surface du toit, bâtiments sous les arbres ; bassin de processus né au démarrage (VUE3D_TOITS_PROCESSUS, 16 au plus)
   pans.py       toit en pans : plans ajustés au MNH, volume fermé et vérifié
   houppiers.py  segmentation des arbres sur la grille à 0,5 m
   constructions.py  réservoirs et constructions ponctuelles BD TOPO, retirés du sursol des houppiers
@@ -40,7 +41,7 @@ vue3d/
   ouvrages.py   murs, ponts, voies ferrées, terrains de sport : couche à part, chargée après la scène
   vehicules.py  véhicules et piscines lus sur l'orthophoto par un réseau ONNX : couche à part, optionnelle (VUE3D_VEHICULES)
   panneaux.py   panneaux solaires du registre OpenPVMapper (SQLite R-tree) : couche à part, optionnelle (VUE3D_PANNEAUX)
-  geopf.py      GET avec reprise sur la Géoplateforme
+  geopf.py      GET avec reprise sur la Géoplateforme ; 8 places pour tout le service, lectures groupées abandonnées au premier échec
   static/index.html   la page entière : HTML, CSS et JavaScript (three.js r160)
 ```
 
@@ -87,7 +88,13 @@ l'étage `export` du Dockerfile.
   calcul d'origine (`tests/references_toits.py`). Le bassin des toitures
   (`toits.py`) ne sert qu'au service, qui l'autorise : ses processus
   réexécutent le script principal, qu'un script de mesure doit garder derrière
-  `if __name__ == "__main__"` s'il passe `processus=`.
+  `if __name__ == "__main__"` s'il passe `processus=`. Les houppiers ne lisent
+  pas les toits : `assembler` les calcule pendant les toitures du bassin ; si
+  la végétation devait un jour lire les toits, retirer ce recouvrement.
+- **Une scène en échec ne lance plus de requête.** Toute requête vers la
+  Géoplateforme passe par `geopf.place()`, toute lecture lancée en parallèle
+  par `geopf.en_parallele` ou `Groupe.soumettre` : au premier échec, les
+  lectures qui attendent leur place ne partent plus. Un fil nu y échappe.
 - **La géométrie d'un houppier ne doit jamais se retourner** : rayon croissant
   avec la couronne, hauteur décroissante du sommet au bord, dessous qui remonte
   vers le tronc, lobage partagé par tous les anneaux. Un défaut ici passe

@@ -80,8 +80,12 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/sante', timeout=4)"
 
-# La première construction d'une scène dure 20 à 40 s : le délai de gunicorn
-# doit la couvrir largement. Des fils plutôt que des processus, pour que le
-# verrou par point empêche deux constructions simultanées de la même scène.
+# La première construction d'une scène dure 1 s environ, 4 à 7 s en zone de
+# 1 000 m (mesuré le 2 octobre 2026 à Gordes et à Strasbourg) ; le délai de
+# gunicorn la couvre largement, même quand la Géoplateforme fait attendre ses
+# reprises. Des fils plutôt que des processus, pour que le verrou par point
+# empêche deux constructions simultanées de la même scène. Pas de
+# --preload : le bassin des toitures (vue3d/toits.py) naît au démarrage du
+# service, et doit naître dans le worker, pas dans le maître avant le fork.
 CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "8", \
      "--timeout", "180", "--access-logfile", "-", "vue3d.app:app"]

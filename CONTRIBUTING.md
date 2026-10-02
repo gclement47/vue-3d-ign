@@ -443,9 +443,11 @@ façons :
   doit injecter les deux lectures : la demande de la scène les lance en tâche
   de fond. `lire_vehicules=faux` active les couches de l'orthophoto ; la
   doublure a la forme de `vehicules.Lecteur` — `mode`, `detecteurs`,
-  `piscines(emprise)` et `vehicules(detecteur)`, qui rendent des boîtes en
-  pixels. Aucun test ne charge de réseau : `test_vehicules.py` passe à
-  `detecter` une doublure de session d'inférence.
+  `orthophoto(emprise)`, `piscines(emprise, rgb=None)` et
+  `vehicules(detecteur)(emprise, rgb=None)`, qui rendent des boîtes en
+  pixels (`rgb` : l'orthophoto déjà lue, partagée entre les détections).
+  Aucun test ne charge de réseau : `test_vehicules.py` passe à `detecter`
+  une doublure de session d'inférence.
 - **Grilles synthétiques.** Les tests de toitures fabriquent des grilles MNH à
   partir d'une fonction de hauteur (voir `_grille` dans `test_pans.py` ou
   `_grille_surface` dans `test_toits.py`) : un toit à deux pans, une marche, un
@@ -456,6 +458,20 @@ façons :
   telle qu'elle était avant d'être accélérée, simple et lente : les tests
   d'équivalence de `test_houppiers.py` exigent la même sortie, en JSON, sur
   des scènes tirées au hasard. Une accélération qui change un octet y échoue.
+  `tests/references_toits.py` joue le même rôle pour les toitures.
+- **Bassin des toitures.** `tests/conftest.py` pose `VUE3D_TOITS_PROCESSUS=1`
+  avant tout import : importer `vue3d.app` fait naître le bassin, et aucun
+  test n'en lance sans le demander. Les tests du bassin passent `processus=`
+  ou prennent la fixture `bassin_de_deux`. Hors des tests, un script qui
+  importe `vue3d.app` ou passe `processus=` garde son code derrière
+  `if __name__ == "__main__"` : sous macOS, chaque processus du bassin
+  réexécute le script principal.
+- **Places et lectures parallèles.** Les tests qui comptent les requêtes
+  simultanées prennent des places neuves
+  (`monkeypatch.setattr(geopf, "_places", geopf._Places(n))`), que les
+  autres tests ne tiennent pas. Toute lecture lancée en parallèle passe par
+  `geopf.en_parallele` ou `Groupe.soumettre` : un fil nu n'est pas abandonné
+  avec son groupe quand une lecture échoue.
 
 Ce que les tests Python ne voient pas, c'est le rendu : pour tout changement
 dans `index.html`, lancez l'essai navigateur.
@@ -468,7 +484,8 @@ direct. Ils écrivent leurs sorties dans `cache/mesures/`, ignoré par git.
 | Outil | Ce qu'il mesure |
 |---|---|
 | `essai-navigateur.mjs` | Charge un lieu dans Chrome, clique le bâtiment visé, change de saison, relève toute erreur |
-| `verifier-geometrie.mjs` | Pas une mesure : exécute sous Node les fonctions géométriques de la page (toit découpé, murs, tabliers, véhicules) et vérifie orientation, fermeture et volumes ; demande `npm install three@0.160.0` |
+| `verifier-geometrie.mjs` | Pas une mesure : exécute sous Node les fonctions géométriques de la page (toit découpé, murs, tabliers, véhicules) et vérifie orientation, fermeture et volumes ; compare à l'octet les normales et sphères de la page à celles de three.js, et ses houppiers à ceux d'origine (`ajouterHouppierOrigine`, à mettre à jour si leur forme change exprès) ; contrôle la barre d'attente contre `ETAPES_SCENE` et `ETAPES_DE_CALCUL` ; demande `npm install three@0.160.0` |
+| `chrono-page.mjs` | Chronologie d'un chargement dans Chrome : quand chaque demande part, est envoyée et revient (puppeteer-core) |
 | `mesure_pans.py` | Toits en pans sur des lieux réels, par le vrai chemin de la scène |
 | `mesure_constructions.py` | Réservoirs, constructions ponctuelles et ouvrages sur des lieux réels : hauteurs, effet du masque sur les houppiers, masses expliquées |
 | `mesure_vehicules.py` | Véhicules et piscines sur des lieux réels, par le vrai chemin de la couche : comptes selon le seuil, la tuile et son recouvrement, gabarits, accord entre les deux détecteurs, images annotées, planches de vignettes des piscines ; demande les réseaux exportés et `requirements-vehicules.txt` |
@@ -488,8 +505,8 @@ Les scripts de prototype figent en en-tête les résultats obtenus lors de leur
 - **Le cache** est dans `VUE3D_CACHE`, rangé en
   `v{SCENE_VERSION}/{lat}_{lon}/scene.json.gz` et `ortho.jpg`. Supprimez le
   dossier d'un lieu pour le reconstruire seul.
-- **Lire une scène** (13 est la `SCENE_VERSION` actuelle) :
-  `gunzip -c cache/v13/43.9116_5.2003/scene.json.gz | python -m json.tool | less`.
+- **Lire une scène** (14 est la `SCENE_VERSION` actuelle) :
+  `gunzip -c cache/v14/43.9116_5.2003/scene.json.gz | python -m json.tool | less`.
   Les couches à part sont à côté : `monuments.json.gz`, `ouvrages-v1.json.gz`.
   Supprimer l'un de ces fichiers refait la seule couche.
 - **Suivre une construction** : `curl 'localhost:8080/api/avancement?lat=…&lon=…'`
@@ -535,9 +552,17 @@ Des chantiers mesurés, prêts à être repris :
 - **Volumes en pans non fermés.** Cinq toits sont refusés parce que leur volume
   ne se ferme pas, avant ou après l'arrondi : quatre à Strasbourg, un à Gordes.
   La cause reste à diagnostiquer.
-- **Temps de construction.** Mesuré à Rocamadour par le suivi d'avancement :
-  35 s en tout, dont 12 s pour les houppiers, 8 s pour les toitures et 4 s pour
-  les monuments OSM. Les houppiers sont la première piste.
+- **Temps de construction.** Depuis l'accélération d'octobre 2026, une scène
+  de 1 000 m se construit en 4 à 6 s hors conteneur, dont environ 3 s de
+  lectures : la plus longue requête, l'orthophoto, que le serveur met 1,5 à
+  3,5 s à rendre, borne ce qui reste. `yolo` est désormais le plus long
+  (40 s en zone de 1 000 m sur CoreML, davantage dans le conteneur) : ne lui
+  présenter que les tuiles proches d'une route ou d'un bâtiment est la piste
+  suivante, à mesurer, car elle change le résultat. Écartées, mesures à
+  l'appui : une couche des toits calculée à part (1 à 3 s à gagner, deux
+  invariants à défaire), les grilles lues en bandes (le serveur rééchantillonne
+  autrement), un lot de tuiles plus grand que 1 (plus lent, sorties
+  différentes).
 - **Monuments OSM hors des lieux d'exemple.** Ailleurs, Overpass reste
   interrogé en direct. La scène ne l'attend plus et n'échoue plus avec lui,
   mais un monument peut apparaître avec retard. Un extrait France entier

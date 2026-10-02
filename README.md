@@ -23,11 +23,14 @@ Puis ouvrir <http://localhost:8080/> : sans paramètre, la page s'ouvre sur le
 village de Gordes. Un autre point se saisit dans le panneau, ou dans l'URL
 (`?lat=…&lon=…`). La zone chargée mesure par défaut environ 356 m du nord au
 sud ; le sélecteur **Zone** du panneau, ou `&zone=…` dans l'URL, la porte de
-150 à 1 000 m (arrondie à 50 m). Le temps de construction suit la surface :
-à 1 000 m, 17 s à Gordes, lectures comprises, sur un Mac M4 hors conteneur.
+150 à 1 000 m (arrondie à 50 m). Le temps de construction suit la surface et
+la densité du bâti : à 1 000 m, 4 s à Gordes et 6 s à Strasbourg sur un Mac
+M4 hors conteneur, 4 et 4,5 s dans le conteneur.
 
-La **première** ouverture d'un lieu construit sa scène : 20 à 40 secondes, le
-temps de télécharger une grille de hauteurs à 0,5 m et d'y segmenter les arbres.
+La **première** ouverture d'un lieu construit sa scène en quelques secondes
+(1 s dans le conteneur pour l'emprise par défaut), le temps de
+télécharger une grille de hauteurs à 0,5 m, d'y mesurer les toits et d'y
+segmenter les arbres.
 Les ouvertures suivantes sont instantanées, la scène étant gardée sur disque dans
 le volume `scenes`. Pour changer de port : `VUE3D_PORT=9000 docker compose up -d`.
 
@@ -47,6 +50,12 @@ docker compose up -d --build
 
 `-v` supprime le volume `scenes` : chaque lieu sera reconstruit à sa première
 ouverture.
+
+Le service calcule les toitures sur un bassin de processus, un par cœur et
+seize au plus, qui naît à son démarrage (`VUE3D_TOITS_PROCESSUS=1` pour s'en
+passer, au prix de toitures cinq à dix fois plus lentes sur les grandes
+scènes). Chacun occupe environ 30 Mo dans le conteneur, 100 à 280 Mo sous
+macOS après de grandes scènes.
 
 ### Deux scripts de lancement
 
@@ -94,16 +103,18 @@ VUE3D_VEHICULES=rtmdet docker compose up -d --build
 | `VUE3D_VEHICULES` | Détecteur | Véhicules à Gordes | à Carcassonne | Piscines | Calcul par lieu |
 |---|---|---|---|---|---|
 | `aucun` (défaut) | — | — | — | — | — |
-| `rtmdet` | RTMDet-R s (MMRotate, Apache-2.0) | 91, dont 22 des 61 d'un parking serré | 178 | 13 et 9 | 3 à 6 s |
-| `yolo` | YOLO11s-OBB (Ultralytics, **AGPL-3.0**) | 146, dont 48 des 61 | 140 | 8 et 8 | 14 à 35 s |
-| `tous` | l'union des deux | 169, dont 49 des 61 | 188 | 14 et 9 | 17 à 41 s |
+| `rtmdet` | RTMDet-R s (MMRotate, Apache-2.0) | 91, dont 22 des 61 d'un parking serré | 178 | 13 et 9 | 1 à 5 s |
+| `yolo` | YOLO11s-OBB (Ultralytics, **AGPL-3.0**) | 146, dont 48 des 61 | 140 | 8 et 8 | 5 à 30 s |
+| `tous` | l'union des deux | 169, dont 49 des 61 | 188 | 14 et 9 | 6 à 36 s |
 
-Temps mesurés sur un Mac à dix cœurs, hors conteneur puis dans le conteneur.
+Temps de calcul sur l'emprise par défaut, mesurés sur un Mac à dix cœurs, hors
+conteneur (CoreML) puis dans le conteneur ; quatre fois plus en zone de
+1 000 m.
 La scène n'attend pas ces calculs, et chaque résultat s'affiche dès qu'il est
 prêt : les piscines une demi-seconde après la scène, puis les véhicules
 détecteur par détecteur, `rtmdet` avant `yolo`. Sur le processeur (le
-conteneur), ils s'interrompent pendant qu'une scène calcule ses toitures et
-ses houppiers, pour lui laisser les cœurs.
+conteneur), ils s'interrompent tant qu'une scène se construit, 30 s au plus
+par tuile, pour lui laisser les cœurs.
 Aucun des deux réseaux ne suffit partout : `rtmdet` lit mal un parking serré,
 `yolo` est meilleur là et moins bon ailleurs ; pour les piscines, c'est
 `rtmdet` qui voit le mieux.
@@ -116,6 +127,10 @@ Aucun des deux réseaux ne suffit partout : `rtmdet` lit mal un parking serré,
   embarquez en choisissant `yolo` ou `tous`. Et les deux réseaux sont
   entraînés sur [DOTA](https://captain-whu.github.io/DOTA/dataset.html), dont
   les images sont réservées à un usage académique.
+- **La mémoire.** Avec `tous`, le service occupe dans le conteneur jusqu'à
+  1,2 Go sur l'emprise par défaut et 2 Go en zone de 1 000 m, contre 0,4 et
+  0,9 Go sans détecteur : plusieurs tuiles passent à la fois dans chaque
+  réseau.
 - **Changer d'option reconstruit l'image** (une par détecteur) et recalcule la
   couche des véhicules de chaque lieu ; les scènes, elles, restent en cache.
   Pour garder le choix d'un lancement à l'autre, l'inscrire dans un fichier
@@ -178,8 +193,9 @@ VUE3D_VEHICULES=rtmdet VUE3D_MODELES=./modeles VUE3D_CACHE=./cache flask --app v
 
 Sur un Mac, les réseaux tournent alors sur CoreML, que le conteneur Docker
 n'atteint pas : à Gordes, 0,8 s au lieu de 2,8 pour `rtmdet` et 5 s au lieu
-de 16 pour `yolo` (M4), pour les mêmes couches, à l'octet. Sur une zone de
-1 000 m, piscines et véhicules sont prêts en même temps que la scène.
+de 16 pour `yolo` (M4), pour les mêmes couches, à l'octet. En zone de
+1 000 m, les piscines suivent la scène d'une seconde ou deux, `yolo` d'une
+demi-minute.
 `VUE3D_MOTEUR=processeur` s'en passe ; `coreml` l'exige ; sans la variable,
 CoreML est pris là où onnxruntime l'a, le processeur ailleurs.
 
@@ -208,7 +224,7 @@ des scènes construites en septembre 2026 ; ils suivent les mises à jour de l'I
 | [Pont du Gard](http://localhost:8080/?lat=43.9475&lon=4.5350) | Deux ponts réduits à leur tablier, faute d'arches dans la BD TOPO : l'aqueduc à 48 m du Gardon, le pont routier à 21 m |
 | [Raffinerie de Feyzin, parc de stockage](http://localhost:8080/?lat=45.6734&lon=4.8409) | 30 citernes à leur hauteur BD TOPO, dont 14 que le LiDAR ne voit pas ; hors du sursol, elles ne se couvrent plus de faux arbres (82 houppiers et masses, contre 545) |
 
-Chaque premier chargement construit la scène, en 20 à 40 secondes.
+Chaque premier chargement construit la scène, en quelques secondes.
 
 ## Ce que montre la vue
 
