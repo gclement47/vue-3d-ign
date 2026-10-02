@@ -286,8 +286,13 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
 # Les toitures se calculent sur un bassin de processus (vue3d/toits.py), que
 # le service autorise : gunicorn et flask gardent leur script principal, que
 # chaque processus du bassin réexécute. Il naît dès maintenant, dans un fil à
-# part, et non à la première scène, qui le trouve prêt.
-autoriser_bassin()
+# part, et non à la première scène, qui le trouve prêt. Sauf dans le
+# processus qui surveille les fichiers sous `flask run --debug` : le
+# rechargeur de werkzeug y importe aussi ce module, sans jamais y servir de
+# scène, et un second bassin y naissait (22 processus au lieu de 11,
+# constaté le 2 octobre 2026). Le processus qui sert porte WERKZEUG_RUN_MAIN.
+autoriser_bassin(chauffer=not (os.environ.get("FLASK_DEBUG") == "1"
+                               and "WERKZEUG_RUN_MAIN" not in os.environ))
 
 # Le détecteur de VUE3D_VEHICULES et le registre de VUE3D_PANNEAUX sont
 # chargés ici, une fois : demandés sans leur réseau ou leur base, ils

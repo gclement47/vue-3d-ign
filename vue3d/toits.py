@@ -1195,13 +1195,14 @@ _bassin_casse = 0
 _bassin_autorise = False
 
 
-def autoriser_bassin(oui=True):
+def autoriser_bassin(oui=True, chauffer=True):
     """Autorise le bassin pour les appels sans `processus` : le service le
     fait au démarrage, et le bassin démarre aussitôt, dans un fil à part
-    (`_chauffer_bassin`), plutôt qu'à la première scène."""
+    (`_chauffer_bassin`), plutôt qu'à la première scène — sauf
+    `chauffer=False`, et il naît alors à la première scène."""
     global _bassin_autorise
     _bassin_autorise = oui
-    if oui and processus_toits() >= 2:
+    if oui and chauffer and processus_toits() >= 2:
         threading.Thread(target=_chauffer_bassin, name="bassin-des-toitures",
                          daemon=True).start()
 

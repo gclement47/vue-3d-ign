@@ -486,6 +486,28 @@ def test_les_houppiers_se_calculent_pendant_les_toitures(monkeypatch):
     assert etapes == etapes_seul == ["toitures", "houppiers"]
 
 
+def test_le_recouvrement_avec_de_vrais_processus(monkeypatch, bassin_de_deux):
+    """Le chemin du service, sans doublure : toitures sur deux vrais
+    processus du bassin, houppiers dans un autre fil pendant ce temps.
+    Même scène qu'à la suite sur un cœur."""
+    import threading
+    from vue3d import scene
+    seul, _ = _assembler_maisons()
+    fils = []
+    vrai = scene.houppiers_pour_emprise
+
+    def houppiers(*args, **kwargs):
+        fils.append(threading.current_thread() is threading.main_thread())
+        return vrai(*args, **kwargs)
+
+    monkeypatch.setattr(scene, "houppiers_pour_emprise", houppiers)
+    monkeypatch.setattr(toits, "_bassin_autorise", True)
+    ensemble, etapes = _assembler_maisons()
+    assert toits._bassin is not None and fils == [False]
+    assert json.dumps(ensemble) == json.dumps(seul)
+    assert etapes == ["toitures", "houppiers"]
+
+
 @pytest.mark.parametrize("ou", ["toits_pour_emprise", "houppiers_pour_emprise"])
 def test_une_erreur_pendant_le_recouvrement_remonte(monkeypatch, ou):
     """Rien n'est avalé : une erreur des toitures ou des houppiers fait
