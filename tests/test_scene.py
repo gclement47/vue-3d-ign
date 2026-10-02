@@ -735,6 +735,53 @@ def test_l_orthophoto_partagee_est_liberee_avec_la_derniere_detection(tmp_path):
     assert reste() is None
 
 
+def test_les_orthophotos_tenues_en_attendant_le_fil_des_detections_sont_bornees(tmp_path):
+    """54 Mo par orthophoto en zone de 1 000 m : des scènes demandées à la
+    suite n'en tiennent pas plus de IMAGES_TENUES pendant que leurs
+    détections attendent le fil unique. Celle du point suivant est lue
+    pendant la détection du précédent (le recouvrement est gardé), les
+    autres attendent leur tour, dans l'ordre, sans jamais se bloquer."""
+    import types
+
+    import numpy as np
+    lues, libres = [], {}
+
+    def orthophoto(*bbox):
+        lues.append(bbox)
+        return np.zeros((4, 4, 3), dtype=np.uint8)
+
+    def detection(*bbox, rgb=None):
+        assert rgb is not None and libres[bbox].wait(10)
+        return {"largeur": 4, "hauteur": 4, "boites": [], "piscines": []}
+
+    lecteur = types.SimpleNamespace(mode="rtmdet", detecteurs=("rtmdet",), orthophoto=orthophoto,
+                                    piscines=detection, vehicules=lambda detecteur: detection)
+    cache = Cache(str(tmp_path), lire_vehicules=lecteur)
+    assert Cache.IMAGES_TENUES == 2
+    points = [point_normalise(48.8049 + i / 100, 2.1204) for i in range(4)]
+    for lat, lon in points:
+        libres[emprise(lat, lon)] = threading.Event()
+        cache.prelire_vehicules(lat, lon)
+
+    def lues_apres(n):
+        for _ in range(500):
+            if len(lues) >= n:
+                break
+            threading.Event().wait(0.01)
+        threading.Event().wait(0.1)                 # et pas une de plus
+        return list(lues)
+
+    # Le premier point se détecte, le deuxième a son image ; les autres attendent.
+    assert lues_apres(2) == [emprise(*p) for p in points[:2]]
+    libres[emprise(*points[0])].set()
+    assert lues_apres(3) == [emprise(*p) for p in points[:3]]
+    for evenement in libres.values():
+        evenement.set()
+    for tache in list(cache._lectures.values()):
+        tache.result(10)
+    assert lues == [emprise(*p) for p in points]
+
+
 def _noter_le_fil(lecteur, fils):
     """Le lecteur dont chaque lecture note le nom du fil qui la fait."""
     piscines, vehicules = lecteur.piscines, lecteur.vehicules
@@ -780,23 +827,19 @@ class _Session:
         return [np.zeros((1, 0, 20), dtype=np.float32)]
 
 
-def test_les_detections_cedent_le_processeur_au_calcul_de_la_scene(tmp_path):
-    """Pendant les lectures d'une scène, une inférence passe ; pendant ses
-    toitures et ses houppiers, elle attend qu'ils soient finis."""
+def test_les_detections_cedent_le_processeur_a_la_construction_des_scenes(tmp_path):
+    """Tant qu'une scène se construit, lectures comprises, une inférence au
+    processeur attend ; elle passe dès la scène écrite."""
     from vue3d.vehicules import Lecteur
     journal = []
     cache = Cache(str(tmp_path), lire_vehicules=Lecteur("rtmdet", {"rtmdet": _Session(journal)}))
     session = cache.lire_vehicules.sessions["rtmdet"]
-    lectures, lue, calcul, fin = (threading.Event() for _ in range(4))
+    lectures, fin = threading.Event(), threading.Event()
 
     def construire(lat, lon, avancer=None):
         avancer("bâtiments")
         lectures.set()
-        lue.wait(5)
-        avancer("toitures")
-        calcul.set()
         fin.wait(5)
-        avancer("houppiers")
         journal.append("scène")
         return b"s", b"j"
 
@@ -804,17 +847,93 @@ def test_les_detections_cedent_le_processeur_au_calcul_de_la_scene(tmp_path):
                                  kwargs={"construire": construire})
     fil_scene.start()
     lectures.wait(5)
-    session.run(None, {})                       # pendant les lectures : passe
-    lue.set()
-    calcul.wait(5)
     fil_detection = threading.Thread(target=session.run, args=(None, {}))
     fil_detection.start()
     fil_detection.join(0.3)
-    assert fil_detection.is_alive() and journal == ["inférence"]
+    assert fil_detection.is_alive() and journal == []
     fin.set()
     fil_scene.join(5)
     fil_detection.join(5)
-    assert journal == ["inférence", "scène", "inférence"]
+    assert journal == ["scène", "inférence"]
+
+
+def test_les_detections_attendent_chaque_etape_de_la_vraie_construction(tmp_path, monkeypatch):
+    """Le vrai construire(), sources doublées : à chacune de ses lectures,
+    puis aux toitures et aux houppiers d'assembler(), une inférence
+    attendrait ; la scène écrite, plus rien ne la retient. La cession ne
+    dépend d'aucun libellé d'étape : un libellé renommé dans assembler()
+    ne la défait pas."""
+    cache = Cache(str(tmp_path))
+    monkeypatch.setattr(Cache, "CEDER_AU_PLUS_S", 0)
+    passe = {}
+
+    def noter(etape, valeur):
+        def faux(*a, **k):
+            # Vrai si une inférence passerait tout de suite.
+            passe.setdefault(etape, []).append(cache.attendre_les_scenes())
+            return valeur
+        return faux
+
+    grille = {"couvert": True, "width": 2, "height": 2, "source": "lidar_hd",
+              "bbox": [0, 0, 1, 1], "values": [0.0] * 4}
+    _fausses_sources(monkeypatch, lire_couche=noter("lectures", {"features": []}),
+                     fetch_mnh_grid=noter("lectures", grille),
+                     toits_pour_emprise=noter("toitures", {}),
+                     houppiers_pour_emprise=noter("houppiers", {}))
+    cache.obtenir(48.8049, 2.1204, construire=scene.construire)
+    assert passe == {"lectures": [False] * 11, "toitures": [False], "houppiers": [False]}
+    assert cache.attendre_les_scenes()
+
+
+def test_une_detection_n_attend_pas_plus_de_ceder_au_plus_s(tmp_path, monkeypatch):
+    """Un flot de scènes sans pause n'arrête pas tout à fait les
+    détections : une inférence passe au bout de CEDER_AU_PLUS_S, même si une
+    scène est encore en construction."""
+    from vue3d.vehicules import Lecteur
+    monkeypatch.setattr(Cache, "CEDER_AU_PLUS_S", 0.2)
+    journal = []
+    cache = Cache(str(tmp_path), lire_vehicules=Lecteur("rtmdet", {"rtmdet": _Session(journal)}))
+    session = cache.lire_vehicules.sessions["rtmdet"]
+    lectures, fin = threading.Event(), threading.Event()
+
+    def construire(lat, lon, avancer=None):
+        lectures.set()
+        fin.wait(10)
+        return b"s", b"j"
+
+    fil_scene = threading.Thread(target=cache.obtenir, args=(48.8049, 2.1204),
+                                 kwargs={"construire": construire})
+    fil_scene.start()
+    lectures.wait(5)
+    fil_detection = threading.Thread(target=session.run, args=(None, {}))
+    fil_detection.start()
+    fil_detection.join(0.05)
+    assert fil_detection.is_alive()
+    fil_detection.join(5)
+    assert not fil_detection.is_alive() and journal == ["inférence"] and fil_scene.is_alive()
+    fin.set()
+    fil_scene.join(5)
+
+
+def _sans_attendre():
+    pass
+
+
+def test_une_session_qui_cede_se_copie_et_se_serialise():
+    """Rien de ce que l'enveloppe n'a pas n'est cherché dans la session pour
+    un nom spécial : copy et pickle trouvaient __deepcopy__ ou __setstate__
+    par délégation, sur une instance encore sans session, jusqu'au
+    RecursionError."""
+    import copy
+    import pickle
+    cede = scene.SessionQuiCede(_Session(), _sans_attendre)
+    for double in (copy.copy(cede), copy.deepcopy(cede), pickle.loads(pickle.dumps(cede))):
+        assert double.get_inputs()[0].name == "images"
+        assert double.run(None, {})[0].shape == (1, 0, 20)
+    assert not hasattr(cede, "__wrapped__")
+    # Sans session, une erreur d'attribut, pas une récursion.
+    with pytest.raises(AttributeError):
+        scene.SessionQuiCede.__new__(scene.SessionQuiCede).get_inputs
 
 
 def test_seules_les_sessions_sur_le_processeur_cedent(tmp_path):
