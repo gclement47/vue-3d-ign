@@ -101,7 +101,9 @@ VUE3D_VEHICULES=rtmdet docker compose up -d --build
 Temps mesurés sur un Mac à dix cœurs, hors conteneur puis dans le conteneur.
 La scène n'attend pas ces calculs, et chaque résultat s'affiche dès qu'il est
 prêt : les piscines une demi-seconde après la scène, puis les véhicules
-détecteur par détecteur, `rtmdet` avant `yolo`.
+détecteur par détecteur, `rtmdet` avant `yolo`. Sur le processeur (le
+conteneur), ils s'interrompent pendant qu'une scène calcule ses toitures et
+ses houppiers, pour lui laisser les cœurs.
 Aucun des deux réseaux ne suffit partout : `rtmdet` lit mal un parking serré,
 `yolo` est meilleur là et moins bon ailleurs ; pour les piscines, c'est
 `rtmdet` qui voit le mieux.

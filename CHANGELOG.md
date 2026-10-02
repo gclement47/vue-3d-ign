@@ -62,6 +62,23 @@ messages de commit et dans les commentaires des modules.
   9 min au lieu de 22 sur la zone de 1 000 m. Les couches sont les mêmes à
   l'octet, et le conteneur garde moins de mémoire après une détection
   (350 Mo au lieu de 464 pour `yolo`).
+- **Les détections laissent le processeur à la scène.** Lancées à la
+  demande de la scène pour être prêtes avec elle, les détections des
+  véhicules et des piscines occupaient tous les cœurs pendant qu'elle
+  calculait ses toitures et ses houppiers : dans le conteneur, ce calcul
+  prenait 20,1 s au lieu de 11,9 à côté de `yolo` (Gordes, zone de
+  1 000 m, rejoué). Elles s'interrompent désormais entre deux tuiles tant
+  qu'une scène calcule, et avancent pendant qu'elle attend l'IGN. Gordes en
+  zone de 1 000 m avec `tous`, dans le conteneur, de la demande à la scène
+  servie : 27,5 s au lieu de 43,2 (médianes de quatre essais alternés) ;
+  les piscines arrivent 5 s plus tard, `rtmdet` pas plus tard. Sur CoreML,
+  hors conteneur, rien ne change : le GPU ne prenait que 8 % au calcul.
+- **La page demande sa scène sans attendre three.js**, et l'orthophoto et
+  les couches à part dès que la scène répond, sans attendre d'avoir construit
+  ses maillages. À Gordes, scène en cache, dans Chrome à cache vide : la
+  scène part avec three.js au lieu de 0,1 s après lui ; l'orthophoto et les
+  couches partent à 1,4 s de la navigation au lieu de 3,1 s, les piscines au
+  lieu de 9,0 s (médianes de trois chargements).
 - **Toitures et houppiers se calculent dix fois plus vite.** Chaque
   bâtiment relisait la grille MNH entière, en Python, et la segmentation des
   arbres la parcourait toute à chaque passe. Sur Gordes en
