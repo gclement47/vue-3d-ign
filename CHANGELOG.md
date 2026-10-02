@@ -60,6 +60,16 @@ messages de commit et dans les commentaires des modules.
   `VUE3D_TOITS_PROCESSUS` règle le nombre de processus (1 : aucun bassin) ;
   s'il ne peut pas démarrer ou casse en route, les toitures se calculent
   dans le service, comme avant, et ses processus s'arrêtent avec lui.
+- **Les houppiers, encore quatre à cinq fois plus vite.** La descente
+  réévaluait tout son front à chaque passe, les sommets dilataient la grille
+  entière une fois par rayon, chaque bâtiment, zone de végétation et parcelle
+  de forêt était testé sur toutes les cellules de sa boîte, et chaque arbre
+  était décrit un à un. Seul ce qui peut changer est désormais recalculé, et
+  un polygone n'est testé qu'aux cellules où sa réponse compte. Sur Gordes en
+  zone de 1 000 m, ce qui suit les toitures passe de 5,0 s à 1,1 s ; à
+  Strasbourg, de 3,3 s à 0,8 s (machine partagée avec d'autres calculs :
+  médianes de trois, en alternant). La scène reste la même à l'octet, sur le
+  Mac comme dans le conteneur.
 
 ### Corrigé
 

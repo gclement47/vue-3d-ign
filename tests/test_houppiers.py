@@ -231,3 +231,184 @@ def test_la_fenetre_d_une_emprise_garde_toutes_ses_cellules():
         masque = np.zeros(LON.shape, dtype=bool)
         masque[fenetre] = shapely.contains_xy(geom, LON[fenetre], LAT[fenetre])
         assert np.array_equal(masque, shapely.contains_xy(geom, LON, LAT))
+
+
+# --- Équivalence avec la segmentation de la scène v14 ------------------------
+#
+# houppiers.py a été réécrit pour aller plus vite, à scène identique à
+# l'octet. tests/houppiers_v14.py garde le code d'avant : les deux doivent
+# rendre exactement la même chose sur des grilles tirées au hasard, bords de
+# grille, plateaux, bâti, zones, forêt et flèche de grue compris.
+
+
+def _scene_au_hasard(graine, nx=96, ny=74):
+    """(grille, exg, bâtiments, végétation, forêts) tirés au hasard."""
+    rng = np.random.default_rng(graine)
+    largeur, hauteur = nx * 0.5, ny * 0.5
+    arbres = [(rng.uniform(-3, largeur + 3), rng.uniform(-3, hauteur + 3),
+               rng.uniform(2.5, 30), rng.uniform(1.2, 7)) for _ in range(rng.integers(4, 30))]
+    haies = [(rng.uniform(0, largeur), rng.uniform(0, hauteur), rng.uniform(0, largeur),
+              rng.uniform(0, hauteur), rng.uniform(2.5, 6), rng.uniform(0.5, 2))
+             for _ in range(rng.integers(0, 4))]
+    H = _grille(nx, ny, arbres=arbres, haies=haies, bruit=float(rng.choice([0, 0.3])))
+    # Au décimètre, comme le MNH : des plateaux, que seul le bruit du lissage départage.
+    H = np.round(H, 1).astype(np.float32)
+    if rng.random() < 0.5:
+        H = _fleche_de_grue(H, hauteur=float(rng.uniform(41, 90)))
+    grille = _emprise(H)
+
+    def rectangle(proprietes=None):
+        x0, x1 = sorted(rng.uniform(-5, largeur + 5, 2))
+        y0, y1 = sorted(rng.uniform(-5, hauteur + 5, 2))
+        return dict(_polygone_m(grille, x0, y0, x1, y1), properties=proprietes or {})
+
+    bat = {"features": [rectangle() for _ in range(rng.integers(0, 6))]}
+    natures = ["Forêt fermée de feuillus", "Bois", "Haie", "Forêt ouverte", None]
+    veg = {"features": [rectangle({"nature": natures[rng.integers(len(natures))]})
+                        for _ in range(rng.integers(0, 5))]}
+    essences = ["Chêne vert", "Pin d'Alep", "Hêtre"]
+    forets = {"features": [rectangle({"essence": essences[rng.integers(len(essences))]})
+                           for _ in range(rng.integers(0, 4))]}
+    exg = None
+    if rng.random() < 0.8:
+        exg = rng.integers(-30, 30, H.shape).astype(np.int8)
+    return grille, exg, bat, veg, forets
+
+
+def test_segmenter_emprise_rend_la_scene_v14():
+    import json
+    from tests import houppiers_v14
+    for graine in range(40):
+        entree = _scene_au_hasard(graine)
+        attendu = houppiers_v14.segmenter_emprise(*entree)
+        obtenu = segmenter_emprise(*entree)
+        # Comparés en JSON : un -0.0 pour un 0.0 serait un octet de différence.
+        assert json.dumps(obtenu) == json.dumps(attendu), graine
+
+
+def test_segmenter_rend_les_etiquettes_v14():
+    """Sur des masques et des rayons quelconques, pas seulement ceux que
+    segmenter_emprise produit : rayons jusqu'à 15 cellules, masque troué ;
+    et sur des hauteurs sans le bruit du lissage, pleines d'égalités que
+    l'ordre des voisins départage, ou négatives, où le bord de la grille ne
+    compte pas comme une cellule à -1."""
+    from tests import houppiers_v14
+    for graine in range(30):
+        rng = np.random.default_rng(100 + graine)
+        grille = _scene_au_hasard(graine, nx=int(rng.integers(30, 90)),
+                                  ny=int(rng.integers(30, 90)))[0]
+        H = np.asarray(grille["values"], dtype=np.float32).reshape(grille["height"],
+                                                                   grille["width"])
+        masque = (H >= 2) & (rng.random(H.shape) > rng.uniform(0, 0.2))
+        rayons = rng.integers(1, int(rng.integers(2, 16)), H.shape).astype(np.int32)
+        etendue = float(rng.uniform(2, 30))
+        for lisse in (lisser(H), np.round(lisser(H)), lisser(H) - 8):
+            stats_v14, stats = {}, {}
+            attendu = houppiers_v14.segmenter(lisse, masque.copy(), rayons, etendue, stats_v14)
+            obtenu = segmenter(lisse, masque.copy(), rayons, etendue, stats)
+            assert np.array_equal(obtenu[0], attendu[0]) and obtenu[1] == attendu[1], graine
+            assert stats == stats_v14
+
+
+def test_les_sommets_sont_ceux_des_dilatations_successives():
+    from tests import houppiers_v14
+    from vue3d.houppiers import sommets
+    rng = np.random.default_rng(7)
+    for _ in range(20):
+        ny, nx = rng.integers(1, 60, 2)
+        # Valeurs au décimètre : des égalités, que >= doit garder.
+        lisse = np.round(rng.uniform(0, 20, (ny, nx)), 1).astype(np.float32)
+        masque = rng.random((ny, nx)) > 0.3
+        rayons = rng.integers(0, 14, (ny, nx)).astype(np.int32)
+        assert np.array_equal(sommets(lisse, masque, rayons),
+                              houppiers_v14.sommets(lisse, masque, rayons))
+
+
+def test_la_dilatation_separee_est_la_dilatation_carree():
+    from tests import houppiers_v14
+    from vue3d.houppiers import _dilater
+    rng = np.random.default_rng(5)
+    for forme in ((1, 1), (1, 7), (6, 1), (2, 2), (33, 21)):
+        g = rng.uniform(-5, 5, forme).astype(np.float32)
+        g[rng.random(forme) < 0.05] = np.nan
+        assert np.array_equal(_dilater(g), houppiers_v14._dilater(g), equal_nan=True)
+        b = rng.random(forme) > 0.8
+        assert np.array_equal(_dilater(b), houppiers_v14._dilater(b))
+
+
+def test_arrondir_est_round_de_python():
+    import math
+    import struct
+    from vue3d.houppiers import _arrondir
+    rng = np.random.default_rng(11)
+    valeurs = list(rng.uniform(-200, 200, 20000)) + list(rng.uniform(0, 1, 20000))
+    # Au plus près des cas où l'arrondi bascule : les décimaux à demi-unité
+    # (2.675, 0.125…), leurs voisins immédiats, des coordonnées.
+    for chiffres in (1, 2, 7):
+        for q in range(-3000, 3000):
+            d = (q + 0.5) / 10 ** chiffres
+            valeurs += [d, math.nextafter(d, math.inf), math.nextafter(d, -math.inf)]
+    valeurs += [5.20030005, 43.91160005, 0.0, -0.0, -0.004, 1e300, -1e300,
+                math.inf, -math.inf, math.nan, 5e-324]
+    for chiffres in (1, 2, 7):
+        obtenu = _arrondir(valeurs, chiffres)
+        for v, o in zip(valeurs, obtenu):
+            attendu = round(float(v), chiffres)
+            # À l'octet près : même signe du zéro, NaN compris.
+            assert struct.pack("<d", o) == struct.pack("<d", attendu), (v, chiffres)
+
+
+def test_le_classement_par_blocs_rend_le_test_centre_par_centre():
+    """Un bloc qu'aucun côté ne touche est tout dedans ou tout dehors :
+    vérifié sur des polygones étoilés, troués, multiples, invalides (le
+    papillon), en 3D, et sur des côtés qui passent par les centres."""
+    import shapely
+    from shapely.geometry import MultiPolygon, Polygon, box
+    from vue3d.houppiers import BLOC as b, BLOCS_SEUIL, _dedans
+    rng = np.random.default_rng(3)
+    ny, nx = 250, 300
+    lons = 5.6 + (np.arange(nx) + 0.5) * 1e-5
+    lats = 43.5 - (np.arange(ny) + 0.5) * 1e-5
+    LON, LAT = np.meshgrid(lons, lats)
+
+    def etoile(cx, cy, r, n):
+        a = np.sort(rng.uniform(0, 2 * np.pi, n))
+        d = rng.uniform(0.3, 1, n) * r
+        return list(zip(cx + d * np.cos(a), cy + d * np.sin(a)))
+
+    c = (lons[150], lats[125])
+    geoms = [Polygon(etoile(*c, 1.2e-3, 40)),
+             Polygon(etoile(*c, 1.5e-3, 200), [etoile(*c, 3e-4, 12)]),
+             MultiPolygon([Polygon(etoile(lons[60], lats[60], 5e-4, 30)),
+                           Polygon(etoile(lons[220], lats[180], 7e-4, 25))]),
+             # Papillon : invalide, GEOS compte les traversées quand même.
+             Polygon([(lons[10], lats[10]), (lons[290], lats[240]), (lons[290], lats[10]),
+                      (lons[10], lats[240])]),
+             # Côtés sur les lignes et les colonnes de centres : centres au bord,
+             # au milieu des blocs, puis sur leur première et leur dernière
+             # ligne et colonne (blocs de la grille, puis de la sous-fenêtre).
+             box(lons[20], lats[230], lons[270], lats[30]),
+             box(lons[2 * b], lats[(ny // b - 2) * b - 1], lons[(nx // b - 3) * b - 1],
+                 lats[3 * b]),
+             box(lons[5 + b], lats[37 + ((ny - 50) // b) * b - 1],
+                 lons[5 + ((nx - 50) // b) * b - 1], lats[37 + b]),
+             Polygon([(x, y, 12.0) for x, y in etoile(*c, 1e-3, 25)]),
+             # Fine lame en diagonale, à travers presque tous les blocs.
+             Polygon([(lons[0], lats[0]), (lons[299], lats[249]), (lons[299], lats[247])])]
+    fenetre = (slice(0, ny), slice(0, nx))
+    for geom in geoms:
+        choisies = rng.random((ny, nx)) > 0.3
+        assert choisies.sum() >= BLOCS_SEUIL
+        jj, ii = _dedans(geom, fenetre, choisies, lons, lats)
+        obtenu = np.zeros((ny, nx), dtype=bool)
+        obtenu[jj, ii] = True
+        attendu = choisies & shapely.contains_xy(geom, LON, LAT)
+        assert np.array_equal(obtenu, attendu), geom.wkt[:40]
+        # Et dans une fenêtre qui ne commence pas au coin de la grille.
+        sous = (slice(37, 241), slice(5, 263))
+        jj, ii = _dedans(geom, sous, choisies[sous], lons, lats)
+        obtenu = np.zeros((ny, nx), dtype=bool)
+        obtenu[jj + 37, ii + 5] = True
+        attendu = np.zeros((ny, nx), dtype=bool)
+        attendu[sous] = choisies[sous] & shapely.contains_xy(geom, LON[sous], LAT[sous])
+        assert np.array_equal(obtenu, attendu), geom.wkt[:40]
