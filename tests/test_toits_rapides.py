@@ -463,8 +463,8 @@ def _assembler_maisons():
 def test_les_houppiers_se_calculent_pendant_les_toitures(monkeypatch):
     """Toitures au bassin : les houppiers, qui ne lisent pas les toits, se
     calculent pendant ce temps dans un autre fil du service. Même scène,
-    mêmes étapes annoncées, dans le même ordre (la page et
-    Cache.ETAPES_DE_CALCUL les lisent)."""
+    mêmes étapes annoncées, dans le même ordre (la page pondère sa barre
+    d'après scene.ETAPES_DE_CALCUL)."""
     import threading
     from vue3d import scene
     seul, etapes_seul = _assembler_maisons()

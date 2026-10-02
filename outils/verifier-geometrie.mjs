@@ -501,7 +501,7 @@ tout = tout && okE;
 {
 const scene = fs.readFileSync(fileURLToPath(new URL('../vue3d/scene.py', import.meta.url)), 'utf8');
 const total = Number(/^ETAPES_SCENE = (\d+)$/m.exec(scene)?.[1]);
-const calculs = (/ETAPES_DE_CALCUL = frozenset\(\{([^}]*)\}\)/.exec(scene)?.[1].match(/"[^"]*"/g) || []).length;
+const calculs = (/^ETAPES_DE_CALCUL = \(([^)]*)\)/m.exec(scene)?.[1].match(/"[^"]*"/g) || []).length;
 const parts = Array.from({ length: total }, (_, k) => partConstruite(k + 1, total));
 const croissante = parts.every((p, k) => k === 0 || p > parts[k - 1]);
 const ok = total > 2 && calculs === 2 && parts[0] === 0 && croissante && parts[total - 1] < 1

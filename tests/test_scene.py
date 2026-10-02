@@ -116,7 +116,7 @@ def test_construire_annonce_chacune_de_ses_etapes(monkeypatch):
     assert len(etapes) == scene.ETAPES_SCENE == _NB_LECTURES + 2
     # Au départ, toutes les lectures attendues, les plus longues en tête.
     assert etapes[0] == "hauteurs du sursol, orthophoto et 14 autres"
-    assert etapes[-2:] == ["toitures", "houppiers"]
+    assert etapes[-2:] == ["toitures", "houppiers"] == list(scene.ETAPES_DE_CALCUL)
 
 
 def test_les_lectures_partent_ensemble(monkeypatch):

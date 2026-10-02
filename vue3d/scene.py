@@ -135,6 +135,10 @@ SCENE_COTE_M = 2 * SCENE_DELTA * 111320
 # Les lectures partent ensemble : l'étape k est alors « k − 1 lectures
 # finies », et son libellé dit celles qu'on attend encore.
 ETAPES_SCENE = 18
+# Libellés des deux étapes de calcul d'assembler, toujours les dernières
+# annoncées : la page pondère sa barre d'attente d'après elles
+# (partConstruite), et outils/verifier-geometrie.mjs le contrôle.
+ETAPES_DE_CALCUL = ("toitures", "houppiers")
 # Côté maximal de la grille MNH à 0,5 m : le plafond du WMS (ZONE_MAX_M).
 GRILLE_PIXELS_MAX = 2048
 # Source du MNH qu'on suppose pour lire le terrain en même temps que lui : le
@@ -278,7 +282,7 @@ def assembler(west, south, east, north, batiments, vegetation, forets, routes,
     """
     from .toits import toitures_au_bassin
     avancer = avancer or (lambda libelle: None)
-    avancer("toitures")
+    avancer(ETAPES_DE_CALCUL[0])
     # Découpés pour les toitures et pour la vue. Les houppiers gardent les
     # bâtiments entiers : leur masque bâti s'arrête de toute façon à la
     # grille, et dans le retrait de la découpe un toit passerait pour du
@@ -326,11 +330,11 @@ def assembler(west, south, east, north, batiments, vegetation, forets, routes,
                 max_workers=1, thread_name_prefix="houppiers") as fil:
             pendant = fil.submit(vegetation_et_constructions)
             toits = toits_pour_emprise(west, south, east, north, decoupes, grille, exg, sol)
-            avancer("houppiers")
+            avancer(ETAPES_DE_CALCUL[1])
             construits, veg = pendant.result()
     else:
         toits = toits_pour_emprise(west, south, east, north, decoupes, grille, exg, sol)
-        avancer("houppiers")
+        avancer(ETAPES_DE_CALCUL[1])
         construits, veg = vegetation_et_constructions()
     return {
         "version": SCENE_VERSION,
