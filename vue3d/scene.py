@@ -48,6 +48,7 @@ demande suivante réessaie.
 """
 
 import concurrent.futures
+import copy
 import gzip
 import json
 import logging
@@ -371,6 +372,35 @@ def construire(lat, lon, avancer=None, zone=None):
     return gzip.compress(json.dumps(scene, separators=(",", ":")).encode(), 6), mosaique
 
 
+class SessionQuiCede:
+    """Une session d'inférence (onnxruntime) dont chaque appel attend
+    d'abord `attendre()` : celui du Cache, qui rend la main quand aucune
+    scène ne calcule. Une tuile de yolo dure 160 ms sur le processeur hors
+    conteneur, 350 ms dans le conteneur (6,2 et 2,8 tuiles par seconde) :
+    une scène qui commence son calcul n'attend pas plus d'une tuile."""
+
+    def __init__(self, session, attendre):
+        self._session = session
+        self._attendre = attendre
+
+    def run(self, *args, **kwargs):
+        self._attendre()
+        return self._session.run(*args, **kwargs)
+
+    def __getattr__(self, nom):
+        return getattr(self._session, nom)
+
+
+def _sur_le_processeur(session):
+    """Vrai si la session d'inférence calcule sur le processeur : son premier
+    moteur est celui d'onnxruntime pour le processeur (vehicules.MOTEURS), ou
+    elle ne le dit pas."""
+    try:
+        return session.get_providers()[0] == "CPUExecutionProvider"
+    except (AttributeError, IndexError):
+        return True
+
+
 class Cache:
     """Scènes sur disque, une par point arrondi.
 
@@ -381,7 +411,34 @@ class Cache:
 
     Les couches à part — monuments OSM, ouvrages BD TOPO — se rangent à côté
     de la scène, sous la même règle : écrites entières, ou pas du tout.
+
+    Les détections sur l'orthophoto cèdent le processeur au calcul des
+    scènes. Chacune occupe tous les cœurs (onnxruntime) pendant des
+    secondes, et jusqu'à plusieurs minutes en zone de 1 000 m sans CoreML :
+    lancées avec la scène pour être prêtes avec elle, elles lui prenaient le
+    processeur au moment où elle calcule ses toitures et ses houppiers.
+    Désormais, chaque inférence attend qu'aucune scène ne calcule
+    (ETAPES_DE_CALCUL, SessionQuiCede) ; pendant les lectures de la scène,
+    qui attendent le réseau, elles avancent.
     """
+
+    # Étapes de la construction (les libellés qu'annonce `assembler`) pendant
+    # lesquelles la scène calcule, et que les détections laissent passer.
+    #
+    # Mesuré le 2026-10-01 sur un M4 à dix cœurs, dans le conteneur, en
+    # rejouant les toitures et les houppiers de Gordes en zone de 1 000 m
+    # pendant que yolo détecte (médianes de quatre tours alternés, machine
+    # chargée) : 11,9 s seuls, 20,1 s à côté de la détection ; hors
+    # conteneur, sur le processeur, 6,3 s et 11,0 s, sur CoreML 5,6 et 6,0 s.
+    # De la demande à la scène servie, dans le conteneur, avec `tous` :
+    # 43,2 s, dont 26,4 s de calcul, et 27,5 s, dont 11,8 s, quand les
+    # détections cèdent (médianes de quatre essais alternés) ; les piscines
+    # arrivent 5 s plus tard. Les lectures, elles, ne ralentissent pas quand
+    # une détection lit son orthophoto à côté : 14,5 s et 15,6 s, dans le
+    # bruit du réseau (de 12 à 28 s d'un essai à l'autre) — d'où les
+    # détections qui avancent pendant les lectures, plutôt que lancées après
+    # la scène.
+    ETAPES_DE_CALCUL = frozenset({"toitures", "houppiers"})
 
     def __init__(self, dossier, lire_monuments=fetch_monuments, lire_ouvrages=fetch_ouvrages,
                  lire_vehicules=None, lire_panneaux=None):
@@ -397,13 +454,17 @@ class Cache:
         # Constructions en cours, par point : en mémoire, comme les verrous —
         # le service tourne en un seul processus (Dockerfile).
         self._avancements = {}
+        # Scènes en train de calculer (ETAPES_DE_CALCUL), tous points
+        # confondus : les détections attendent qu'il n'y en ait plus.
+        self._calculs = 0
+        self._sans_calcul = threading.Condition()
         # Lectures lancées en tâche de fond, par couche et par point (Future) ;
         # les lecteurs sont injectables pour les tests, qui n'appellent pas le
         # réseau. Un bassin de fils par source : Overpass peut tenir les siens
         # plus de 100 s, l'IGN n'a pas à attendre derrière lui.
         self.lire_monuments = lire_monuments
         self.lire_ouvrages = lire_ouvrages
-        self.lire_vehicules = lire_vehicules
+        self.lire_vehicules = self._qui_cede(lire_vehicules)
         self.mode_vehicules = lire_vehicules.mode if lire_vehicules else None
         self.lire_panneaux = lire_panneaux
         self._lectures = {}
@@ -426,6 +487,43 @@ class Cache:
             self._taches[nom_piscines(self.mode_vehicules)] = detection
             for detecteur in lire_vehicules.detecteurs:
                 self._taches[nom_vehicules(detecteur)] = detection
+
+    def _qui_cede(self, lecteur):
+        """Le lecteur des véhicules, celles de ses sessions d'inférence qui
+        calculent sur le processeur remplacées par des SessionQuiCede ; tel
+        quel s'il n'en a pas (None, doublure des tests). Une copie : celui
+        qu'on a reçu ne change pas.
+
+        Une session sur CoreML (hors conteneur, sur un Mac) n'attend pas :
+        elle calcule sur le GPU et ne prenait que 8 % au calcul de la scène,
+        quand l'attente retardait ses couches de 2 à 5 s en zone de 1 000 m."""
+        sessions = getattr(lecteur, "sessions", None)
+        if not isinstance(sessions, dict):
+            return lecteur
+        cedant = copy.copy(lecteur)
+        cedant.sessions = {nom: SessionQuiCede(session, self.attendre_les_calculs)
+                           if _sur_le_processeur(session) else session
+                           for nom, session in sessions.items()}
+        return cedant
+
+    def attendre_les_calculs(self):
+        """Rend la main quand aucune scène ne calcule (ETAPES_DE_CALCUL)."""
+        with self._sans_calcul:
+            self._sans_calcul.wait_for(lambda: not self._calculs)
+
+    def _calcul(self, en_cours):
+        with self._sans_calcul:
+            self._calculs += 1 if en_cours else -1
+            if not self._calculs:
+                self._sans_calcul.notify_all()
+
+    def _detecter(self, nom, lire):
+        """La lecture d'une couche de l'orthophoto, telle que _obtenir_couche
+        la fait quand aucune tâche de fond ne l'a lancée : passée elle aussi
+        par le fil des détections, pour que jamais deux ne tournent ensemble,
+        chacune sur tous les cœurs."""
+        tache = self._taches[nom]
+        return lambda *bbox: tache.submit(lire, *bbox).result()
 
     def _ecrire(self, dossier, nom, octets):
         """Écrit d'un bloc : un fichier temporaire, renommé une fois complet."""
@@ -476,6 +574,7 @@ class Cache:
                 return self._dossier_point(*cle)
             debut = time.monotonic()
             etape = [0]
+            calcul = [False]
 
             def avancer(libelle):
                 etape[0] += 1
@@ -483,6 +582,9 @@ class Cache:
                 # l'étape d'un libellé et le libellé d'une autre.
                 self._avancements[cle] = {"etape": etape[0], "libelle": libelle,
                                                  "debut": debut}
+                if libelle in self.ETAPES_DE_CALCUL and not calcul[0]:
+                    calcul[0] = True
+                    self._calcul(True)
 
             try:
                 # Sans zone, l'appel d'avant les zones : les constructions
@@ -498,7 +600,10 @@ class Cache:
                     self._ecrire(dossier, nom, octets)
                 return dossier
             finally:
-                # Succès ou échec, la construction n'est plus en cours.
+                # Succès ou échec, la construction n'est plus en cours, et les
+                # détections reprennent.
+                if calcul[0]:
+                    self._calcul(False)
                 self._avancements.pop(cle, None)
 
     def _prelire(self, nom, lat, lon, lire, zone=None):
@@ -628,9 +733,9 @@ class Cache:
     def prelire_vehicules(self, lat, lon, zone=None):
         """Lance en tâche de fond les détections sur l'orthophoto à 0,2 m, si
         le service a un détecteur : les piscines d'abord (une demi-seconde),
-        puis les véhicules de chaque détecteur, du rapide au lent. Quelques
-        secondes à une demi-minute de calcul, qui avancent pendant que la
-        scène attend l'IGN."""
+        puis les véhicules de chaque détecteur, du rapide au lent. Elles
+        avancent pendant que la scène attend l'IGN, et lui cèdent le
+        processeur quand elle calcule (ETAPES_DE_CALCUL)."""
         if self.lire_vehicules:
             self._prelire(nom_piscines(self.mode_vehicules), lat, lon, self.lire_vehicules.piscines, zone)
             for detecteur in self.lire_vehicules.detecteurs:
@@ -653,7 +758,7 @@ class Cache:
             raise VehiculesDesactives("service lancé sans détecteur de véhicules")
         nom = nom_piscines(self.mode_vehicules)
         return self._obtenir_couche(
-            nom, lat, lon, construire, self.lire_vehicules.piscines,
+            nom, lat, lon, construire, self._detecter(nom, self.lire_vehicules.piscines),
             lambda message: VehiculesIndisponibles(f"piscines illisibles : {message}"),
             lambda bbox, brut, scene: piscines_pour_emprise(
                 *bbox, brut, self.mode_vehicules, scene.get("batiments"),
@@ -669,7 +774,7 @@ class Cache:
             raise VehiculesDesactives(f"service lancé sans le détecteur {detecteur!r}")
         nom = nom_vehicules(detecteur)
         return self._obtenir_couche(
-            nom, lat, lon, construire, self.lire_vehicules.vehicules(detecteur),
+            nom, lat, lon, construire, self._detecter(nom, self.lire_vehicules.vehicules(detecteur)),
             lambda message: VehiculesIndisponibles(f"véhicules illisibles : {message}"),
             lambda bbox, brut, scene: vehicules_pour_emprise(
                 *bbox, brut, detecteur, scene.get("batiments"), scene.get("eau")), zone=zone), nom

@@ -463,6 +463,143 @@ def test_les_detections_sont_lancees_pendant_que_la_scene_se_construit(tmp_path)
     assert appels == ["piscines", "rtmdet", "yolo"]
 
 
+def _noter_le_fil(lecteur, fils):
+    """Le lecteur dont chaque lecture note le nom du fil qui la fait."""
+    piscines, vehicules = lecteur.piscines, lecteur.vehicules
+
+    def noter(lire):
+        def lire_et_noter(*bbox):
+            fils.append(threading.current_thread().name)
+            return lire(*bbox)
+        return lire_et_noter
+    lecteur.piscines = noter(piscines)
+    lecteur.vehicules = lambda detecteur: noter(vehicules(detecteur))
+    return lecteur
+
+
+def test_une_detection_sans_tache_de_fond_passe_par_le_fil_des_detections(tmp_path):
+    """Une couche demandée sans lecture anticipée (page rechargée après un
+    échec, service relancé) n'est pas détectée dans le fil de la requête :
+    elle prend le fil des détections, de priorité abaissée, et jamais deux
+    détections ne tournent ensemble."""
+    fils = []
+    cache = Cache(str(tmp_path), lire_vehicules=_noter_le_fil(_lecteur_vehicules("tous"), fils))
+    cache.obtenir_piscines(48.8049, 2.1204, construire=_scene_nue)
+    cache.obtenir_vehicules(48.8049, 2.1204, "yolo", construire=_scene_nue)
+    assert len(fils) == 2 and all(nom.startswith("detection") for nom in fils)
+    assert os.path.exists(cache.chemin(48.8049, 2.1204, scene.nom_vehicules("yolo")))
+
+
+class _Session:
+    """Doublure d'une session onnxruntime de rtmdet : aucune boîte."""
+
+    def __init__(self, journal=None):
+        self.journal = journal if journal is not None else []
+
+    def get_inputs(self):
+        import types
+        return [types.SimpleNamespace(name="images")]
+
+    def run(self, sorties, entrees):
+        import numpy as np
+        self.journal.append("inférence")
+        return [np.zeros((1, 0, 20), dtype=np.float32)]
+
+
+def test_les_detections_cedent_le_processeur_au_calcul_de_la_scene(tmp_path):
+    """Pendant les lectures d'une scène, une inférence passe ; pendant ses
+    toitures et ses houppiers, elle attend qu'ils soient finis."""
+    from vue3d.vehicules import Lecteur
+    journal = []
+    cache = Cache(str(tmp_path), lire_vehicules=Lecteur("rtmdet", {"rtmdet": _Session(journal)}))
+    session = cache.lire_vehicules.sessions["rtmdet"]
+    lectures, lue, calcul, fin = (threading.Event() for _ in range(4))
+
+    def construire(lat, lon, avancer=None):
+        avancer("bâtiments")
+        lectures.set()
+        lue.wait(5)
+        avancer("toitures")
+        calcul.set()
+        fin.wait(5)
+        avancer("houppiers")
+        journal.append("scène")
+        return b"s", b"j"
+
+    fil_scene = threading.Thread(target=cache.obtenir, args=(48.8049, 2.1204),
+                                 kwargs={"construire": construire})
+    fil_scene.start()
+    lectures.wait(5)
+    session.run(None, {})                       # pendant les lectures : passe
+    lue.set()
+    calcul.wait(5)
+    fil_detection = threading.Thread(target=session.run, args=(None, {}))
+    fil_detection.start()
+    fil_detection.join(0.3)
+    assert fil_detection.is_alive() and journal == ["inférence"]
+    fin.set()
+    fil_scene.join(5)
+    fil_detection.join(5)
+    assert journal == ["inférence", "scène", "inférence"]
+
+
+def test_seules_les_sessions_sur_le_processeur_cedent(tmp_path):
+    """CoreML calcule sur le GPU : sa session n'attend pas la scène."""
+    from vue3d.vehicules import Lecteur
+
+    class Moteur(_Session):
+        def __init__(self, moteurs):
+            super().__init__()
+            self.moteurs = moteurs
+
+        def get_providers(self):
+            return self.moteurs
+
+    coreml = Moteur(["CoreMLExecutionProvider", "CPUExecutionProvider"])
+    processeur = Moteur(["CPUExecutionProvider"])
+    cache = Cache(str(tmp_path), lire_vehicules=Lecteur("tous", {"rtmdet": processeur, "yolo": coreml}))
+    assert isinstance(cache.lire_vehicules.sessions["rtmdet"], scene.SessionQuiCede)
+    assert cache.lire_vehicules.sessions["yolo"] is coreml
+
+
+def test_une_scene_en_echec_ne_retient_pas_les_detections(tmp_path):
+    from vue3d.vehicules import Lecteur
+    cache = Cache(str(tmp_path), lire_vehicules=Lecteur("rtmdet", {"rtmdet": _Session()}))
+
+    def en_panne(lat, lon, avancer=None):
+        avancer("toitures")
+        raise SceneIncomplete("hauteurs du sursol illisibles : Read timed out")
+
+    with pytest.raises(SceneIncomplete):
+        cache.obtenir(48.8049, 2.1204, construire=en_panne)
+    fil = threading.Thread(target=cache.lire_vehicules.sessions["rtmdet"].run, args=(None, {}))
+    fil.start()
+    fil.join(2)
+    assert not fil.is_alive()
+
+
+def test_le_lecteur_des_vehicules_detecte_par_les_sessions_qui_cedent(tmp_path, monkeypatch):
+    """Le vrai vehicules.Lecteur, orthophoto et réseau doublés : ses
+    détections passent par les sessions du cache, qui attendent les scènes ;
+    le lecteur reçu, lui, n'est pas touché."""
+    import numpy as np
+    from vue3d import vehicules
+    monkeypatch.setattr(vehicules.Lecteur, "_orthophoto",
+                        staticmethod(lambda *bbox: np.zeros((300, 200, 3), dtype=np.uint8)))
+    originale = _Session()
+    lecteur = vehicules.Lecteur("rtmdet", {"rtmdet": originale})
+    cache = Cache(str(tmp_path), lire_vehicules=lecteur)
+    attentes = []
+    cede = cache.lire_vehicules.sessions["rtmdet"]
+    cede._attendre = lambda: attentes.append(1)
+    cache.prelire_vehicules(48.8049, 2.1204)
+    dossier, nom = cache.obtenir_piscines(48.8049, 2.1204, construire=_scene_nue)
+    cache.obtenir_vehicules(48.8049, 2.1204, "rtmdet", construire=_scene_nue)
+    assert os.path.exists(os.path.join(dossier, nom))
+    assert attentes and len(attentes) == len(originale.journal)
+    assert lecteur.sessions["rtmdet"] is originale and cede.get_inputs()[0].name == "images"
+
+
 # --- Panneaux solaires : le registre ------------------------------------------------
 
 def _installation(west, south, east, north):
