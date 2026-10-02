@@ -412,3 +412,51 @@ def test_le_classement_par_blocs_rend_le_test_centre_par_centre():
         attendu = np.zeros((ny, nx), dtype=bool)
         attendu[sous] = choisies[sous] & shapely.contains_xy(geom, LON[sous], LAT[sous])
         assert np.array_equal(obtenu, attendu), geom.wkt[:40]
+
+
+def test_le_classement_par_blocs_suit_geos_hors_de_la_boite():
+    """Polygone invalide dont un trou sort de la coque, et de la boîte de la
+    géométrie : la parité compte dedans les centres du trou, GEOS rejette
+    ceux hors de la boîte. Un bloc à cheval sur le bord de la boîte, qu'aucun
+    côté ne touche, mêle les deux réponses : sans les côtés de la boîte, son
+    témoin, hors de la boîte, le rendait tout dehors."""
+    import shapely
+    from shapely import affinity
+    from shapely.geometry import Polygon
+    from vue3d.houppiers import BLOCS_SEUIL, _dedans, _fenetre
+    ny, nx = 250, 300
+    lons = 5.6 + (np.arange(nx) + 0.5) * 1e-5
+    lats = 43.5 - (np.arange(ny) + 0.5) * 1e-5
+    LON, LAT = np.meshgrid(lons, lats)
+
+    def piege():
+        # Une coque en L, dont le pied va jusqu'à x = 20 entre y = 0 et 1 ;
+        # un trou hors de la coque, de x = 12 à 30 entre y = 3 et 9. Une
+        # unité vaut huit cellules, un bloc : le bord est de la boîte coupe
+        # les blocs de la colonne 176 à 183.
+        g = Polygon([(0, 0), (20, 0), (20, 1), (10, 1), (10, 10), (0, 10)],
+                    [[(12, 3), (30, 3), (30, 9), (12, 9)]])
+        g = affinity.translate(affinity.scale(g, 8e-5, 8e-5, origin=(0, 0)), lons[20], lats[200])
+        # GEOS répond au tout premier centre de la boîte d'une géométrie
+        # préparée par un localisateur sans index (la coque, puis les trous),
+        # qui ne compte pas les traversées : interrogée une fois en un point
+        # sans ambiguïté, elle répond ensuite par la parité, partout.
+        shapely.contains_xy(g, lons[60], lats[160])
+        return g
+
+    geom = piege()
+    assert not geom.is_valid
+    fenetres = [(slice(0, ny), slice(0, nx)), (slice(37, 241), slice(5, 263)),
+                _fenetre(geom, lons, lats)]
+    choisies = np.random.default_rng(5).random((ny, nx)) > 0.3
+    for fenetre in fenetres:
+        sous = choisies[fenetre]
+        assert sous.sum() >= BLOCS_SEUIL
+        jj, ii = _dedans(piege(), fenetre, sous, lons, lats)
+        obtenu = np.zeros(sous.shape, dtype=bool)
+        obtenu[jj, ii] = True
+        attendu = sous & shapely.contains_xy(piege(), LON[fenetre], LAT[fenetre])
+        assert np.array_equal(obtenu, attendu), fenetre
+    # Le cas existe bien : des centres du trou, dans la boîte, sont dedans.
+    assert shapely.contains_xy(geom, lons[176], lats[160])
+    assert not shapely.contains_xy(geom, lons[183], lats[160])

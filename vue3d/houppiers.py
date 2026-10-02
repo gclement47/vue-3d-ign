@@ -131,9 +131,10 @@ def _dilater(grille):
     répliqués.
 
     Séparée : le maximum des trois colonnes, puis celui des trois lignes —
-    quatre comparaisons par cellule au lieu de neuf, et ni bordure ni copie
-    de la grille. Le maximum ne dépend pas de l'ordre où l'on compare, aux
-    zéros signés près, que les comparaisons qui suivent ne distinguent pas.
+    quatre comparaisons par cellule au lieu de neuf, et sans bordure : deux
+    copies de la grille, au lieu d'une grille bordée et d'une copie. Le
+    maximum ne dépend pas de l'ordre où l'on compare, aux zéros signés près,
+    que les comparaisons qui suivent ne distinguent pas.
     """
     lignes = grille.copy()
     np.maximum(lignes[:, 1:], grille[:, :-1], out=lignes[:, 1:])
@@ -486,14 +487,28 @@ def _dedans(geom, fenetre, choisies, lons, lats):
     if jj.size < BLOCS_SEUIL or geom.geom_type not in ("Polygon", "MultiPolygon"):
         d = shapely.contains_xy(geom, x[ii], y[jj])
         return jj[d], ii[d]
-    # Par blocs de BLOC × BLOC cellules. Un centre est dedans si une demi-
-    # droite qui en part coupe les anneaux un nombre impair de fois (c'est
-    # ainsi que GEOS le détermine, en arithmétique exacte) : la réponse ne
+    # Par blocs de BLOC × BLOC cellules. GEOS (contains préparé, 3.13) dit
+    # un centre dedans s'il est dans la boîte de `geom` — celle de ses
+    # coques, bornes comprises — et qu'une demi-droite qui en part coupe les
+    # anneaux un nombre impair de fois, comptées exactement. La réponse ne
     # change donc pas d'un centre à l'autre d'un bloc qu'aucun côté du
-    # polygone ne touche, et un seul centre y est testé. Un côté touche
-    # peut-être le bloc si sa boîte touche celle des centres du bloc
-    # (comparaisons exactes, bornes comprises) ; ces blocs-là sont testés
-    # centre par centre.
+    # polygone ni de sa boîte ne touche, et un seul centre y est testé. Un
+    # côté touche peut-être le bloc si sa boîte touche celle des centres du
+    # bloc (comparaisons exactes, bornes comprises) ; ces blocs-là sont
+    # testés centre par centre.
+    #
+    # Les côtés de la boîte ne changent rien quand la fenêtre est celle de
+    # _fenetre, dont tous les centres sont dans la boîte. Ils comptent pour
+    # une fenêtre plus large, sur un polygone invalide dont un trou sort de
+    # la coque : la parité y compte dedans des centres hors de la boîte, que
+    # GEOS rejette (vérifié sur un tel polygone, tests/test_houppiers.py).
+    #
+    # Seule exception, que le test centre par centre partage : le tout
+    # premier centre de la boîte interrogé sur une géométrie fraîchement
+    # préparée passe par un localisateur sans index (la coque, puis les
+    # trous), qui ne compte pas les traversées. Sur un polygone valide, il
+    # rend la même réponse ; sur un invalide, la réponse en ce centre
+    # dépendait déjà, avant les blocs, de l'ordre des appels.
     ny, nx = len(y), len(x)
     nby, nbx = -(-ny // BLOC), -(-nx // BLOC)
     debut_i = np.arange(nbx) * BLOC
@@ -506,6 +521,10 @@ def _dedans(geom, fenetre, choisies, lons, lats):
     cote = np.flatnonzero(anneau[1:] == anneau[:-1])
     sx = np.sort(np.stack([xy[cote, 0], xy[cote + 1, 0]]), axis=0)
     sy = np.sort(np.stack([xy[cote, 1], xy[cote + 1, 1]]), axis=0)
+    # Les quatre côtés de la boîte : sud, nord, ouest, est.
+    bx0, by0, bx1, by1 = geom.bounds
+    sx = np.concatenate([sx, [[bx0, bx0, bx0, bx1], [bx1, bx1, bx0, bx1]]], axis=1)
+    sy = np.concatenate([sy, [[by0, by1, by0, by0], [by0, by1, by1, by1]]], axis=1)
     c_lo = np.searchsorted(x1, sx[0], "left")
     c_hi = np.searchsorted(x0, sx[1], "right") - 1
     # Les lignes vont du nord au sud : latitudes décroissantes, comptées en
