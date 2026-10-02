@@ -1,8 +1,17 @@
 """Reprise sur incident des services de la Géoplateforme (vue3d/geopf.py)."""
+import functools
+
 import pytest
 import requests
 
 from vue3d import geopf
+
+
+@pytest.fixture(autouse=True)
+def places_neuves(monkeypatch):
+    """Des places à soi : une lecture laissée en cours par un autre test (une
+    requête réelle d'un lecteur par défaut) n'en prend aucune ici."""
+    monkeypatch.setattr(geopf, "_places", geopf._Places(geopf.GEOPF_SIMULTANEES, geopf.GEOPF_FOND))
 
 
 class _Reponse:
@@ -105,9 +114,12 @@ def test_en_parallele_n_attend_pas_les_autres_pour_echouer():
         libere.set()
 
 
-def test_les_requetes_simultanees_sont_bornees(monkeypatch):
+@pytest.mark.parametrize("de_scene", [True, False])
+def test_les_requetes_simultanees_sont_bornees(monkeypatch, de_scene):
     """Tout le processus partage GEOPF_SIMULTANEES places : trois fois plus
-    de lectures WFS lancées ensemble n'en ont jamais davantage en cours."""
+    de lectures WFS lancées ensemble n'en ont jamais davantage en cours.
+    Hors d'une scène, GEOPF_FOND au plus."""
+    import concurrent.futures
     import threading
     import time
 
@@ -121,6 +133,8 @@ def test_les_requetes_simultanees_sont_bornees(monkeypatch):
             pass
 
     def get(url, timeout=None):
+        if "TYPENAMES=X&" not in url:
+            return _Reponse()           # celle d'un autre test, encore en cours
         with verrou:
             en_cours[0] += 1
             pic[0] = max(pic[0], en_cours[0])
@@ -130,9 +144,126 @@ def test_les_requetes_simultanees_sont_bornees(monkeypatch):
         return _Reponse()
 
     monkeypatch.setattr(couches, "get_avec_reprise", get)
-    geopf.en_parallele(*(lambda: couches._requete("X", 0, 0, 1, 1)
-                         for _ in range(3 * geopf.GEOPF_SIMULTANEES)))
-    assert pic[0] == geopf.GEOPF_SIMULTANEES
+    lecture = functools.partial(geopf.en_parallele, *(lambda: couches._requete("X", 0, 0, 1, 1)
+                                                      for _ in range(3 * geopf.GEOPF_SIMULTANEES)))
+    with concurrent.futures.ThreadPoolExecutor(1) as bassin:
+        geopf.Groupe(de_scene=de_scene).soumettre(bassin, lecture).result(timeout=10)
+    assert pic[0] == (geopf.GEOPF_SIMULTANEES if de_scene else geopf.GEOPF_FOND)
+
+
+def test_en_parallele_abandonne_les_lectures_qui_attendent_leur_place(monkeypatch):
+    """Une lecture échoue pendant que les deux autres attendent la seule
+    place : elles ne partent jamais. Le quart d'une couche en échec, le MNS
+    du repli : la lecture entière échouera, les autres ne servent plus."""
+    import threading
+
+    demandes = threading.Semaphore(0)
+
+    class Places(geopf._Places):
+        def prendre(self, groupe):
+            demandes.release()
+            return super().prendre(groupe)
+
+    monkeypatch.setattr(geopf, "_places", Places(1, 1))
+    parties = []
+
+    def en_panne():
+        with geopf.place():
+            # Les deux autres attendent la place, puis l'échec.
+            for _ in range(3):
+                assert demandes.acquire(timeout=5)
+            raise requests.Timeout("Read timed out")
+
+    def attend():
+        with geopf.place():
+            parties.append("partie")
+
+    with pytest.raises(requests.Timeout):
+        geopf.en_parallele(en_panne, attend, attend)
+    for fil in threading.enumerate():
+        if fil.name.startswith("geopf"):
+            fil.join(5)
+    assert parties == []
+
+
+def test_en_parallele_rapporte_l_echec_et_non_l_abandon(monkeypatch):
+    """La lecture abandonnée à cause d'une voisine en échec vient avant
+    elle dans l'ordre : c'est l'échec de la voisine qui remonte, pas
+    « lecture abandonnée »."""
+    import concurrent.futures
+    import threading
+
+    abandonne = threading.Event()
+    abandonner = geopf.Groupe.abandonner
+
+    def abandonner_et_signaler(self, cause=None):
+        abandonner(self, cause)
+        abandonne.set()
+
+    def attend():
+        abandonne.wait(5)
+        with geopf.place():
+            return "partie"
+
+    def en_panne():
+        raise requests.Timeout("Read timed out")
+
+    attendre = concurrent.futures.wait
+    monkeypatch.setattr(geopf.Groupe, "abandonner", abandonner_et_signaler)
+    # Les deux finies quand en_parallele regarde : l'ordre des fils n'y est
+    # pour rien.
+    monkeypatch.setattr(concurrent.futures, "wait",
+                        lambda futurs, return_when=None: attendre(futurs, timeout=5))
+    with pytest.raises(requests.Timeout):
+        geopf.en_parallele(attend, en_panne)
+
+
+def test_un_groupe_imbrique_n_abandonne_pas_celui_qui_le_contient():
+    scene = geopf.Groupe(de_scene=True)
+    quarts = geopf.Groupe(scene)
+    assert quarts.de_scene
+    quarts.abandonner()
+    assert quarts.abandonne() and not scene.abandonne()
+    scene_2 = geopf.Groupe(de_scene=True)
+    terrain = geopf.Groupe(scene_2)
+    scene_2.abandonner()
+    assert terrain.abandonne()
+    with pytest.raises(geopf.LectureAbandonnee):
+        terrain.verifier()
+
+
+def test_une_lecture_abandonnee_ne_reessaie_pas(monkeypatch):
+    """Son groupe abandonné pendant un essai (une autre lecture a échoué),
+    la lecture ne réessaie pas : pendant une panne, chaque essai peut tenir
+    sa place 30 s."""
+    import concurrent.futures
+    groupe = geopf.Groupe(de_scene=True)
+    appels = []
+
+    def get(url, timeout):
+        appels.append(url)
+        groupe.abandonner()
+        raise requests.Timeout("Read timed out")
+
+    monkeypatch.setattr(geopf.requests, "get", get)
+    monkeypatch.setattr(geopf.time, "sleep", lambda s: None)
+    with concurrent.futures.ThreadPoolExecutor(1) as bassin:
+        futur = groupe.soumettre(bassin, geopf.get_avec_reprise, "http://x")
+        with pytest.raises(geopf.LectureAbandonnee):
+            futur.result(timeout=5)
+    assert appels == ["http://x"]
+
+
+def test_hors_groupe_rien_ne_change(monkeypatch):
+    """Sans groupe (les ouvrages, l'orthophoto des détections), la reprise
+    est celle d'avant : tous les essais."""
+    appels = []
+    monkeypatch.setattr(geopf.requests, "get",
+                        lambda url, timeout: appels.append(url) or _Reponse(502))
+    monkeypatch.setattr(geopf.time, "sleep", lambda s: None)
+    with pytest.raises(requests.RequestException, match="502"):
+        geopf.get_avec_reprise("http://x")
+    assert len(appels) == geopf.GEOPF_ESSAIS
 
 
 def test_une_panne_serveur_est_retentee(monkeypatch):

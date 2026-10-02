@@ -44,6 +44,12 @@ def test_les_quarts_sont_lus_ensemble(monkeypatch):
     quatre), et le résultat est celui de la lecture un à un : mêmes objets,
     dans le même ordre."""
     import threading
+
+    from vue3d import geopf
+    # Des places à soi : hors d'une scène, les quarts n'en ont que
+    # GEOPF_FOND, et une requête laissée en cours par un autre test (celle
+    # d'un lecteur par défaut) en tiendrait une.
+    monkeypatch.setattr(geopf, "_places", geopf._Places(geopf.GEOPF_SIMULTANEES, geopf.GEOPF_FOND))
     objets = [(f"b.{i}", 0.1 + 0.2 * (i % 5), 0.1 + 0.2 * (i // 5)) for i in range(25)]
     objets.append(("b.milieu", 0.5, 0.5))
     service = _service(objets, plafond=10)
