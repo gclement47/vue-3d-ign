@@ -257,6 +257,25 @@
     </div>
 </div>
 
+<script>
+// La scène est demandée tout de suite, sans attendre three.js : le module qui
+// l'affiche ne s'exécute qu'une fois ses trois fichiers venus du CDN et
+// compilés, et c'est lui qui la demandait — 0,1 s après la demande de
+// three.js, mesuré dans Chrome à cache vide (outils/chrono-page.mjs), autant
+// de plus sur l'attente d'une scène à construire. Même adresse que celle du
+// module (REQUETE, plus bas), qui ne reprend cette demande que si les deux
+// concordent.
+window.DEMANDE_SCENE = (() => {
+    const params = new URLSearchParams(location.search);
+    const lire = n => { const v = Number(String(params.get(n) || '').replace(',', '.')); return Number.isFinite(v) && params.get(n) !== null ? v : null; };
+    const zone = lire('zone');
+    const url = `api/scene?lat=${lire('lat') ?? 43.9116}&lon=${lire('lon') ?? 5.2003}`
+        + (zone === null ? '' : `&zone=${Math.min(Math.max(Math.round(zone / 50) * 50, 150), 1000)}`);
+    const reponse = fetch(url);
+    reponse.catch(() => {});      // l'erreur est traitée par le module
+    return { url, reponse };
+})();
+</script>
 <script type="importmap">
 {
   "imports": {
@@ -338,9 +357,45 @@ const attente = document.getElementById('attente');
 attente.hidden = false;
 attente.innerHTML = 'Construction de la scène…<br><small>20 à 40 s la première fois, '
     + 'instantané ensuite</small>';
-const chargementArtefact = fetch(URL_VUE3D)
+// La demande partie avant three.js (DEMANDE_SCENE, en tête de page), si elle
+// vise bien cette scène.
+const demandeScene = window.DEMANDE_SCENE && window.DEMANDE_SCENE.url === URL_VUE3D
+    ? window.DEMANDE_SCENE.reponse : fetch(URL_VUE3D);
+// Premières demandes de l'orthophoto et des couches à part, envoyées dès que
+// la scène répond : elle est alors écrite, et le serveur prépare le reste
+// pendant que la page lit la scène et construit ses maillages. Elles
+// partaient après le relief et les bâtiments, et les piscines après la
+// végétation et la première image : à Gordes, scène en cache, à 3,1 s et
+// 9,0 s de la navigation, contre 1,4 s pour toutes désormais (médianes de
+// trois chargements, outils/chrono-page.mjs). Pas les véhicules : à six
+// connexions par serveur, des demandes qui attendent une détection de
+// plusieurs minutes bloqueraient les autres. Chaque chargeur prend la sienne
+// à son premier essai (requete).
+const demandesAnticipees = new Map();
+function demanderSuite() {
+    for (const [url, options] of [
+        [URL_MONUMENTS], [URL_OUVRAGES], ['api/sante', { cache: 'no-store' }],
+        [URL_PISCINES, { cache: 'no-cache' }], [URL_PANNEAUX, { cache: 'no-cache' }]]) {
+        const reponse = fetch(url, options);
+        reponse.catch(() => {});      // l'erreur est traitée par le chargeur
+        demandesAnticipees.set(url, reponse);
+    }
+    const image = chargerImage(URL_VUE3D_ORTHO, false);
+    image.catch(() => {});
+    demandesAnticipees.set(URL_VUE3D_ORTHO, image);
+}
+/** La réponse anticipée de `url`, une seule fois ; sinon une nouvelle demande. */
+function requete(url, options, charger = fetch) {
+    const reponse = demandesAnticipees.get(url);
+    demandesAnticipees.delete(url);
+    return reponse || charger(url, options);
+}
+const chargementArtefact = demandeScene
     .then(async r => {
-        if (r.ok) return r.json();
+        if (r.ok) {
+            demanderSuite();
+            return r.json();
+        }
         const corps = await r.json().catch(() => ({}));
         throw new Error(corps.erreur || `HTTP ${r.status}`);
     })
@@ -1582,7 +1637,7 @@ async function chargerMonuments(essai = 1) {
         () => etatMonuments('Monuments OpenStreetMap : chargement…', true),
         essai === 1 ? RETARD_ETAT_MONUMENTS_MS : 0);
     try {
-        const r = await fetch(URL_MONUMENTS);
+        const r = await requete(URL_MONUMENTS);
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const m = await r.json();
         clearTimeout(retard);
@@ -1885,7 +1940,7 @@ let fondBornes = null;
  * débordait jusqu'à une tuile entière puisqu'il s'alignait sur leur découpage.
  */
 async function poserMosaique() {
-    const img = await chargerImage(URL_VUE3D_ORTHO, false).catch(() => null);
+    const img = await requete(URL_VUE3D_ORTHO, false, chargerImage).catch(() => null);
     if (!img) return false;
     const b = ARTEFACT.bbox;
     const [ax, ay] = toLocal(b[0], b[3]);   // ouest, nord
@@ -3432,7 +3487,7 @@ async function chargerOuvrages(essai = 1) {
         () => etatCouche('etat-ouvrages', 'Ouvrages BD TOPO : chargement…', true),
         essai === 1 ? RETARD_ETAT_MONUMENTS_MS : 0);
     try {
-        const r = await fetch(URL_OUVRAGES);
+        const r = await requete(URL_OUVRAGES);
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const o = await r.json();
         clearTimeout(retard);
@@ -3657,7 +3712,7 @@ async function chargerCouche(libelle, url, recevoir) {
             () => etatCouche('etat-vehicules', `${libelle} : détection sur l'orthophoto…`, true),
             essai === 1 ? RETARD_ETAT_MONUMENTS_MS : 0);
         try {
-            const r = await fetch(url, { cache: 'no-cache' });
+            const r = await requete(url, { cache: 'no-cache' });
             if (!r.ok) throw new Error(`HTTP ${r.status}`);
             const couche = await r.json();
             clearTimeout(retard);
@@ -3698,7 +3753,7 @@ function ajouterVehicules(detecteur, couche) {
 async function chargerDetections() {
     let sante = null;
     try {
-        const r = await fetch('api/sante', { cache: 'no-store' });
+        const r = await requete('api/sante', { cache: 'no-store' });
         sante = r.ok ? await r.json() : null;
     } catch (e) { /* le serveur ne répond plus : la scène reste telle quelle */ }
     const service = sante && sante.vehicules;

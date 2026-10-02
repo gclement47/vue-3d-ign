@@ -48,6 +48,12 @@ messages de commit et dans les commentaires des modules.
   servie : 27,5 s au lieu de 43,2 (médianes de quatre essais alternés) ;
   les piscines arrivent 5 s plus tard, `rtmdet` pas plus tard. Sur CoreML,
   hors conteneur, rien ne change : le GPU ne prenait que 8 % au calcul.
+- **La page demande sa scène sans attendre three.js**, et l'orthophoto et
+  les couches à part dès que la scène répond, sans attendre d'avoir construit
+  ses maillages. À Gordes, scène en cache, dans Chrome à cache vide : la
+  scène part avec three.js au lieu de 0,1 s après lui ; l'orthophoto et les
+  couches partent à 1,4 s de la navigation au lieu de 3,1 s, les piscines au
+  lieu de 9,0 s (médianes de trois chargements).
 - **Toitures et houppiers se calculent dix fois plus vite.** Chaque
   bâtiment relisait la grille MNH entière, en Python, et la segmentation des
   arbres la parcourait toute à chaque passe. Sur Gordes en

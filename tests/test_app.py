@@ -72,6 +72,13 @@ def test_la_page_est_servie(client):
     assert r.status_code == 200 and b"Vue 3D IGN" in r.data
 
 
+def test_la_page_demande_sa_scene_avant_three_js(client):
+    """Un script ordinaire, avant la carte d'import et le module : il part
+    pendant que three.js arrive du CDN."""
+    page = client.get("/").get_data(as_text=True)
+    assert page.index("window.DEMANDE_SCENE") < page.index('type="importmap"') < page.index('type="module"')
+
+
 def test_la_scene_est_servie_gzippee(client):
     r = client.get("/api/scene?lat=48.8049&lon=2.1204")
     assert r.status_code == 200
