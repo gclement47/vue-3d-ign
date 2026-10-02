@@ -34,7 +34,7 @@ import struct
 import numpy as np
 import requests
 
-from .geopf import get_avec_reprise
+from .geopf import get_avec_reprise, place
 
 RELIEF_LAYER = "ELEVATION.ELEVATIONGRIDCOVERAGE.HIGHRES"
 RELIEF_TAILLE = 256
@@ -62,7 +62,8 @@ def _bil(west, south, east, north, largeur, hauteur):
         f"&WIDTH={largeur}&HEIGHT={hauteur}"
         f"&BBOX={south},{west},{north},{east}"
     )
-    reponse = get_avec_reprise(url)
+    with place():
+        reponse = get_avec_reprise(url)
     reponse.raise_for_status()
     if "bil" not in reponse.headers.get("Content-Type", ""):
         raise requests.RequestException(

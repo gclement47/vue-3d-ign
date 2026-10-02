@@ -80,12 +80,16 @@ def test_le_suivi_suit_la_construction_puis_s_efface(tmp_path):
     assert cache.avancement(47.0, 2.0) == {"etat": "attente"}
 
 
-def test_construire_annonce_chacune_de_ses_etapes(monkeypatch):
-    """ETAPES_SCENE suit construire() : chaque lecture et chaque calcul est
-    annoncé, et le compte tombe juste — sinon la page afficherait « étape 18
-    sur 17 »."""
-    grille = {"couvert": True, "width": 2, "height": 2, "source": "lidar_hd",
+_NB_LECTURES = 16
+
+
+def _fausses_sources(monkeypatch, source="lidar_hd", **remplacees):
+    """Les lectures de construire() remplacées par des fausses, le calcul par
+    un assemblage presque vide. `remplacees` : nom de fonction du module
+    scene -> fausse lecture, en plus des réponses par défaut. Rend {nom: appels}."""
+    grille = {"couvert": True, "width": 2, "height": 2, "source": source,
               "bbox": [0, 0, 1, 1], "values": [0.0] * 4}
+    appels = {}
     for nom, valeur in {
             "lire_couche": {"features": []}, "fetch_mnh_grid": grille,
             "fetch_exg_grid": None, "fetch_sol_grid": None, "fetch_relief": None,
@@ -93,11 +97,168 @@ def test_construire_annonce_chacune_de_ses_etapes(monkeypatch):
             "fetch_ortho_jpeg": (b"jpeg", None, None),
             "toits_pour_emprise": {}, "houppiers_pour_emprise": {},
             "eau_pour_emprise": None}.items():
-        monkeypatch.setattr(scene, nom, lambda *a, _v=valeur, **k: _v)
+        def faux(*a, _nom=nom, _v=valeur, **k):
+            appels.setdefault(_nom, []).append(a)
+            if _nom in remplacees:
+                return remplacees[_nom](*a, **k)
+            return _v
+        monkeypatch.setattr(scene, nom, faux)
+    return appels
+
+
+def test_construire_annonce_chacune_de_ses_etapes(monkeypatch):
+    """ETAPES_SCENE suit construire() : chaque lecture et chaque calcul est
+    annoncé, et le compte tombe juste — sinon la page afficherait « étape 18
+    sur 17 »."""
+    _fausses_sources(monkeypatch)
     etapes = []
     scene.construire(48.8049, 2.1204, avancer=etapes.append)
+    assert len(etapes) == scene.ETAPES_SCENE == _NB_LECTURES + 2
+    # Au départ, toutes les lectures attendues, les plus longues en tête.
+    assert etapes[0] == "hauteurs du sursol, orthophoto et 14 autres"
+    assert etapes[-2:] == ["toitures", "houppiers"]
+
+
+def test_les_lectures_partent_ensemble(monkeypatch):
+    """Les seize lectures sont en cours en même temps : une à une, la
+    barrière ne s'ouvrirait jamais."""
+    barriere = threading.Barrier(_NB_LECTURES, timeout=5)
+
+    def attendre(*a, _v=None, **k):
+        barriere.wait()
+        return _v
+
+    grille = {"couvert": True, "width": 2, "height": 2, "source": "lidar_hd",
+              "bbox": [0, 0, 1, 1], "values": [0.0] * 4}
+    _fausses_sources(
+        monkeypatch, lire_couche=lambda *a, **k: attendre(_v={"features": []}),
+        fetch_mnh_grid=lambda *a, **k: attendre(_v=grille), fetch_exg_grid=attendre,
+        fetch_sol_grid=attendre, fetch_relief=attendre, fetch_relief_anneau=attendre,
+        fetch_ortho_jpeg=lambda *a, **k: attendre(_v=(b"jpeg", None, None)))
+    scene.construire(48.8049, 2.1204)
+
+
+def test_une_source_en_echec_pendant_que_les_autres_tournent(tmp_path, monkeypatch):
+    """Une lecture échoue pendant que les autres attendent encore le
+    réseau : la scène est incomplète tout de suite, sans attendre les
+    autres, et rien n'est écrit."""
+    import time
+    libere = threading.Event()
+
+    def couche(nom, *a, **k):
+        if nom == scene.COUCHE_ROUTES:
+            raise RuntimeError("Read timed out")
+        libere.wait(10)
+        return {"features": []}
+
+    def lente(*a, **k):
+        libere.wait(10)
+        return None
+
+    _fausses_sources(monkeypatch, lire_couche=couche, fetch_mnh_grid=lente,
+                     fetch_exg_grid=lente, fetch_ortho_jpeg=lente)
+    cache = Cache(str(tmp_path))
+    debut = time.monotonic()
+    try:
+        with pytest.raises(SceneIncomplete, match="routes illisible"):
+            cache.obtenir(48.8049, 2.1204, construire=scene.construire)
+        assert time.monotonic() - debut < 5
+    finally:
+        libere.set()
+    assert not cache.present(48.8049, 2.1204)
+    assert not os.path.exists(cache._dossier_point(48.8049, 2.1204))
+    assert cache.avancement(48.8049, 2.1204) == {"etat": "attente"}
+
+
+def test_le_compteur_compte_les_lectures_finies():
+    """Étape k : k − 1 lectures finies, quel que soit l'ordre où elles
+    finissent ; le libellé dit celles qu'on attend encore. La dernière ne
+    s'annonce pas : l'étape suivante (les toitures) le fait."""
+    import queue
+    noms = ["grille", "ortho", "routes", "eau"]
+    feux = {nom: threading.Event() for nom in noms}
+    annonces = queue.Queue()
+    lu = {}
+    fil = threading.Thread(target=lambda: lu.update(scene._lire_ensemble(
+        [(nom, lambda nom=nom: feux[nom].wait(5) and nom.upper()) for nom in noms],
+        annonces.put, terrain=None)))
+    fil.start()
+    try:
+        assert annonces.get(timeout=5) == "grille, ortho et 2 autres"
+        for finie, libelle in (("routes", "grille, ortho et 1 autre"),
+                               ("grille", "ortho et eau"), ("eau", "ortho")):
+            feux[finie].set()
+            assert annonces.get(timeout=5) == libelle
+    finally:
+        for feu in feux.values():
+            feu.set()
+    fil.join(5)
+    assert annonces.empty()
+    assert lu == {nom: nom.upper() for nom in noms}
+
+
+def test_le_terrain_est_relu_a_la_source_de_la_grille(monkeypatch):
+    """Le terrain part avec la grille, à la source probable (LiDAR HD). Si
+    la grille vient du repli MNS − MNT, il est relu au RGE ALTI, et l'échec
+    du terrain LiDAR, devenu inutile, est oublié."""
+    def sol(*a, **k):
+        if a[-1] == "lidar_hd":
+            raise RuntimeError("HTTP 400")
+        return ["rge alti"]
+
+    vus = {}
+    appels = _fausses_sources(
+        monkeypatch, source="mns_mnt", fetch_sol_grid=sol,
+        toits_pour_emprise=lambda *a, **k: vus.setdefault("sol", a[-1]) and {})
+    etapes = []
+    scene.construire(48.8049, 2.1204, avancer=etapes.append)
+    assert sorted(a[-1] for a in appels["fetch_sol_grid"]) == ["lidar_hd", "mns_mnt"]
+    assert vus["sol"] == ["rge alti"]
     assert len(etapes) == scene.ETAPES_SCENE
-    assert etapes[0] == "bâtiments" and etapes[-2:] == ["toitures", "houppiers"]
+
+
+def test_le_terrain_lu_avant_la_grille_attend_sa_source(monkeypatch):
+    """Fini avant la grille, le terrain n'est retenu (ou son échec signalé)
+    qu'une fois la source connue : la même que celle supposée, il est la
+    bonne lecture, son échec rend la scène incomplète."""
+    grille_lue = threading.Event()
+    terrain_fini = threading.Event()
+
+    def mnh(*a, **k):
+        terrain_fini.wait(5)
+        grille_lue.set()
+        return {"couvert": True, "width": 2, "height": 2, "source": "lidar_hd",
+                "bbox": [0, 0, 1, 1], "values": [0.0] * 4}
+
+    def sol(*a, **k):
+        try:
+            raise RuntimeError("HTTP 400")
+        finally:
+            terrain_fini.set()
+
+    appels = _fausses_sources(monkeypatch, fetch_mnh_grid=mnh, fetch_sol_grid=sol)
+    with pytest.raises(SceneIncomplete, match="terrain sous les toits illisible"):
+        scene.construire(48.8049, 2.1204)
+    assert grille_lue.is_set() and len(appels["fetch_sol_grid"]) == 1
+
+
+def test_une_grille_sans_couverture_arrete_tout(monkeypatch):
+    _fausses_sources(monkeypatch, fetch_mnh_grid=lambda *a, **k: {
+        "couvert": False, "source": None, "width": 2, "height": 2, "values": [0.0] * 4})
+    with pytest.raises(SceneIncomplete, match="hauteurs du sursol indisponibles"):
+        scene.construire(48.8049, 2.1204)
+
+
+def test_orthophoto_et_terrain_a_la_taille_de_la_grille(monkeypatch):
+    """Demandés avant d'avoir la grille, à la taille qu'elle aura : celle
+    que fetch_mnh_grid calcule de l'emprise (vue3d/mnh.py)."""
+    from vue3d import mnh
+    appels = _fausses_sources(monkeypatch)
+    scene.construire(48.8049, 2.1204, zone=1000)
+    bbox = scene.emprise(48.8049, 2.1204, 1000)
+    attendu = mnh.dimensions_grille(*bbox, scene.TOITS_RESOLUTION_M, scene.GRILLE_PIXELS_MAX)
+    assert appels["fetch_exg_grid"] == [(*bbox, *attendu)]
+    assert appels["fetch_sol_grid"] == [(*bbox, *attendu, "lidar_hd")]
 
 
 def _scene_avec_un_batiment(lat, lon, avancer=None):

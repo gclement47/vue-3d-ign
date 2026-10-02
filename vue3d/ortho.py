@@ -20,7 +20,7 @@ import io
 import numpy as np
 import requests
 
-from .geopf import get_avec_reprise
+from .geopf import get_avec_reprise, place
 
 ORTHO_LAYER = "ORTHOIMAGERY.ORTHOPHOTOS"
 # Même seuil que le classement de la végétation côté rendu.
@@ -47,7 +47,8 @@ def _image_wms(west, south, east, north, largeur, hauteur):
     # Le WMS de l'IGN renvoie sporadiquement un 400 sur une requête valide
     # (constaté sur une image de 516 × 712, servie en 200 l'instant d'après) :
     # c'est get_avec_reprise qui absorbe ces refus.
-    reponse = get_avec_reprise(url)
+    with place():
+        reponse = get_avec_reprise(url)
     reponse.raise_for_status()
     if "image" not in reponse.headers.get("Content-Type", ""):
         raise requests.RequestException(
