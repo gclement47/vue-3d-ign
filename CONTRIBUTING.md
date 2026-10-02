@@ -503,8 +503,11 @@ Les scripts de prototype figent en en-tête les résultats obtenus lors de leur
 ## Déboguer
 
 - **Le cache** est dans `VUE3D_CACHE`, rangé en
-  `v{SCENE_VERSION}/{lat}_{lon}/scene.json.gz` et `ortho.jpg`. Supprimez le
-  dossier d'un lieu pour le reconstruire seul.
+  `v{SCENE_VERSION}/{lat}_{lon}/scene.json.gz` et `ortho.jpg`. Le bouton
+  « Reconstruire la scène » de la page, ou `curl -X POST
+  'localhost:8080/api/reconstruire?lat=…&lon=…'`, le met de côté
+  (`…/{lat}_{lon}.mise-de-cote`) et le fait reconstruire, l'ancien revenant
+  si l'IGN ne répond pas.
 - **Lire une scène** (14 est la `SCENE_VERSION` actuelle) :
   `gunzip -c cache/v14/43.9116_5.2003/scene.json.gz | python -m json.tool | less`.
   Les couches à part sont à côté : `monuments.json.gz`, `ouvrages-v1.json.gz`.

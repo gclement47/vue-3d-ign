@@ -32,7 +32,8 @@ La **première** ouverture d'un lieu construit sa scène en quelques secondes
 télécharger une grille de hauteurs à 0,5 m, d'y mesurer les toits et d'y
 segmenter les arbres.
 Les ouvertures suivantes sont instantanées, la scène étant gardée sur disque dans
-le volume `scenes`. Pour changer de port : `VUE3D_PORT=9000 docker compose up -d`.
+le volume `scenes`. Le lien **↻ Reconstruire la scène** du panneau la relit à
+l'IGN, avec ses couches, au plus une fois toutes les 10 minutes. Pour changer de port : `VUE3D_PORT=9000 docker compose up -d`.
 
 Après une mise à jour du code, il faut reconstruire l'image : le code y est
 copié, `docker compose up -d` seul relancerait l'ancienne.
@@ -516,9 +517,13 @@ principales :
 | `GET /api/avancement?lat=…&lon=…` | L'étape de la construction en cours (18 au total), que la page affiche pendant l'attente |
 | `GET /api/panneaux?lat=…&lon=…` | Les panneaux solaires du registre, en JSON gzippé ; `{"actif": false, "panneaux": []}` si le service n'a pas de registre |
 | `GET /api/sante` | `{"ok": true, "vehicules": {"mode": …, "detecteurs": […]}, "panneaux": {"actif": …}}` : le contrôle de vie, et ce que le service sait détecter ou lire |
+| `POST /api/reconstruire?lat=…&lon=…` | Met de côté la scène et ses couches (202) : la demande suivante les reconstruit d'après les données de l'IGN du moment, l'ancienne revenant si l'IGN ne répond pas. 429 moins de 10 min après sa construction, 409 pendant qu'elle ou une de ses couches se calcule |
 
 Codes d'erreur : 400 sans coordonnées valides, 422 hors de France métropolitaine,
 503 si un service de l'IGN n'a pas répondu (rien n'est mis en cache, réessayer).
+Tout ce qui vient du dossier d'une scène est revalidé à chaque visite (304
+tant que le fichier n'a pas été réécrit) : une scène reconstruite apparaît
+aussitôt.
 
 ## Développer
 

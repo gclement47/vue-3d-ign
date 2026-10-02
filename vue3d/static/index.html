@@ -19,6 +19,10 @@
         #panel header .sub { font-size:11px; color:var(--muted); word-break:break-all; }
         #panel header a { color:var(--accent); font-size:11px; text-decoration:none; display:block; margin-top:4px; }
         #panel header a:hover { text-decoration:underline; }
+        #panel header .reconstruire { background:none; border:0; padding:0; margin:0 0 2px;
+                                      color:var(--accent); font-size:11px; cursor:pointer; }
+        #panel header .reconstruire:hover { text-decoration:underline; }
+        #panel header .reconstruire:disabled { color:var(--muted); cursor:wait; text-decoration:none; }
         .section { padding:12px 16px; border-bottom:1px solid var(--line); }
         .section h2 { margin:0 0 8px; font-size:10px; letter-spacing:.08em;
                       text-transform:uppercase; color:var(--muted); font-weight:600; }
@@ -128,6 +132,8 @@
                     <option value="1000">1 000 m</option>
                 </select>
             </label>
+            <button type="button" id="btn-reconstruire" class="reconstruire"
+                    title="Relire les données de l'IGN et reconstruire cette scène et ses couches. Au plus une fois toutes les 10 minutes.">↻ Reconstruire la scène</button>
             <a href="https://github.com/ysimonx/vue-3d-ign#readme" target="_blank" rel="noopener">📐 Méthode et sources ↗</a>
         </header>
 
@@ -347,10 +353,33 @@ selectZone.addEventListener('change', () => {
     else u.searchParams.delete('zone');
     location.assign(u.pathname + u.search + u.hash);
 });
+// Reconstruire la scène : le serveur la met de côté avec ses couches
+// (/api/reconstruire), et la page rechargée la reconstruit d'après les données
+// de l'IGN du moment ; si l'IGN ne répond pas, l'ancienne revient. Le serveur
+// refuse, en disant pourquoi, moins de 10 min après sa construction, ou
+// pendant qu'elle ou une de ses couches se calcule.
+document.getElementById('btn-reconstruire').addEventListener('click', async e => {
+    const bouton = e.currentTarget;
+    if (!confirm("Relire les données de l'IGN et reconstruire cette scène et ses couches ?\n"
+                 + 'Quelques secondes pour la scène ; véhicules et piscines se détectent ensuite.')) return;
+    bouton.disabled = true;
+    try {
+        const r = await fetch(`api/reconstruire?${REQUETE}`, { method: 'POST' });
+        if (r.ok) {
+            location.reload();
+            return;
+        }
+        const corps = await r.json().catch(() => ({}));
+        alert(corps.erreur || `Reconstruction impossible (HTTP ${r.status}).`);
+    } catch (err) {
+        alert(`Reconstruction impossible : ${err.message}`);
+    }
+    bouton.disabled = false;
+});
 
 // La scène — bâtiments, toitures, houppiers, routes, relief — arrive en un seul
-// fichier. Sa première construction prend une vingtaine à une trentaine de
-// secondes côté serveur ; les suivantes sont lues sur disque.
+// fichier. Sa première construction prend quelques secondes côté serveur ;
+// les suivantes sont lues sur disque.
 let ARTEFACT = null;
 let ERREUR_SCENE = null;
 const attente = document.getElementById('attente');

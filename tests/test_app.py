@@ -206,14 +206,14 @@ def test_les_couches_de_l_orthophoto_sont_servies_a_part_detecteur_par_detecteur
 
 
 def test_la_couche_des_vehicules_est_revalidee_a_chaque_demande(client_vehicules):
-    """Le navigateur ne la garde pas un jour comme la scène : à la même
-    adresse, elle change avec le détecteur et la version. Le nom du fichier,
-    qui porte les deux, sert de validateur."""
+    """Le navigateur ne la garde pas : à la même adresse, elle change avec le
+    détecteur, la version, et quand la scène est reconstruite. Le fichier,
+    son nom et l'instant de son écriture, sert de validateur."""
     from vue3d.scene import nom_piscines, nom_vehicules
     url = "/api/vehicules?lat=48.8049&lon=2.1204&detecteur=rtmdet"
     r = client_vehicules.get(url)
     assert r.headers["Cache-Control"] == "no-cache"
-    assert r.headers["ETag"] == f'"{nom_vehicules("rtmdet")}"'
+    assert r.headers["ETag"].startswith(f'"{nom_vehicules("rtmdet")}-')
     # Même fichier : 304, sans corps.
     r2 = client_vehicules.get(url, headers={"If-None-Match": r.headers["ETag"]})
     assert r2.status_code == 304 and r2.data == b"" and r2.headers["ETag"] == r.headers["ETag"]
@@ -222,10 +222,8 @@ def test_la_couche_des_vehicules_est_revalidee_a_chaque_demande(client_vehicules
     assert r3.status_code == 200 and json.loads(gzip.decompress(r3.data))["detecteur"] == "rtmdet"
     # Les piscines, de même.
     r4 = client_vehicules.get("/api/piscines?lat=48.8049&lon=2.1204")
-    assert r4.headers["Cache-Control"] == "no-cache" and r4.headers["ETag"] == f'"{nom_piscines("rtmdet")}"'
-    # La scène, elle, ne change pas sous son adresse : gardée un jour.
-    assert client_vehicules.get("/api/scene?lat=48.8049&lon=2.1204").headers["Cache-Control"] \
-        == "public, max-age=86400"
+    assert r4.headers["Cache-Control"] == "no-cache"
+    assert r4.headers["ETag"].startswith(f'"{nom_piscines("rtmdet")}-')
 
 
 def test_une_panne_des_vehicules_rend_503_sans_toucher_la_scene(client_vehicules):
@@ -278,7 +276,7 @@ def test_la_couche_des_panneaux_est_servie_a_part(client_panneaux):
         "actif": True, "source": "OpenPVMapper (G. Kasmi), CC-BY 4.0"}
     r = client_panneaux.get("/api/panneaux?lat=48.8049&lon=2.1204")
     assert r.status_code == 200 and r.headers["Content-Encoding"] == "gzip"
-    assert r.headers["Cache-Control"] == "no-cache" and r.headers["ETag"] == f'"{NOM_PANNEAUX}"'
+    assert r.headers["Cache-Control"] == "no-cache" and r.headers["ETag"].startswith(f'"{NOM_PANNEAUX}-')
     (p,) = json.loads(gzip.decompress(r.data))["panneaux"]
     assert p["surface"] == 100 and p["kwp"] == 12 and p["annee"] == 2023 and len(p["contour"]) == 4
     assert client_panneaux.get("/api/panneaux").status_code == 400
@@ -287,3 +285,37 @@ def test_la_couche_des_panneaux_est_servie_a_part(client_panneaux):
     assert client_panneaux.get("/api/scene?lat=45.5&lon=2").status_code == 200
     r = client_panneaux.get("/api/panneaux?lat=45.5&lon=2")
     assert r.status_code == 503 and "panneaux" in r.get_json()["erreur"]
+
+
+def test_la_scene_et_l_orthophoto_sont_revalidees(client):
+    """Une scène peut être reconstruite sous la même adresse : le navigateur
+    revalide, et reçoit un 304 sans corps tant qu'elle n'a pas été réécrite."""
+    for route in ("/api/scene", "/api/ortho"):
+        url = f"{route}?lat=48.8049&lon=2.1204"
+        r = client.get(url)
+        assert r.status_code == 200 and r.headers["Cache-Control"] == "no-cache"
+        r2 = client.get(url, headers={"If-None-Match": r.headers["ETag"]})
+        assert r2.status_code == 304 and r2.data == b""
+
+
+def test_le_bouton_reconstruit_la_scene(client, tmp_path):
+    """POST /api/reconstruire met la scène de côté : la demande suivante la
+    reconstruit, avec un autre validateur. Trop tôt après, refusé (429)."""
+    import os
+    import time
+    url = "/api/scene?lat=48.8049&lon=2.1204"
+    avant = client.get(url).headers["ETag"]
+    r = client.post("/api/reconstruire?lat=48.8049&lon=2.1204")
+    assert r.status_code == 429 and "Reconstruction refusée" in r.get_json()["erreur"]
+    (chemin,) = [os.path.join(d, f) for d, _, fs in os.walk(tmp_path) for f in fs
+                 if f == "scene.json.gz"]
+    t = time.time() - 3600
+    os.utime(chemin, (t, t))
+    r = client.post("/api/reconstruire?lat=48.8049&lon=2.1204")
+    assert r.status_code == 202 and r.headers["Cache-Control"] == "no-store"
+    assert client.get("/api/avancement?lat=48.8049&lon=2.1204").get_json() == {"etat": "attente"}
+    r = client.get(url, headers={"If-None-Match": avant})
+    assert r.status_code == 200 and r.headers["ETag"] != avant
+    assert client.post("/api/reconstruire?lat=48.8049&lon=2.1204").status_code == 429
+    assert client.post("/api/reconstruire?lat=abc&lon=2").status_code == 400
+    assert client.get("/api/reconstruire?lat=48.8049&lon=2.1204").status_code == 405

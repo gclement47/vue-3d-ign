@@ -30,8 +30,8 @@ from .panneaux import REGISTRE_LICENCE
 from .panneaux import lecteur as lecteur_panneaux
 from .scene import (NOM_MONUMENTS, NOM_ORTHO, NOM_OUVRAGES, NOM_PANNEAUX, NOM_SCENE, Cache,
                     HorsEmprise, MonumentsIndisponibles, OuvragesIndisponibles,
-                    PanneauxIndisponibles, SceneIncomplete, VehiculesDesactives,
-                    VehiculesIndisponibles, zone_normalisee)
+                    PanneauxIndisponibles, ReconstructionRefusee, SceneIncomplete,
+                    VehiculesDesactives, VehiculesIndisponibles, zone_normalisee)
 from .scene import construire as construire_scene
 from .toits import autoriser_bassin
 from .vehicules import MODE_PAR_DEFAUT
@@ -134,23 +134,31 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
             return None, erreur(400, f"{exc} : détecteurs de ce service : "
                                 f"{', '.join(cache.lire_vehicules.detecteurs) or 'aucun'}.")
 
-    def servir_gzip(dossier, nom, a_revalider=False):
-        """`a_revalider` : le navigateur redemande à chaque fois, et le nom
-        du fichier sert de validateur — la réponse est alors un 304 sans
-        corps tant que le fichier est le même."""
-        if a_revalider and request.if_none_match.contains(nom):
+    # Tout ce qui sort du dossier d'une scène est revalidé à chaque demande :
+    # une scène et ses couches peuvent être reconstruites sous la même adresse
+    # (Cache.reconstruire), et une couche change avec le détecteur du service
+    # et avec sa version. Gardée un jour par le navigateur, la scène
+    # reconstruite n'apparaissait pas, et la couche des véhicules montrait
+    # encore les véhicules sans les piscines après une reconstruction de
+    # l'image. Le validateur est le fichier lui-même, son nom et l'instant de
+    # son écriture : un 304 sans corps tant qu'il n'a pas été réécrit.
+    def validateur(chemin):
+        etat = os.stat(chemin)
+        return f"{os.path.basename(chemin)}-{etat.st_mtime_ns}-{etat.st_size}"
+
+    def servir_gzip(dossier, nom):
+        chemin = os.path.join(dossier, nom)
+        etag = validateur(chemin)
+        if request.if_none_match.contains(etag):
             reponse = app.response_class(status=304)
         else:
-            with open(os.path.join(dossier, nom), "rb") as f:
+            with open(chemin, "rb") as f:
                 charge = f.read()
             # Déjà gzippé : annoncé tel quel, le navigateur le décompresse.
             reponse = app.response_class(charge, mimetype="application/json")
             reponse.headers["Content-Encoding"] = "gzip"
-        if a_revalider:
-            reponse.set_etag(nom)
-            reponse.headers["Cache-Control"] = "no-cache"
-        else:
-            reponse.headers["Cache-Control"] = "public, max-age=86400"
+        reponse.set_etag(etag)
+        reponse.headers["Cache-Control"] = "no-cache"
         return reponse
 
     @app.get("/")
@@ -191,13 +199,6 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
         reponse.headers["Cache-Control"] = "no-store"
         return reponse
 
-    # Les couches de l'orthophoto sont revalidées à chaque demande : à la
-    # même adresse, elles changent avec le détecteur du service et avec leur
-    # version. Gardée un jour par le navigateur, la couche montrait encore
-    # les véhicules sans les piscines après une reconstruction de l'image.
-    # Le nom du fichier porte le détecteur et la version, et le fichier ne
-    # change jamais une fois écrit.
-
     @app.get("/api/piscines")
     def piscines():
         """Les piscines de l'orthophoto, demandées par la page une fois la
@@ -208,7 +209,7 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
         trouve, err = dossier_scene(couche=COUCHE_PISCINES)
         if err:
             return err
-        return servir_gzip(*trouve, a_revalider=True)
+        return servir_gzip(*trouve)
 
     @app.get("/api/vehicules")
     def vehicules():
@@ -225,7 +226,7 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
         trouve, err = dossier_scene(couche=COUCHE_VEHICULES, detecteur=detecteur)
         if err:
             return err
-        return servir_gzip(*trouve, a_revalider=True)
+        return servir_gzip(*trouve)
 
     @app.get("/api/panneaux")
     def panneaux():
@@ -239,18 +240,37 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
         dossier, err = dossier_scene(couche=NOM_PANNEAUX)
         if err:
             return err
-        # Revalidée comme les couches de l'orthophoto : à la même adresse, la
-        # couche apparaît quand le service est relancé avec le registre.
-        return servir_gzip(dossier, NOM_PANNEAUX, a_revalider=True)
+        return servir_gzip(dossier, NOM_PANNEAUX)
 
     @app.get("/api/ortho")
     def ortho():
         dossier, err = dossier_scene()
         if err:
             return err
+        # Revalidée comme la scène (servir_gzip) : send_from_directory donne
+        # déjà son validateur, tiré de l'instant d'écriture du fichier.
         reponse = send_from_directory(dossier, NOM_ORTHO, mimetype="image/jpeg")
-        reponse.headers["Cache-Control"] = "public, max-age=86400"
+        reponse.headers["Cache-Control"] = "no-cache"
         return reponse
+
+    @app.post("/api/reconstruire")
+    def reconstruire():
+        """Le bouton « Reconstruire la scène » de la page : la scène et ses
+        couches sont mises de côté, et la page, rechargée, les reconstruit
+        d'après les données de l'IGN du moment (Cache.reconstruire)."""
+        p = point()
+        if p is None:
+            return erreur(400, MESSAGE_POINT)
+        *p, zone = p
+        try:
+            cache.reconstruire(*p, zone=zone)
+        except HorsEmprise as exc:
+            return erreur(422, str(exc))
+        except ReconstructionRefusee as exc:
+            return erreur(exc.code, f"Reconstruction refusée : {exc}.")
+        reponse = jsonify({"etat": "a_reconstruire"})
+        reponse.headers["Cache-Control"] = "no-store"
+        return reponse, 202
 
     @app.get("/api/avancement")
     def avancement():

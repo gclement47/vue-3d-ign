@@ -1089,3 +1089,113 @@ def test_chaque_zone_a_sa_scene(tmp_path):
     assert os.path.basename(large) == "48.8049_2.1204_z700"
     assert cache.avancement(48.8049, 2.1204, "700") == {"etat": "prete"}
     assert cache.avancement(48.8049, 2.1204, "500") == {"etat": "attente"}
+
+
+# --- Reconstruire une scène (bouton de la page) ---------------------------------
+
+def _scene_numero(numero):
+    """Une construction qui rend la scène numéro `numero`."""
+    def construire(lat, lon, avancer=None):
+        import gzip
+        import json
+        return gzip.compress(json.dumps({"numero": numero}).encode()), b"jpeg"
+    return construire
+
+
+def _numero(cache, lat, lon):
+    import gzip
+    import json
+    with gzip.open(cache.chemin(lat, lon, scene.NOM_SCENE)) as f:
+        return json.load(f)["numero"]
+
+
+def _vieillir(cache, lat, lon, secondes=3600):
+    """La scène écrite il y a `secondes`."""
+    chemin = cache.chemin(lat, lon, scene.NOM_SCENE)
+    t = time.time() - secondes
+    os.utime(chemin, (t, t))
+
+
+def test_reconstruire_met_la_scene_et_ses_couches_de_cote_puis_les_refait(tmp_path):
+    cache = Cache(str(tmp_path))
+    cache.obtenir(48.8049, 2.1204, construire=_scene_numero(1))
+    couche = cache.chemin(48.8049, 2.1204, scene.NOM_OUVRAGES)
+    open(couche, "wb").close()
+    _vieillir(cache, 48.8049, 2.1204)
+    cache.reconstruire(48.8049, 2.1204)
+    assert not cache.present(48.8049, 2.1204) and not os.path.exists(couche)
+    assert cache.avancement(48.8049, 2.1204) == {"etat": "attente"}
+    cache.obtenir(48.8049, 2.1204, construire=_scene_numero(2))
+    assert _numero(cache, 48.8049, 2.1204) == 2 and not os.path.exists(couche)
+    # La scène mise de côté ne reste pas sur le disque.
+    assert os.listdir(os.path.dirname(cache._dossier_point(48.8049, 2.1204))) == ["48.8049_2.1204"]
+
+
+def test_une_reconstruction_qui_echoue_rend_la_scene_mise_de_cote(tmp_path):
+    """L'IGN en panne pendant la reconstruction : la scène d'avant, complète,
+    revient avec ses couches, plutôt que plus rien."""
+    cache = Cache(str(tmp_path))
+    cache.obtenir(48.8049, 2.1204, construire=_scene_numero(1))
+    couche = cache.chemin(48.8049, 2.1204, scene.NOM_OUVRAGES)
+    open(couche, "wb").close()
+    _vieillir(cache, 48.8049, 2.1204)
+    cache.reconstruire(48.8049, 2.1204)
+
+    def en_panne(lat, lon, avancer=None):
+        raise SceneIncomplete("hauteurs du sursol illisible : Read timed out")
+    with pytest.raises(SceneIncomplete):
+        cache.obtenir(48.8049, 2.1204, construire=en_panne)
+    assert cache.present(48.8049, 2.1204) and _numero(cache, 48.8049, 2.1204) == 1
+    assert os.path.exists(couche)
+    assert os.listdir(os.path.dirname(cache._dossier_point(48.8049, 2.1204))) == ["48.8049_2.1204"]
+
+
+def test_une_scene_trop_recente_n_est_pas_reconstruite(tmp_path):
+    cache = Cache(str(tmp_path))
+    cache.obtenir(48.8049, 2.1204, construire=_scene_numero(1))
+    with pytest.raises(scene.ReconstructionRefusee, match="dans 10 min") as refus:
+        cache.reconstruire(48.8049, 2.1204)
+    assert refus.value.code == 429 and cache.present(48.8049, 2.1204)
+    _vieillir(cache, 48.8049, 2.1204, Cache.RECONSTRUIRE_APRES_S + 1)
+    cache.reconstruire(48.8049, 2.1204)
+    assert not cache.present(48.8049, 2.1204)
+
+
+def test_une_scene_dont_une_couche_se_calcule_n_est_pas_reconstruite(tmp_path):
+    """Une couche lancée et pas finie écrirait, d'après l'ancienne scène, à
+    côté de la nouvelle : refusé tant qu'elle tourne. Finie, sa réponse, lue
+    avant la reconstruction, est oubliée."""
+    import concurrent.futures
+    cache = Cache(str(tmp_path))
+    cache.obtenir(48.8049, 2.1204, construire=_scene_numero(1))
+    _vieillir(cache, 48.8049, 2.1204)
+    cle = (scene.NOM_OUVRAGES, 48.8049, 2.1204, None)
+    en_cours = concurrent.futures.Future()
+    cache._lectures[cle] = en_cours
+    with pytest.raises(scene.ReconstructionRefusee, match="ouvrages") as refus:
+        cache.reconstruire(48.8049, 2.1204)
+    assert refus.value.code == 409 and cache.present(48.8049, 2.1204)
+    # Une couche attendue par une demande, verrou pris : refusé de même.
+    del cache._lectures[cle]
+    with cache._verrou(cle):
+        with pytest.raises(scene.ReconstructionRefusee):
+            cache.reconstruire(48.8049, 2.1204)
+    en_cours.set_result({"lineaires": {"features": []}})
+    cache._lectures[cle] = en_cours
+    cache.reconstruire(48.8049, 2.1204)
+    assert cle not in cache._lectures and not cache.present(48.8049, 2.1204)
+
+
+def test_une_scene_en_construction_n_est_pas_reconstruite(tmp_path):
+    cache = Cache(str(tmp_path))
+    with cache._verrou((48.8049, 2.1204, None)):
+        with pytest.raises(scene.ReconstructionRefusee, match="se construire") as refus:
+            cache.reconstruire(48.8049, 2.1204)
+    assert refus.value.code == 409
+
+
+def test_reconstruire_une_scene_absente_ne_fait_rien(tmp_path):
+    cache = Cache(str(tmp_path))
+    cache.reconstruire(48.8049, 2.1204)
+    cache.obtenir(48.8049, 2.1204, construire=_scene_numero(1))
+    assert _numero(cache, 48.8049, 2.1204) == 1

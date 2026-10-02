@@ -57,6 +57,7 @@ import json
 import logging
 import math
 import os
+import shutil
 import tempfile
 import threading
 import time
@@ -214,6 +215,16 @@ class MonumentsIndisponibles(RuntimeError):
 class OuvragesIndisponibles(RuntimeError):
     """Une couche d'ouvrages de l'IGN n'a pas répondu : rien n'est mis en
     cache, la scène reste affichée sans eux, réessayer plus tard."""
+
+
+class ReconstructionRefusee(RuntimeError):
+    """La scène ne peut pas être reconstruite maintenant : `code` HTTP 429
+    si elle l'a été il y a trop peu de temps, 409 si elle ou l'une de ses
+    couches est en cours de calcul."""
+
+    def __init__(self, message, code):
+        super().__init__(message)
+        self.code = code
 
 
 def point_normalise(lat, lon):
@@ -654,6 +665,17 @@ class Cache:
     # autres points à ce rythme d'une tuile toutes les 30 s par appel.
     CEDER_AU_PLUS_S = 30
 
+    # Une scène se reconstruit à la demande (bouton de la page) au plus une
+    # fois par RECONSTRUIRE_APRES_S, comptées depuis son écriture : chaque
+    # reconstruction relit les seize sources de la scène, l'orthophoto à
+    # 0,2 m des détections et les couches à part, une trentaine de requêtes
+    # vers la Géoplateforme, qui limite chaque adresse IP (30 requêtes/s en
+    # WFS). Un bouton pressé en boucle n'y gagnerait rien : l'IGN ne publie
+    # pas ses mises à jour d'une minute à l'autre.
+    RECONSTRUIRE_APRES_S = 600
+    # Le dossier d'une scène mise de côté, en attendant sa reconstruction.
+    MISE_DE_COTE = ".mise-de-cote"
+
     # Orthophotos partagées (prelire_vehicules) tenues en mémoire à la fois :
     # 54 Mo chacune en zone de 1 000 m (5 000 × 3 602 px), 6,9 Mo pour
     # l'emprise par défaut. Sans borne, chaque scène demandée pendant qu'une
@@ -819,25 +841,87 @@ class Cache:
                 self._avancements[cle] = {"etape": etape[0], "libelle": libelle,
                                                  "debut": debut}
 
+            dossier = self._dossier_point(*cle)
+            ancienne = dossier + self.MISE_DE_COTE
             self._construction(1)
             try:
                 # Sans zone, l'appel d'avant les zones : les constructions
                 # injectées par les tests n'ont pas à la connaître.
                 options = {"zone": zone} if zone else {}
                 scene, mosaique = construire(lat, lon, avancer=avancer, **options)
-                dossier = self._dossier_point(*cle)
                 os.makedirs(dossier, exist_ok=True)
                 # L'orthophoto d'abord, la scène ensuite : `present` teste les
                 # deux, une interruption entre les deux laisse une scène
                 # absente, pas une scène sans image.
                 for nom, octets in ((NOM_ORTHO, mosaique), (NOM_SCENE, scene)):
                     self._ecrire(dossier, nom, octets)
+                # Reconstruite : la scène mise de côté (reconstruire) ne sert plus.
+                shutil.rmtree(ancienne, ignore_errors=True)
                 return dossier
+            except BaseException:
+                # Une reconstruction qui échoue (l'IGN en panne) rend la scène
+                # mise de côté : complète, elle vaut mieux qu'aucune.
+                if os.path.isdir(ancienne):
+                    shutil.rmtree(dossier, ignore_errors=True)
+                    os.replace(ancienne, dossier)
+                raise
             finally:
                 # Succès ou échec, la construction n'est plus en cours, et les
                 # détections reprennent.
                 self._construction(-1)
                 self._avancements.pop(cle, None)
+
+    def reconstruire(self, lat, lon, zone=None):
+        """Met de côté la scène du point et toutes ses couches : la demande
+        suivante les reconstruit, d'après les données de l'IGN du moment.
+        Si cette reconstruction échoue, la scène mise de côté revient
+        (obtenir). Sans scène en cache, rien à faire : la demande suivante la
+        construit de toute façon.
+
+        Raises:
+            ReconstructionRefusee (429) si la scène a été écrite il y a moins
+            de RECONSTRUIRE_APRES_S ; (409) si elle se construit, ou si l'une
+            de ses couches est en cours de calcul.
+        """
+        lat, lon = point_normalise(lat, lon)
+        zone = zone_normalisee(zone)
+        cle = (lat, lon, zone)
+        verrou = self._verrou(cle)
+        if not verrou.acquire(blocking=False):
+            raise ReconstructionRefusee("la scène est en train de se construire", 409)
+        try:
+            if not self.present(*cle):
+                return
+            dossier = self._dossier_point(*cle)
+            age = time.time() - os.path.getmtime(os.path.join(dossier, NOM_SCENE))
+            if age < self.RECONSTRUIRE_APRES_S:
+                attente = math.ceil((self.RECONSTRUIRE_APRES_S - age) / 60)
+                raise ReconstructionRefusee(
+                    f"la scène a été construite il y a {int(age // 60)} min : elle pourra "
+                    f"être reconstruite dans {attente} min", 429)
+            # Sous le verrou global : aucune couche ne peut être lancée ni
+            # prise par une demande (_prelire, _obtenir_couche) pendant que le
+            # dossier change de place.
+            with self._verrou_global:
+                du_point = [c for c in self._lectures if c[1:] == cle]
+                en_cours = [c for c in du_point if not self._lectures[c].done()]
+                en_cours += [c for c, v in self._verrous.items()
+                             if len(c) == 4 and c[1:] == cle and v.locked()]
+                if en_cours:
+                    raise ReconstructionRefusee(
+                        "des couches de la scène sont en cours de calcul ("
+                        f"{', '.join(sorted({c[0] for c in en_cours}))}) : réessayez "
+                        "quand elles sont affichées", 409)
+                # Lues avant la reconstruction, leurs réponses ne servent plus.
+                for c in du_point:
+                    self._lectures.pop(c)
+                ancienne = dossier + self.MISE_DE_COTE
+                shutil.rmtree(ancienne, ignore_errors=True)
+                os.replace(dossier, ancienne)
+            journal.info("Scène %.4f, %.4f (zone %s) mise de côté, à reconstruire",
+                         lat, lon, zone or "par défaut")
+        finally:
+            verrou.release()
 
     def _prelire(self, nom, lat, lon, lire, zone=None):
         """Lance en tâche de fond la lecture d'une couche à part, si elle
@@ -873,6 +957,11 @@ class Cache:
         if os.path.exists(chemin):
             return dossier
         with self._verrou(cle):
+            # Sous le verrou de la couche, que reconstruire respecte : la
+            # scène a pu être mise de côté depuis le premier appel, et la
+            # couche s'écrit alors à côté de la scène reconstruite.
+            dossier = self.obtenir(lat, lon, construire=construire, zone=zone)
+            chemin = os.path.join(dossier, nom)
             if os.path.exists(chemin):          # écrite pendant l'attente
                 return dossier
             with self._verrou_global:

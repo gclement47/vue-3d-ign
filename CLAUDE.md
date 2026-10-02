@@ -24,7 +24,7 @@ npm install puppeteer-core && node outils/essai-navigateur.mjs "http://localhost
 
 ```
 vue3d/
-  app.py        Flask : /, /api/scene, /api/ortho, /api/monuments, /api/ouvrages, /api/piscines, /api/vehicules, /api/panneaux, /api/avancement, /api/sante
+  app.py        Flask : /, /api/scene, /api/ortho, /api/monuments, /api/ouvrages, /api/piscines, /api/vehicules, /api/panneaux, /api/avancement, /api/sante, POST /api/reconstruire
   scene.py      assemblage d'une scène, cache disque par point arrondi
   couches.py    lecture WFS (bâtiments, végétation, BD Forêt, routes)
   batiments.py  bâtiments découpés sur l'emprise, en retrait du bord

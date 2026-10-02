@@ -34,6 +34,14 @@ messages de commit et dans les commentaires des modules.
   Docker avec les deux détecteurs ; `run_macOS_CoreML.sh` lance le
   service sans Docker, détecteurs sur CoreML, et refuse de démarrer si le
   conteneur tient déjà le port.
+- **Un bouton « ↻ Reconstruire la scène »** dans le panneau. Il relit à
+  l'IGN la scène et toutes ses couches (monuments, ouvrages, véhicules,
+  piscines, panneaux), d'après ses données du moment : le dossier est mis
+  de côté, la page rechargée le reconstruit avec sa barre d'attente, et si
+  l'IGN ne répond pas, l'ancienne scène revient, complète. Pour ne pas
+  charger la Géoplateforme, une même scène ne se reconstruit qu'une fois
+  toutes les 10 minutes, et pas pendant qu'elle ou une de ses couches se
+  calcule ; le refus dit pourquoi. Route : `POST /api/reconstruire`.
 
 ### Modifié
 
@@ -113,6 +121,10 @@ messages de commit et dans les commentaires des modules.
   lectures 50 %, toitures 30 %, houppiers 20 %, d'après les durées mesurées
   à Gordes et à Strasbourg en zone de 1 000 m. Les lectures finissant
   désormais en 3 s environ, elle restait à 89 % pendant tout le calcul.
+- **Le navigateur revalide la scène et ses couches à chaque visite**, au
+  lieu de les garder un jour : une scène reconstruite apparaît aussitôt.
+  Tant que le fichier n'a pas été réécrit, la réponse est un 304 sans
+  corps, un aller-retour.
 
 ### Corrigé
 
