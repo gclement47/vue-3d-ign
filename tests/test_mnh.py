@@ -77,3 +77,40 @@ def test_un_repli_en_echec_garde_la_reponse_lidar(monkeypatch):
     monkeypatch.setattr(mnh, "_grille_wms", grille_wms)
     grille = mnh.fetch_mnh_grid(5.19, 43.90, 5.1902, 43.9002)
     assert not grille["couvert"] and grille["source"] is None
+
+
+def test_un_repli_en_echec_n_abandonne_pas_la_scene(monkeypatch):
+    """Dans une scène, le MNS en échec abandonne le MNT, son voisin du
+    repli, pas les autres lectures de la scène : la grille LiDAR, même vide,
+    est rendue comme avant, et c'est la scène qui la juge."""
+    import concurrent.futures
+
+    from vue3d import geopf
+
+    class Reponse:
+        ok = True
+        status_code = 200
+        headers = {"Content-Type": "image/x-bil;bits=32"}
+
+        def __init__(self, contenu):
+            self.content = contenu
+
+        def raise_for_status(self):
+            pass
+
+    def get(url, timeout=None):
+        if f"LAYERS={mnh.MNS_LAYER}&" in url:
+            raise requests.ConnectionError("panne")
+        valeur = 110.0 if f"LAYERS={mnh.MNT_LAYER}&" in url else 0.0
+        return Reponse(struct.pack("<4f", *[valeur] * 4))
+
+    monkeypatch.setattr(geopf, "_places", geopf._Places(geopf.GEOPF_SIMULTANEES, geopf.GEOPF_FOND))
+    monkeypatch.setattr(geopf.requests, "get", get)
+    monkeypatch.setattr(geopf.time, "sleep", lambda s: None)
+    monkeypatch.setattr(mnh, "dimensions_grille", lambda *a, **k: (2, 2))
+    groupe = geopf.Groupe(de_scene=True)
+    with concurrent.futures.ThreadPoolExecutor(1) as bassin:
+        grille = groupe.soumettre(bassin, mnh.fetch_mnh_grid, 5.19, 43.90, 5.1902,
+                                  43.9002).result(timeout=5)
+    assert not grille["couvert"] and grille["source"] is None
+    assert not groupe.abandonne()

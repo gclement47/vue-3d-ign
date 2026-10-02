@@ -35,7 +35,7 @@ quatrième, optionnelle aussi (`Cache.obtenir_panneaux`, `VUE3D_PANNEAUX`).
 
 La construction coûte de quelques secondes à une demi-minute selon la zone et
 le lieu. Ses seize lectures partent ensemble (`_lire_ensemble`) : 3 s environ
-pour une zone de 1 000 m, moins d'une seconde pour l'emprise par défaut — le
+pour une zone de 1 000 m, environ une seconde pour l'emprise par défaut — le
 temps de la plus longue, au lieu de 13 s et de 4 à 5 s une à une. Le
 résultat est mis en cache sur disque, par point arrondi à 4 décimales (une
 dizaine de mètres) : deux demandes voisines partagent la même scène.
@@ -70,6 +70,7 @@ from .couches import (COUCHE_BATIMENTS, COUCHE_FORET, COUCHE_ROUTES,
                       COUCHE_VEGETATION, lire_couche)
 from .eau import (COUCHE_COURS_EAU, COUCHE_SURFACES_EAU, eau_pour_emprise,
                   masque_eau)
+from .geopf import Groupe
 from .lignes import COUCHE_LIGNES, COUCHE_PYLONES, lignes_pour_emprise
 from .houppiers import houppiers_pour_emprise
 from .mnh import dimensions_grille, fetch_mnh_grid, fetch_sol_grid
@@ -137,9 +138,11 @@ ETAPES_SCENE = 18
 # Côté maximal de la grille MNH à 0,5 m : le plafond du WMS (ZONE_MAX_M).
 GRILLE_PIXELS_MAX = 2048
 # Source du MNH qu'on suppose pour lire le terrain en même temps que lui : le
-# LiDAR HD couvre 77 % des points tirés au hasard en France (vue3d/mnh.py), et
-# davantage à mesure que le programme avance. Ailleurs, le terrain lu pour
-# rien l'a été en même temps que le reste, et il est relu à la bonne source.
+# LiDAR HD couvrait 77 % d'un échantillon de 60 bâtiments tirés au hasard en
+# France (vue3d/mnh.py), et davantage à mesure que le programme avance.
+# Ailleurs, le terrain lu pour rien l'a été en même temps que le reste — ou
+# pas du tout s'il attendait encore sa place — et il est relu à la bonne
+# source.
 SOURCE_PROBABLE = "lidar_hd"
 LECTURE_GRILLE = "hauteurs du sursol"
 LECTURE_TERRAIN = "terrain sous les toits"
@@ -443,13 +446,24 @@ def _lire_ensemble(lectures, avancer, terrain):
     """Les lectures d'une scène, toutes lancées ensemble ; {nom: résultat}.
 
     Une seule en échec, et la scène est incomplète : SceneIncomplete dès
-    qu'on le sait, les lectures pas encore commencées sont abandonnées, celles
-    en cours finissent sans que personne ne les attende — rien n'est écrit.
+    qu'on le sait, et rien n'est écrit. Les lectures forment un groupe
+    (geopf.Groupe), abandonné dès l'échec : celles qui attendent encore une
+    place ne partent plus, celles déjà parties ne réessaient plus et
+    finissent sans que personne ne les attende. Chaque lecture ayant son
+    fil, annuler leurs futurs n'arrêtait rien : hors réseau, la grille en
+    échec en 0,05 s et les autres requêtes en 1 s, les 16 partaient, dont
+    7 après l'échec annoncé ; 8 depuis, aucune après
+    (tests/test_lectures.py). Pendant une panne, où une requête tient sa
+    place jusqu'à 96 s (3 essais de 30 s et 2 attentes de 3 s), une scène
+    ratée gardait ainsi les places du processus deux vagues de suite ; elle
+    les rend désormais au bout de l'essai en cours.
 
     Une seule dépendance réelle : le terrain sous les toits est celui de la
     source du MNH. Il est lu d'emblée à SOURCE_PROBABLE (`terrain(source)`),
-    et n'est retenu qu'une fois la grille connue : relu à la bonne source si
-    elle en a une autre, son échec éventuel oublié alors avec lui.
+    dans un groupe à lui, et n'est retenu qu'une fois la grille connue. Si
+    elle a une autre source, ce groupe est abandonné — la requête d'environ
+    11 Mo ne part pas si elle n'a pas encore sa place — son échec éventuel
+    oublié, et le terrain relu à la bonne source.
 
     `avancer` n'est appelé que d'ici, d'un seul fil : une fois au départ,
     puis à chaque lecture finie sauf la dernière (l'étape suivante, les
@@ -465,19 +479,34 @@ def _lire_ensemble(lectures, avancer, terrain):
     # fil, seulement une place vers la Géoplateforme (geopf.place).
     bassin = concurrent.futures.ThreadPoolExecutor(max_workers=len(lectures) + 1,
                                                    thread_name_prefix="lecture")
+    groupe = Groupe(de_scene=True)
+    terrain_probable = Groupe(groupe)
     lu, terrain_tenu = {}, None
 
+    def nommee(nom, lecture):
+        # L'échec nommé dans le fil même de la lecture : il devient la cause
+        # du groupe, que l'on rapporte même quand une lecture abandonnée à
+        # cause de lui finit avant lui.
+        def lire(*args):
+            try:
+                return lecture(*args)
+            except Exception as exc:
+                raise SceneIncomplete(f"{nom} illisible : {exc}") from exc
+        return lire
+
     def finie(nom, futur):
-        try:
-            lu[nom] = futur.result()
-        except Exception as exc:
-            raise SceneIncomplete(f"{nom} illisible : {exc}") from exc
+        if groupe.abandonne():
+            # Une lecture a échoué : ce qui finit maintenant a pu être
+            # abandonné à cause d'elle. C'est son échec qu'on rapporte.
+            raise groupe.cause or SceneIncomplete(f"{nom} abandonnée")
+        lu[nom] = futur.result()                # SceneIncomplete, déjà nommée
         attendues.remove(nom)
         if attendues:
             avancer(_libelle(attendues))
 
     try:
-        en_cours = {bassin.submit(lecture): nom for nom, lecture in lectures}
+        en_cours = {(terrain_probable if nom == LECTURE_TERRAIN else groupe).soumettre(
+            bassin, nommee(nom, lecture)): nom for nom, lecture in lectures}
         avancer(_libelle(attendues))
         while en_cours:
             faites, _ = concurrent.futures.wait(
@@ -506,13 +535,18 @@ def _lire_ensemble(lectures, avancer, terrain):
                     if terrain_tenu is not None:
                         finie(LECTURE_TERRAIN, terrain_tenu)
                     continue
-                # Le terrain lu d'emblée n'est pas celui de cette grille.
+                # Le terrain lu d'emblée n'est pas celui de cette grille :
+                # abandonné s'il n'est pas encore parti, oublié sinon.
+                terrain_probable.abandonner()
                 for autre in [f for f, n in en_cours.items() if n == LECTURE_TERRAIN]:
-                    autre.cancel()
                     del en_cours[autre]
                 terrain_tenu = None
-                en_cours[bassin.submit(terrain, grille["source"])] = LECTURE_TERRAIN
+                en_cours[groupe.soumettre(bassin, nommee(LECTURE_TERRAIN, terrain),
+                                          grille["source"])] = LECTURE_TERRAIN
         return lu
+    except BaseException as exc:
+        groupe.abandonner(exc)
+        raise
     finally:
         bassin.shutdown(wait=False, cancel_futures=True)
 

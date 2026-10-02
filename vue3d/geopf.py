@@ -13,10 +13,16 @@ fois de suite, six fois en 200. D'où la reprise sur TOUT échec, refus compris,
 et non sur les seules erreurs de transport. Ces lectures sont des GET
 idempotents sur des URL dont la forme est vérifiée par ailleurs : réessayer ne
 coûte qu'un aller-retour, publier une scène amputée coûte bien plus.
+
+Chaque requête prend une place (`place()`) : GEOPF_SIMULTANEES pour tout le
+processus, dont GEOPF_FOND au plus pour ce qui n'est pas une scène. Les
+lectures lancées ensemble forment un `Groupe` : dès que l'une échoue, les
+autres ne partent plus et ne réessaient plus.
 """
 
 import concurrent.futures
 import contextlib
+import contextvars
 import threading
 import time
 
@@ -44,7 +50,148 @@ GEOPF_ATTENTE_S = 3
 # sur 612), sans reprise. get_avec_reprise les absorbe ; en parallèle, leurs
 # attentes se recouvrent au lieu de s'additionner.
 GEOPF_SIMULTANEES = 8
-_places = threading.BoundedSemaphore(GEOPF_SIMULTANEES)
+# Places que peuvent prendre ensemble les lectures qui ne sont pas celles
+# d'une scène : les ouvrages et l'orthophoto à 0,2 m des détections, lus en
+# tâche de fond, partent juste avant la scène (Cache.prelire_*). Sans borne,
+# les six tuiles d'une zone de 1 000 m prenaient une fois sur deux les places
+# avant la scène, qui attendait derrière elles. Elle en garde ainsi au moins
+# 4, autant qu'il lui en faut (2,7 s à 4 et 2,9 s à 8, plus haut).
+#
+# Mesuré le 2 octobre 2026 à Gordes, zone de 1 000 m, réseau réel,
+# fetch_ortho_rgb et fetch_ouvrages lancés dans des fils juste avant
+# construire, comme le fait une demande ; Mac M4 chargé par d'autres
+# calculs, essais alternés, médianes [quartiles] :
+# - lectures de la scène : 3,20 s [2,83 ; 3,60] sans borne, 2,92 s
+#   [2,63 ; 3,59] avec (16 essais chacun) ; 2,6 à 2,9 s sans orthophoto à
+#   côté. Sans borne, la dernière requête de la scène partait après 1,8 à
+#   3,1 s dans 7 essais sur 16, au lieu de 0,5 à 0,7 s ;
+# - orthophoto des détections : 3,53 s → 4,12 s pendant la scène, 2,46 s →
+#   2,98 s seule (trois tuiles à la fois tant que les ouvrages lisent) ;
+# - « la scène prend d'abord » (une lecture de fond attend tant qu'une de
+#   scène attend), ajouté à la borne, 8 essais : 3,11 s pour la scène, 4,60 s
+#   pour l'orthophoto. Rien de gagné sur le réseau : écarté.
+GEOPF_FOND = 4
+
+
+class LectureAbandonnee(requests.RequestException):
+    """Une lecture qui ne part pas, ou ne réessaie pas : son groupe a été
+    abandonné (`Groupe.abandonner`), personne n'attend plus son résultat."""
+
+
+# Le groupe de la lecture en cours dans ce fil, posé par `Groupe.soumettre` :
+# `place()` et `get_avec_reprise` le consultent sans qu'on ait à le passer à
+# travers fetch_*, lire_couche et leurs lectures imbriquées.
+_groupe = contextvars.ContextVar("geopf_groupe", default=None)
+
+
+class Groupe:
+    """Des lectures lancées ensemble, dont l'appelant attend tous les
+    résultats : celles d'une scène, les quarts d'une couche WFS, le MNS et le
+    MNT du repli, le terrain lu d'avance.
+
+    Abandonné, un groupe ne lance plus rien : ses lectures qui attendent une
+    place la quittent, celles en cours ne réessaient plus, toutes en levant
+    LectureAbandonnee. Une lecture en échec abandonne d'elle-même son
+    groupe, depuis son fil, dès que l'échec sort d'elle : avant que son
+    futur ne se termine, donc avant que l'appelant ne le sache. Un groupe
+    imbriqué est abandonné avec celui qui le contient, pas l'inverse : un
+    quart en échec n'arrête que les autres quarts, le MNS du repli en échec
+    que le MNT, et l'appelant décide comme avant (la couche échoue, la
+    grille LiDAR est gardée).
+
+    `cause` garde le premier échec : les lectures abandonnées à cause de lui
+    peuvent finir avant lui, et c'est lui qu'il faut rapporter, pas « lecture
+    abandonnée ».
+
+    Un groupe n'est abandonné que quand plus rien de ce qu'il lit ne sera
+    utilisé — la scène échoue, `en_parallele` lève, le terrain lu d'avance
+    n'est pas de la bonne source — : l'abandon ne change aucun résultat
+    rendu, il épargne des requêtes. `de_scene` non plus : il ne change que
+    l'ordre où partent les requêtes (`_Places`).
+    """
+
+    def __init__(self, parent=None, de_scene=False):
+        self.parent = parent
+        # Les lectures d'une scène ne comptent pas dans GEOPF_FOND, celles
+        # qu'elles lancent non plus.
+        self.de_scene = de_scene or (parent is not None and parent.de_scene)
+        self.cause = None
+        self._verrou = threading.Lock()
+        self._abandonne = threading.Event()
+
+    def abandonner(self, cause=None):
+        """`cause` : l'échec qui l'abandonne ; seul le premier est gardé,
+        avant que quiconque puisse voir le groupe abandonné."""
+        with self._verrou:
+            if self.cause is None:
+                self.cause = cause
+        self._abandonne.set()
+        _places.reveiller()
+
+    def abandonne(self):
+        return self._abandonne.is_set() or (self.parent is not None and self.parent.abandonne())
+
+    def verifier(self):
+        """Lève LectureAbandonnee si le groupe, ou l'un de ceux qui le
+        contiennent, est abandonné."""
+        if self.abandonne():
+            raise LectureAbandonnee("lecture abandonnée : une autre lecture de son groupe a échoué")
+
+    def soumettre(self, bassin, lecture, *args):
+        """`bassin.submit(lecture, *args)`, la lecture rattachée au groupe,
+        et avec elle celles qu'elle lance par `en_parallele`."""
+        contexte = contextvars.copy_context()
+        contexte.run(_groupe.set, self)
+        return bassin.submit(contexte.run, self._lancer, lecture, *args)
+
+    def _lancer(self, lecture, *args):
+        try:
+            return lecture(*args)
+        except BaseException as exc:
+            self.abandonner(exc)
+            raise
+
+
+class _Places:
+    """Les GEOPF_SIMULTANEES places du processus, dont GEOPF_FOND au plus
+    pour les lectures hors scène. Une condition plutôt qu'un sémaphore : une
+    lecture abandonnée quitte la file aussitôt, au lieu d'attendre une place
+    pour la rendre."""
+
+    def __init__(self, toutes, fond):
+        self._condition = threading.Condition()
+        self._libres = toutes
+        self._fond_libres = fond
+
+    def prendre(self, groupe):
+        """Attend une place ; rend vrai si c'est une place de scène."""
+        de_scene = groupe is not None and groupe.de_scene
+        with self._condition:
+            while True:
+                if groupe is not None:
+                    groupe.verifier()
+                if self._libres and (de_scene or self._fond_libres):
+                    break
+                self._condition.wait()
+            self._libres -= 1
+            if not de_scene:
+                self._fond_libres -= 1
+        return de_scene
+
+    def rendre(self, de_scene):
+        with self._condition:
+            self._libres += 1
+            if not de_scene:
+                self._fond_libres += 1
+            self._condition.notify_all()
+
+    def reveiller(self):
+        """Les lectures en attente revérifient leur groupe."""
+        with self._condition:
+            self._condition.notify_all()
+
+
+_places = _Places(GEOPF_SIMULTANEES, GEOPF_FOND)
 
 
 @contextlib.contextmanager
@@ -52,9 +199,22 @@ def place():
     """Une des GEOPF_SIMULTANEES places, le temps d'une requête et de ses
     reprises. À prendre autour de `get_avec_reprise` seulement, jamais autour
     d'une attente sur d'autres lectures : un fil qui garde sa place en
-    attendant celles qu'il a lancées peut bloquer tout le processus."""
-    with _places:
+    attendant celles qu'il a lancées peut bloquer tout le processus.
+
+    Raises:
+        LectureAbandonnee si le groupe de la lecture est abandonné avant
+        qu'elle ait sa place.
+    """
+    # Une requête en échec n'abandonne pas le groupe ici : la lecture peut
+    # s'en remettre. C'est la lecture entière qui, en échouant, l'abandonne
+    # (Groupe._lancer) ; entre la place rendue et cet abandon, quelques
+    # microsecondes où une lecture en attente pourrait encore partir.
+    places = _places                            # rendue là où elle a été prise
+    de_scene = places.prendre(_groupe.get())
+    try:
         yield
+    finally:
+        places.rendre(de_scene)
 
 
 def en_parallele(*lectures):
@@ -64,24 +224,35 @@ def en_parallele(*lectures):
     Un fil par lecture : elles attendent le réseau, pas un cœur, et c'est
     `place()` qui borne les requêtes. Des fils neufs plutôt qu'un bassin
     partagé : une lecture peut en lancer d'autres (les quarts d'une couche
-    WFS), qui n'ont pas à attendre qu'un fil du même bassin se libère.
+    WFS), qui n'ont pas à attendre qu'un fil du même bassin se libère. Elles
+    forment un groupe, dans celui de l'appelant s'il en a un.
 
     Raises:
         l'exception de la première lecture en échec, dès qu'elle échoue :
-        les lectures pas encore commencées sont abandonnées, celles en cours
-        finissent sans que personne ne les attende.
+        les autres sont abandonnées — celles qui attendent une place ne
+        partent plus, celles déjà parties finissent sans que personne ne
+        les attende ni ne les réessaie.
     """
     if len(lectures) <= 1:
         return [lecture() for lecture in lectures]
+    groupe = Groupe(_groupe.get())
     bassin = concurrent.futures.ThreadPoolExecutor(max_workers=len(lectures),
                                                    thread_name_prefix="geopf")
     try:
-        futurs = [bassin.submit(lecture) for lecture in lectures]
+        futurs = [groupe.soumettre(bassin, lecture) for lecture in lectures]
         faits, _ = concurrent.futures.wait(futurs, return_when=concurrent.futures.FIRST_EXCEPTION)
         for futur in futurs:
             if futur in faits and futur.exception() is not None:
-                raise futur.exception()
+                exc = futur.exception()
+                if isinstance(exc, LectureAbandonnee) and groupe.cause is not None:
+                    # Abandonnée parce qu'une voisine a échoué, et finie
+                    # avant elle : c'est l'échec de la voisine qui compte.
+                    exc = groupe.cause
+                raise exc
         return [futur.result() for futur in futurs]
+    except BaseException as exc:
+        groupe.abandonner(exc)
+        raise
     finally:
         bassin.shutdown(wait=False, cancel_futures=True)
 
@@ -89,11 +260,22 @@ def en_parallele(*lectures):
 def get_avec_reprise(url, timeout=30, essais=GEOPF_ESSAIS, attente=GEOPF_ATTENTE_S):
     """GET sur la Géoplateforme, en réessayant les incidents de transport.
 
+    Une lecture dont le groupe est abandonné ne réessaie pas : pendant une
+    panne, chaque essai peut tenir sa place 30 s.
+
     Raises:
-        requests.RequestException si tous les essais échouent.
+        requests.RequestException si tous les essais échouent ;
+        LectureAbandonnee si le groupe est abandonné entre deux essais.
     """
+    groupe = _groupe.get()
     dernier = None
     for essai in range(essais):
+        if essai:
+            if groupe is not None:
+                groupe.verifier()
+            time.sleep(attente)
+            if groupe is not None:
+                groupe.verifier()
         try:
             reponse = requests.get(url, timeout=timeout)
         except requests.RequestException as exc:
@@ -103,6 +285,4 @@ def get_avec_reprise(url, timeout=30, essais=GEOPF_ESSAIS, attente=GEOPF_ATTENTE
                 return reponse
             dernier = requests.RequestException(
                 f"HTTP {reponse.status_code} sur {url[:80]}")
-        if essai < essais - 1:
-            time.sleep(attente)
     raise dernier
