@@ -15,6 +15,14 @@ messages de commit et dans les commentaires des modules.
 
 ### Ajouté
 
+- **Les troncs s'effacent dans le feuillage.** Opaques d'un bout à l'autre,
+  ils se lisaient comme des poteaux à travers des houppiers transparents à
+  30 % — 2 009 arbres sur 2 160 en ont un à Gordes. Le tronc est désormais
+  presque opaque au pied et s'efface en montant : il ancre l'arbre au sol et
+  se perd dans le houppier. Comparé sur la même vue à un tronc à 60 %
+  d'opacité, affiné ou absent ; son ombre portée reste celle d'un tronc
+  plein.
+
 - **La vue en mouvement allégée.** Pendant une orbite, un glisser ou un
   zoom, l'ombre portée n'est plus redessinée à chaque image : elle ne dépend
   que du soleil et de la scène, que la page surveille, et suit aussitôt

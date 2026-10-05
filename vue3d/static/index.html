@@ -4904,9 +4904,32 @@ const MAT_FEUILLAGE = new THREE.MeshStandardMaterial({
 const MAT_MASSE = new THREE.MeshStandardMaterial({
     color: 0xffffff, vertexColors: true, transparent: true, opacity: OPACITE_VEGETATION,
     roughness: 1, flatShading: true });
+// Le tronc s'efface en montant : presque opaque au pied, il ancre l'arbre au
+// sol, et se perd dans le feuillage. Opaque d'un bout à l'autre, il se lisait
+// comme un poteau à travers un houppier transparent à 30 % — 2 009 arbres sur
+// 2 160 en ont un à Gordes, 2,5 m de fût nu en médiane. Comparé sur la même
+// vue de Gordes à un tronc à 60 % d'opacité, deux fois plus fin et plus clair,
+// ou absent : à 60 % ou affiné, il restait un poteau ; sans lui, le houppier
+// flottait. L'opacité suit la hauteur du cylindre, de TRONC_OPACITE_PIED à
+// TRONC_OPACITE_HAUT, dans une couleur de sommet à quatre composantes ;
+// l'ombre portée reste celle d'un tronc plein.
+const TRONC_OPACITE_PIED = 0.75;
+const TRONC_OPACITE_HAUT = 0.05;
+// depthWrite coupé et dessiné avant le feuillage (renderOrder, construireVegetation) :
+// sa partie presque invisible ne masque pas le houppier qui l'entoure.
 const MAT_TRONC = new THREE.MeshStandardMaterial({
-    color: 0x6b5240, map: TEX_ECORCE, roughness: 1 });
-const GEO_TRONC = new THREE.CylinderGeometry(0.34, 0.78, 1, 7);
+    color: 0x6b5240, map: TEX_ECORCE, roughness: 1,
+    vertexColors: true, transparent: true, depthWrite: false });
+const GEO_TRONC = (() => {
+    const g = new THREE.CylinderGeometry(0.34, 0.78, 1, 7);
+    const pos = g.attributes.position, c = new Float32Array(4 * pos.count);
+    for (let i = 0; i < pos.count; i++) {
+        const t = pos.getY(i) + 0.5;                    // 0 au pied, 1 en haut
+        c.set([1, 1, 1, TRONC_OPACITE_PIED + (TRONC_OPACITE_HAUT - TRONC_OPACITE_PIED) * t], 4 * i);
+    }
+    g.setAttribute('color', new THREE.BufferAttribute(c, 4));
+    return g;
+})();
 // En deçà, c'est un buisson ou une haie : un tronc n'aurait pas de sens.
 const HAUTEUR_MIN_TRONC = 3;
 
@@ -5297,6 +5320,8 @@ function construireVegetation() {
         const mesh = garde || new THREE.InstancedMesh(GEO_TRONC, MAT_TRONC, arbres.length);
         if (!garde) {
             mesh.castShadow = true;
+            // Avant le feuillage, transparent lui aussi : il se voit à travers.
+            mesh.renderOrder = -1;
             mesh.userData = { genre: 'tronc', elements: arbres };
         }
         groupeVegetation.add(mesh);
@@ -6096,7 +6121,8 @@ dimensionner();
                          MAT_RESERVOIR, MAT_CHEMINEE, MAT_TOUR, MAT_FEUILLAGE, MAT_MASSE]) {
             essai.add(new THREE.Mesh(triangle, m));
         }
-        essai.add(new THREE.InstancedMesh(triangle, MAT_TRONC, 1));
+        // Sur sa géométrie : l'opacité de ses sommets est une variante du programme.
+        essai.add(new THREE.InstancedMesh(GEO_TRONC, MAT_TRONC, 1));
         essai.add(new THREE.LineSegments(triangle, MAT_CABLE), new THREE.LineSegments(triangle, MAT_CONTOUR_CIBLE));
         renderer.compileAsync(essai, camera, scene).catch(() => {}).finally(() => triangle.dispose());
     } catch (e) {
