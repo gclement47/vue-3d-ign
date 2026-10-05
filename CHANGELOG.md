@@ -15,6 +15,16 @@ messages de commit et dans les commentaires des modules.
 
 ### Ajouté
 
+- **Chercher un lieu par son adresse ou son nom.** Un seul champ remplace
+  la latitude et la longitude : il suggère, dès le troisième caractère, les
+  adresses de la Base Adresse Nationale et les lieux nommés de l'IGN
+  (« château de Chambord »), par le géocodage de la Géoplateforme, sans clé.
+  Flèches et Entrée choisissent ; des coordonnées collées, dans un ordre ou
+  dans l'autre, sont reconnues telles quelles. L'outre-mer, que les scènes
+  ne couvrent pas, est écarté. Au-dessus des coordonnées, le panneau affiche
+  le nom du lieu choisi, sinon la commune du point. Ce nom n'entre jamais
+  dans l'URL : un lien partagé ne porte pas d'adresse lisible.
+
 - **Les tours de refroidissement.** La BD TOPO n'en donne qu'un bâtiment
   rond et une hauteur, et le LiDAR ne voit pas leur coque : à Gardanne, la
   tour de 139 m sortait en bâtiment d'un étage « sous les arbres », avec une

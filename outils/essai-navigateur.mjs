@@ -1,6 +1,7 @@
 // Essai de la page dans un vrai navigateur : charge un point, attend la scène,
-// survole et clique le bâtiment visé, bascule au 21 décembre, et relève toute
-// erreur JavaScript ou requête en échec. C'est le seul moyen de vérifier les
+// survole et clique le bâtiment visé, bascule au 21 décembre, cherche un lieu
+// (« place du chateau gordes ») et s'y rend, et relève toute erreur JavaScript
+// ou requête en échec. C'est le seul moyen de vérifier les
 // chemins d'exécution du rendu, que les tests Python ne voient pas.
 //
 //   npm install puppeteer-core
@@ -20,7 +21,13 @@ await page.setViewport({ width: 1400, height: 850 });
 const erreurs = [];
 page.on('pageerror', e => erreurs.push('pageerror: ' + e.message));
 page.on('console', m => { if (m.type() === 'error') erreurs.push('console: ' + m.text()); });
-page.on('requestfailed', r => erreurs.push('échec requête: ' + r.url().slice(0, 100) + ' ' + (r.failure()?.errorText || '')));
+// Une fois la page quittée pour le lieu cherché, ses requêtes en cours sont
+// interrompues : c'est attendu.
+let quittee = false;
+page.on('requestfailed', r => {
+  if (quittee && r.failure()?.errorText === 'net::ERR_ABORTED') return;
+  erreurs.push('échec requête: ' + r.url().slice(0, 100) + ' ' + (r.failure()?.errorText || ''));
+});
 page.on('response', r => { if (r.status() >= 400) erreurs.push(`HTTP ${r.status()} ${r.url().slice(0, 100)}`); });
 await page.goto(url, { waitUntil: 'domcontentloaded' });
 // Attend la scène, puis la végétation et le relief.
@@ -34,6 +41,7 @@ const etat = await page.evaluate(() => ({
   terrain: document.getElementById('s-src').textContent + ' · ' + document.getElementById('s-amp').textContent,
   vegetation: document.getElementById('v-note').textContent.slice(0, 160),
   soleil: document.getElementById('s-date').textContent + ' · ' + document.getElementById('s-hauteur').textContent,
+  nom: document.getElementById('nom-point').hidden ? '(aucun)' : document.getElementById('nom-point').textContent,
 }));
 console.log(JSON.stringify(etat, null, 1));
 // Arrête l'orbite, puis survole et clique au centre (bâtiment visé).
@@ -65,6 +73,26 @@ await page.evaluate(() => { const h = document.getElementById('heure'); h.value 
 console.log('soleil au 21 décembre, 13 h :', await page.$eval('#s-date', e => e.textContent), '·', await page.$eval('#s-hauteur', e => e.textContent));
 await new Promise(r => setTimeout(r, 800));
 await page.screenshot({ path: sortie });
+// Recherche d'un lieu : suggestions du géocodage de l'IGN, puis Entrée, qui
+// mène à la première. Le nom choisi doit suivre, sans passer par l'URL.
+await page.type('#in-lieu', 'place du chateau gordes');
+try {
+  await page.waitForFunction(() => document.querySelector('#suggestions li[role="option"]'), { timeout: 20000 });
+  console.log('suggestion :', await page.$eval('#suggestions li', li => li.textContent));
+  quittee = true;
+  await Promise.all([page.waitForNavigation({ waitUntil: 'domcontentloaded' }), page.keyboard.press('Enter')]);
+  const u = new URL(page.url());
+  const [lat, lon] = [Number(u.searchParams.get('lat')), Number(u.searchParams.get('lon'))];
+  console.log('après Entrée :', u.search);
+  if (Math.abs(lat - 43.9112) > 0.001 || Math.abs(lon - 5.1997) > 0.001) erreurs.push('recherche : mauvais point ' + u.search);
+  if ([...u.searchParams.keys()].some(k => !['lat', 'lon', 'zone'].includes(k))) erreurs.push('recherche : URL ' + u.search);
+  await page.waitForFunction(() => !document.getElementById('nom-point').hidden, { timeout: 10000 });
+  const nom = await page.$eval('#nom-point', e => e.textContent);
+  console.log('nom affiché :', nom);
+  if (nom !== 'Place du Château') erreurs.push('recherche : nom affiché « ' + nom + ' »');
+} catch (e) {
+  erreurs.push('recherche : ' + e.message);
+}
 console.log('ERREURS :', erreurs.length ? '\n  ' + erreurs.join('\n  ') : 'aucune');
 await navigateur.close();
 process.exit(erreurs.length ? 1 : 0);

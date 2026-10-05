@@ -1,0 +1,776 @@
+{
+ "gordes": {
+  "features": [
+   {
+    "geometry": {
+     "coordinates": [
+      5.202374,
+      43.90902
+     ]
+    },
+    "properties": {
+     "_type": "poi",
+     "territory": "METROPOLE",
+     "postcode": [
+      "84220"
+     ],
+     "toponym": "Gordes",
+     "name": [
+      "Gordes"
+     ],
+     "category": [
+      "administratif",
+      "commune"
+     ]
+    }
+   },
+   {
+    "geometry": {
+     "coordinates": [
+      5.198416,
+      43.913029
+     ]
+    },
+    "properties": {
+     "_type": "poi",
+     "territory": "METROPOLE",
+     "postcode": [
+      "84220"
+     ],
+     "toponym": "Gordes",
+     "name": [
+      "Gordes"
+     ],
+     "city": [
+      "Gordes"
+     ],
+     "category": [
+      "lieu-dit habité",
+      "zone d'habitation"
+     ]
+    }
+   },
+   {
+    "geometry": {
+     "coordinates": [
+      5.206044,
+      43.904613
+     ]
+    },
+    "properties": {
+     "_type": "address",
+     "postcode": "84220",
+     "name": "Gordes",
+     "city": "Gordes",
+     "type": "municipality",
+     "context": "84, Vaucluse, Provence-Alpes-Côte d'Azur",
+     "label": "Gordes"
+    }
+   },
+   {
+    "geometry": {
+     "coordinates": [
+      2.820011,
+      49.405318
+     ]
+    },
+    "properties": {
+     "_type": "poi",
+     "territory": "METROPOLE",
+     "postcode": [
+      "60200"
+     ],
+     "toponym": "Gordes",
+     "name": [
+      "Gordes"
+     ],
+     "city": [
+      "Compiègne"
+     ],
+     "category": [
+      "quartier",
+      "zone d'habitation"
+     ]
+    }
+   },
+   {
+    "geometry": {
+     "coordinates": [
+      5.184396,
+      43.483733
+     ]
+    },
+    "properties": {
+     "_type": "poi",
+     "territory": "METROPOLE",
+     "postcode": [
+      "13130"
+     ],
+     "toponym": "Gordes",
+     "name": [
+      "Gordes"
+     ],
+     "city": [
+      "Berre-l'Étang"
+     ],
+     "category": [
+      "lieu-dit habité",
+      "zone d'habitation"
+     ]
+    }
+   },
+   {
+    "geometry": {
+     "coordinates": [
+      5.199762,
+      43.910614
+     ]
+    },
+    "properties": {
+     "_type": "poi",
+     "territory": "METROPOLE",
+     "postcode": [
+      "84220"
+     ],
+     "toponym": "Église Saint-Firmin",
+     "name": [
+      "Église Saint-Firmin"
+     ],
+     "city": [
+      "Gordes"
+     ],
+     "category": [
+      "culte chrétien",
+      "zone d'activité ou d'intérêt"
+     ]
+    }
+   },
+   {
+    "geometry": {
+     "coordinates": [
+      5.183401,
+      43.873631
+     ]
+    },
+    "properties": {
+     "_type": "poi",
+     "territory": "METROPOLE",
+     "postcode": [
+      "84220"
+     ],
+     "toponym": "Temple protestant",
+     "name": [
+      "Temple protestant"
+     ],
+     "city": [
+      "Gordes"
+     ],
+     "category": [
+      "culte chrétien",
+      "zone d'activité ou d'intérêt"
+     ]
+    }
+   },
+   {
+    "geometry": {
+     "coordinates": [
+      5.200521,
+      43.912567
+     ]
+    },
+    "properties": {
+     "_type": "poi",
+     "territory": "METROPOLE",
+     "postcode": [
+      "84220"
+     ],
+     "toponym": "Centre Hospitalier de Gordes",
+     "name": [
+      "Centre Hospitalier de Gordes"
+     ],
+     "city": [
+      "Gordes"
+     ],
+     "category": [
+      "hôpital",
+      "zone d'activité ou d'intérêt"
+     ]
+    }
+   },
+   {
+    "geometry": {
+     "coordinates": [
+      5.166831,
+      43.887135
+     ]
+    },
+    "properties": {
+     "_type": "poi",
+     "territory": "METROPOLE",
+     "postcode": [
+      "84220"
+     ],
+     "toponym": "Eglise",
+     "name": [
+      "Eglise"
+     ],
+     "city": [
+      "Gordes"
+     ],
+     "category": [
+      "culte chrétien",
+      "zone d'activité ou d'intérêt"
+     ]
+    }
+   },
+   {
+    "geometry": {
+     "coordinates": [
+      5.187244,
+      43.928417
+     ]
+    },
+    "properties": {
+     "_type": "poi",
+     "territory": "METROPOLE",
+     "postcode": [
+      "84220"
+     ],
+     "toponym": "Abbaye de Sénanque",
+     "name": [
+      "Abbaye de Sénanque"
+     ],
+     "city": [
+      "Gordes"
+     ],
+     "category": [
+      "culte chrétien",
+      "zone d'activité ou d'intérêt"
+     ]
+    }
+   }
+  ]
+ },
+ "fort de france": {
+  "features": [
+   {
+    "geometry": {
+     "coordinates": [
+      -61.070166,
+      14.641318
+     ]
+    },
+    "properties": {
+     "_type": "poi",
+     "territory": "DOMTOM",
+     "postcode": [
+      "97200"
+     ],
+     "toponym": "Fort-de-France",
+     "name": [
+      "Fort-de-France"
+     ],
+     "category": [
+      "administratif",
+      "commune"
+     ]
+    }
+   },
+   {
+    "geometry": {
+     "coordinates": [
+      -61.062192,
+      14.647805
+     ]
+    },
+    "properties": {
+     "_type": "address",
+     "postcode": "97200",
+     "name": "Fort-de-France",
+     "city": "Fort-de-France",
+     "type": "municipality",
+     "context": "972, Martinique",
+     "label": "Fort-de-France"
+    }
+   },
+   {
+    "geometry": {
+     "coordinates": [
+      -61.065589,
+      14.623785
+     ]
+    },
+    "properties": {
+     "_type": "poi",
+     "territory": "DOMTOM",
+     "postcode": [
+      "97200",
+      "97234"
+     ],
+     "toponym": "Fort-de-France",
+     "name": [
+      "Fort-de-France"
+     ],
+     "city": [
+      "Fort-de-France"
+     ],
+     "category": [
+      "lieu-dit habité",
+      "zone d'habitation"
+     ]
+    }
+   },
+   {
+    "geometry": {
+     "coordinates": [
+      6.624476,
+      44.180237
+     ]
+    },
+    "properties": {
+     "_type": "poi",
+     "territory": "METROPOLE",
+     "postcode": [
+      "04370"
+     ],
+     "toponym": "Fort de France",
+     "name": [
+      "Fort de France"
+     ],
+     "city": [
+      "Colmars"
+     ],
+     "category": [
+      "ouvrage militaire",
+      "zone d'activité ou d'intérêt"
+     ]
+    }
+   },
+   {
+    "geometry": {
+     "coordinates": [
+      -61.086979,
+      14.687164
+     ]
+    },
+    "properties": {
+     "_type": "poi",
+     "territory": "DOMTOM",
+     "postcode": [
+      "97200",
+      "97234"
+     ],
+     "toponym": "Hôpital Psychiatrique de Colson",
+     "name": [
+      "Hôpital Psychiatrique de Colson"
+     ],
+     "city": [
+      "Fort-de-France"
+     ],
+     "category": [
+      "hôpital",
+      "zone d'activité ou d'intérêt"
+     ]
+    }
+   },
+   {
+    "geometry": {
+     "coordinates": [
+      -61.068613,
+      14.60473
+     ]
+    },
+    "properties": {
+     "_type": "poi",
+     "territory": "DOMTOM",
+     "postcode": [
+      "97200",
+      "97234"
+     ],
+     "toponym": "Cour d'Appel de Fort-de-France",
+     "name": [
+      "Cour d'Appel de Fort-de-France"
+     ],
+     "city": [
+      "Fort-de-France"
+     ],
+     "category": [
+      "palais de justice",
+      "zone d'activité ou d'intérêt"
+     ]
+    }
+   },
+   {
+    "geometry": {
+     "coordinates": [
+      -61.078227,
+      14.605995
+     ]
+    },
+    "properties": {
+     "_type": "poi",
+     "territory": "DOMTOM",
+     "postcode": [
+      "97200",
+      "97234"
+     ],
+     "toponym": "Rectorat - Académie de Fort-de-France",
+     "name": [
+      "Rectorat - Académie de Fort-de-France"
+     ],
+     "city": [
+      "Fort-de-France"
+     ],
+     "category": [
+      "autre service déconcentré de l'etat",
+      "zone d'activité ou d'intérêt"
+     ]
+    }
+   },
+   {
+    "geometry": {
+     "coordinates": [
+      -61.05757,
+      14.629377
+     ]
+    },
+    "properties": {
+     "_type": "address",
+     "postcode": "97200",
+     "name": "Route de Redoute",
+     "city": "Fort-de-France",
+     "type": "street",
+     "context": "972, Martinique",
+     "label": "Route de Redoute 97200 Fort-de-France"
+    }
+   },
+   {
+    "geometry": {
+     "coordinates": [
+      -61.07758,
+      14.63911
+     ]
+    },
+    "properties": {
+     "_type": "address",
+     "postcode": "97234",
+     "name": "Route de Balata",
+     "city": "Fort-de-France",
+     "type": "street",
+     "context": "972, Martinique",
+     "label": "Route de Balata 97234 Fort-de-France"
+    }
+   },
+   {
+    "geometry": {
+     "coordinates": [
+      -61.060293,
+      14.610889
+     ]
+    },
+    "properties": {
+     "_type": "address",
+     "postcode": "97200",
+     "name": "Route des Religieuses",
+     "city": "Fort-de-France",
+     "type": "street",
+     "context": "972, Martinique",
+     "label": "Route des Religieuses 97200 Fort-de-France"
+    }
+   }
+  ]
+ },
+ "chateau de chambord": {
+  "features": [
+   {
+    "geometry": {
+     "coordinates": [
+      1.517078,
+      47.616174
+     ]
+    },
+    "properties": {
+     "_type": "poi",
+     "territory": "METROPOLE",
+     "postcode": [
+      "41250"
+     ],
+     "toponym": "Château de Chambord",
+     "name": [
+      "Château de Chambord"
+     ],
+     "city": [
+      "Chambord"
+     ],
+     "category": [
+      "château",
+      "zone d'habitation"
+     ]
+    }
+   },
+   {
+    "geometry": {
+     "coordinates": [
+      1.119823,
+      46.023446
+     ]
+    },
+    "properties": {
+     "_type": "address",
+     "postcode": "87140",
+     "name": "Allée du Château",
+     "city": "Chamboret",
+     "type": "street",
+     "context": "87, Haute-Vienne, Nouvelle-Aquitaine",
+     "label": "Allée du Château 87140 Chamboret"
+    }
+   },
+   {
+    "geometry": {
+     "coordinates": [
+      3.992761,
+      44.302455
+     ]
+    },
+    "properties": {
+     "_type": "address",
+     "postcode": "30530",
+     "name": "Château de Tagnac",
+     "city": "Chamborigaud",
+     "type": "locality",
+     "context": "30, Gard, Occitanie",
+     "label": "Château de Tagnac 30530 Chamborigaud"
+    }
+   },
+   {
+    "geometry": {
+     "coordinates": [
+      1.120342,
+      46.023294
+     ]
+    },
+    "properties": {
+     "_type": "poi",
+     "territory": "METROPOLE",
+     "postcode": [
+      "87140"
+     ],
+     "toponym": "Zone d'habitation",
+     "name": [
+      "Château"
+     ],
+     "city": [
+      "Chamboret"
+     ],
+     "category": [
+      "château",
+      "zone d'habitation"
+     ]
+    }
+   },
+   {
+    "geometry": {
+     "coordinates": [
+      1.122751,
+      46.005751
+     ]
+    },
+    "properties": {
+     "_type": "poi",
+     "territory": "METROPOLE",
+     "postcode": [
+      "87140"
+     ],
+     "toponym": "Zone d'habitation",
+     "name": [
+      "Château"
+     ],
+     "city": [
+      "Chamboret"
+     ],
+     "category": [
+      "château",
+      "zone d'habitation"
+     ]
+    }
+   },
+   {
+    "geometry": {
+     "coordinates": [
+      0.609476,
+      48.861793
+     ]
+    },
+    "properties": {
+     "_type": "poi",
+     "territory": "METROPOLE",
+     "postcode": [
+      "27250"
+     ],
+     "toponym": "le Château Fort",
+     "name": [
+      "le Château Fort"
+     ],
+     "city": [
+      "Chambord"
+     ],
+     "category": [
+      "lieu-dit habité",
+      "zone d'habitation"
+     ]
+    }
+   },
+   {
+    "geometry": {
+     "coordinates": [
+      3.992633,
+      44.302469
+     ]
+    },
+    "properties": {
+     "_type": "poi",
+     "territory": "METROPOLE",
+     "postcode": [
+      "30530"
+     ],
+     "toponym": "Château de Tagnac",
+     "name": [
+      "Château de Tagnac"
+     ],
+     "city": [
+      "Chamborigaud"
+     ],
+     "category": [
+      "lieu-dit habité",
+      "zone d'habitation"
+     ]
+    }
+   },
+   {
+    "geometry": {
+     "coordinates": [
+      1.592544,
+      46.165851
+     ]
+    },
+    "properties": {
+     "_type": "poi",
+     "territory": "METROPOLE",
+     "postcode": [
+      "23240"
+     ],
+     "toponym": "Château d'eau",
+     "name": [
+      "Château d'eau"
+     ],
+     "city": [
+      "Chamborand"
+     ],
+     "category": [
+      "château d'eau",
+      "réservoir"
+     ]
+    }
+   },
+   {
+    "geometry": {
+     "coordinates": [
+      -1.371764,
+      48.774454
+     ]
+    },
+    "properties": {
+     "_type": "address",
+     "postcode": "50320",
+     "name": "Le Château (Les Chambres)",
+     "city": "Le Grippon",
+     "type": "locality",
+     "context": "50, Manche, Normandie",
+     "label": "Le Château (Les Chambres) 50320 Le Grippon"
+    }
+   },
+   {
+    "geometry": {
+     "coordinates": [
+      6.106673,
+      47.391535
+     ]
+    },
+    "properties": {
+     "_type": "address",
+     "postcode": "70190",
+     "name": "Rue du Château",
+     "city": "Chambornay-lès-Bellevaux",
+     "type": "street",
+     "context": "70, Haute-Saône, Bourgogne-Franche-Comté",
+     "label": "Rue du Château 70190 Chambornay-lès-Bellevaux"
+    }
+   }
+  ]
+ },
+ "place du chateau gordes": {
+  "features": [
+   {
+    "geometry": {
+     "coordinates": [
+      5.199702,
+      43.911172
+     ]
+    },
+    "properties": {
+     "_type": "address",
+     "postcode": "84220",
+     "name": "Place du Château",
+     "city": "Gordes",
+     "type": "street",
+     "context": "84, Vaucluse, Provence-Alpes-Côte d'Azur",
+     "label": "Place du Château 84220 Gordes"
+    }
+   },
+   {
+    "geometry": {
+     "coordinates": [
+      -1.752838,
+      46.498275
+     ]
+    },
+    "properties": {
+     "_type": "address",
+     "postcode": "85180",
+     "name": "Rue Amédée Gordini",
+     "city": "Les Sables-d'Olonne",
+     "type": "street",
+     "context": "85, Vendée, Pays de la Loire",
+     "label": "Rue Amédée Gordini 85180 Les Sables-d'Olonne"
+    }
+   },
+   {
+    "geometry": {
+     "coordinates": [
+      -1.050207,
+      43.708621
+     ]
+    },
+    "properties": {
+     "_type": "poi",
+     "territory": "METROPOLE",
+     "postcode": [
+      "40100"
+     ],
+     "toponym": "Place du Chanoine Bordes",
+     "name": [
+      "Place du Chanoine Bordes"
+     ],
+     "city": [
+      "Dax"
+     ],
+     "category": [
+      "parking",
+      "transport",
+      "équipement de transport"
+     ]
+    }
+   }
+  ]
+ }
+}

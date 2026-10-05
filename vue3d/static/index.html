@@ -78,9 +78,21 @@
                               transform:translate(-50%,-100%);
                               border-left:5px solid transparent; border-right:5px solid transparent;
                               border-bottom:20px solid var(--accent); }
-        .form-point { display:flex; gap:4px; margin:8px 0 6px; }
-        .form-point input { width:0; flex:1; background:#161a1e; color:#e8eaed;
+        .form-point { display:flex; align-items:flex-start; gap:4px; margin:8px 0 6px; }
+        .form-point .recherche { flex:1; min-width:0; }
+        .form-point input { box-sizing:border-box; width:100%; background:#161a1e; color:#e8eaed;
                             border:1px solid #3a4148; border-radius:4px; padding:4px 6px; font-size:12px; }
+        #nom-point { font-size:12px; color:var(--text); margin-bottom:1px; }
+        /* Dans le flux, et non par-dessus : le panneau défile, une liste
+           posée en absolu y serait coupée. */
+        #suggestions { list-style:none; margin:4px 0 0; padding:0; max-height:260px; overflow-y:auto;
+                       background:#161a1e; border:1px solid #3a4148; border-radius:4px; }
+        #suggestions li { padding:5px 7px; font-size:12px; color:#e8eaed; cursor:pointer;
+                          border-top:1px solid var(--line); }
+        #suggestions li:first-child { border-top:0; }
+        #suggestions li:hover, #suggestions li[aria-selected="true"] { background:var(--panel-soft); }
+        #suggestions li small { display:block; font-size:10px; color:var(--muted); }
+        #suggestions li.message { color:var(--muted); cursor:default; background:none; }
         .form-point button { background:#2f6fb0; color:#fff; border:0; border-radius:4px;
                              padding:4px 10px; font-size:12px; cursor:pointer; }
         .zone { display:flex; align-items:center; gap:6px; margin:0 0 6px; font-size:11px; color:var(--muted); }
@@ -109,6 +121,8 @@
         #tip.epingle { pointer-events:auto; }
         @media (max-width:780px) { #app { flex-direction:column; }
             #panel { width:100%; flex:0 0 auto; max-height:45%; }
+            /* Sous 16 px, Safari iOS zoome sur le champ qui prend le focus. */
+            .form-point input { font-size:16px; }
             #credits { max-width:none; left:12px; } }
     </style>
 </head>
@@ -117,10 +131,15 @@
     <div id="panel">
         <header>
             <h1>Vue 3D IGN</h1>
+            <div id="nom-point" hidden></div>
             <div class="sub" id="coord-point">—</div>
-            <form id="form-point" class="form-point">
-                <input id="in-lat" type="text" inputmode="decimal" placeholder="latitude" aria-label="latitude" />
-                <input id="in-lon" type="text" inputmode="decimal" placeholder="longitude" aria-label="longitude" />
+            <form id="form-point" class="form-point" role="search" autocomplete="off">
+                <div class="recherche">
+                    <input id="in-lieu" type="search" placeholder="Adresse, lieu ou « lat, lon »"
+                           aria-label="Adresse, lieu ou coordonnées" role="combobox" aria-autocomplete="list"
+                           aria-expanded="false" aria-controls="suggestions" enterkeyhint="go" spellcheck="false" />
+                    <ul id="suggestions" role="listbox" aria-label="Lieux trouvés" hidden></ul>
+                </div>
                 <button type="submit">Voir</button>
             </form>
             <label class="zone" title="Côté nord-sud de la zone chargée. Une zone plus grande se construit plus longtemps : jusqu'à huit fois à 1 000 m.">
@@ -332,15 +351,236 @@ const REQUETE = `lat=${LAT0}&lon=${LON0}${PARAM_ZONE}`;
 const URL_VUE3D = `api/scene?${REQUETE}`;
 const URL_VUE3D_ORTHO = `api/ortho?${REQUETE}`;
 document.getElementById('coord-point').textContent = `${LAT0.toFixed(5)}, ${LON0.toFixed(5)}`;
-document.getElementById('in-lat').value = LAT0;
-document.getElementById('in-lon').value = LON0;
-document.getElementById('form-point').addEventListener('submit', e => {
-    e.preventDefault();
-    const lat = Number(document.getElementById('in-lat').value.replace(',', '.'));
-    const lon = Number(document.getElementById('in-lon').value.replace(',', '.'));
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
-    location.search = `?lat=${lat}&lon=${lon}${PARAM_ZONE}`;
+
+// --- Recherche d'un lieu -----------------------------------------------------
+// Le géocodage de la Géoplateforme : adresses de la Base Adresse Nationale et
+// lieux nommés de l'IGN (« Château de Chambord »), sans clé, appelé par le
+// navigateur — le service répond à toute origine. Son quota, 50 requêtes par
+// seconde, est compté par adresse IP : chaque visiteur a le sien, le serveur
+// n'y prend aucune part.
+const URL_GEOCODAGE = 'https://data.geopf.fr/geocodage';
+// Rien sous trois caractères (« go » rend des milliers de lieux), et une
+// requête par pause de la frappe, la précédente annulée.
+const RECHERCHE_MIN_CARACTERES = 3;
+const RECHERCHE_PAUSE_MS = 250;
+// Demandés en plus de ceux montrés : l'outre-mer et les doublons sont retirés
+// après coup — « gordes » rend la commune trois fois (lieu nommé, lieu-dit,
+// commune de la BAN) et « fort de france » met la Martinique en tête.
+const RECHERCHE_DEMANDES = 15;
+const SUGGESTIONS_MAX = 6;
+// Nom du lieu choisi, gardé pour l'onglet seulement, jamais dans l'URL : une
+// adresse tapée ne doit finir ni dans l'historique ni dans un lien partagé.
+const CLE_LIEU = 'vue3d-lieu';
+
+/**
+ * Coordonnées tapées ou collées — « 43.4715, 5.4861 », « 43,4715 5,4861 »,
+ * ou dans l'ordre longitude, latitude —, sinon null : le texte est une
+ * adresse. Chaque nombre a sa partie décimale, sans quoi « 45 5 » ou « 43,5 »
+ * en cours de frappe passeraient pour des coordonnées. Reconnues en France
+ * métropolitaine seulement, la seule couverte : latitude de 41 à 51,2,
+ * longitude de -5,3 à 9,7 ; les deux plages ne se recoupent pas, ce qui dit
+ * l'ordre.
+ */
+function lireCoordonnees(texte) {
+    const m = /^\s*(-?\d{1,3}[.,]\d+)\s*[,;\s]\s*(-?\d{1,3}[.,]\d+)\s*$/.exec(texte || '');
+    if (!m) return null;
+    const [a, b] = [m[1], m[2]].map(v => Number(v.replace(',', '.')));
+    const estLat = v => v >= 41 && v <= 51.2, estLon = v => v >= -5.3 && v <= 9.7;
+    if (estLat(a) && estLon(b)) return { lat: a, lon: b };
+    if (estLon(a) && estLat(b)) return { lat: b, lon: a };
+    return null;
+}
+
+/**
+ * Suggestions tirées d'une réponse du géocodage, dans son ordre de score :
+ * [{ nom, detail, lat, lon }], au plus `max`. L'outre-mer est écarté (le
+ * lieu nommé le dit par `territory`, l'adresse par son code postal en 97 ou
+ * 98), ainsi qu'un nom déjà vu avec le même code postal.
+ */
+function suggestionsDe(reponse, max) {
+    const vues = new Set(), out = [];
+    for (const f of (reponse && reponse.features) || []) {
+        const p = f.properties || {};
+        const [lon, lat] = (f.geometry && f.geometry.coordinates) || [];
+        if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
+        let nom, detail, cp;
+        if (p._type === 'poi') {
+            if (p.territory && p.territory !== 'METROPOLE') continue;
+            cp = (p.postcode || [])[0] || '';
+            nom = p.toponym || (p.name || [])[0];
+            const commune = (p.city || [])[0];
+            // « administratif » précède « commune » : c'est le second qui parle.
+            const genre = (p.category || []).find(c => c !== 'administratif');
+            detail = [genre, commune && commune !== nom ? commune : null, cp].filter(Boolean).join(' · ');
+        } else {
+            cp = p.postcode || '';
+            if (/^9[78]/.test(cp)) continue;
+            if (p.type === 'municipality') {
+                nom = p.city || p.name;
+                detail = ['commune', (p.context || '').split(', ').slice(0, 2).join(' ')]
+                    .filter(Boolean).join(' · ');
+            } else {
+                nom = p.name;
+                detail = [cp, p.city].filter(Boolean).join(' ');
+            }
+        }
+        if (!nom) continue;
+        const cle = nom.toLocaleLowerCase('fr') + '|' + cp;
+        if (vues.has(cle)) continue;
+        vues.add(cle);
+        out.push({ nom, detail, lat, lon });
+        if (out.length >= max) break;
+    }
+    return out;
+}
+
+const champLieu = document.getElementById('in-lieu');
+const listeLieux = document.getElementById('suggestions');
+let lieux = [];             // suggestions montrées
+let texteLieux = null;      // le texte qui les a données
+let lieuActif = -1;         // celle que désignent les flèches
+let demandeLieux = null;    // AbortController de la recherche en cours
+let minuterieLieux = 0;
+
+function fermerLieux() {
+    listeLieux.hidden = true;
+    champLieu.setAttribute('aria-expanded', 'false');
+    champLieu.removeAttribute('aria-activedescendant');
+}
+
+/** Montre `liste`, ou `message` à sa place quand elle est vide. */
+function montrerLieux(liste, message) {
+    lieux = liste;
+    lieuActif = -1;
+    listeLieux.replaceChildren(...(liste.length ? liste.map((l, i) => {
+        const li = document.createElement('li');
+        li.id = `lieu-${i}`;
+        li.setAttribute('role', 'option');
+        li.setAttribute('aria-selected', 'false');
+        li.append(l.nom);
+        if (l.detail) {
+            const petit = document.createElement('small');
+            petit.textContent = l.detail;
+            li.append(petit);
+        }
+        // Au mousedown, le champ perdrait le focus et fermerait la liste
+        // avant le clic.
+        li.addEventListener('mousedown', e => e.preventDefault());
+        li.addEventListener('click', () => allerAuLieu(l));
+        return li;
+    }) : message ? [Object.assign(document.createElement('li'),
+                                  { className: 'message', textContent: message })] : []));
+    listeLieux.hidden = !listeLieux.children.length;
+    champLieu.setAttribute('aria-expanded', String(!listeLieux.hidden));
+    champLieu.removeAttribute('aria-activedescendant');
+}
+
+function activerLieu(i) {
+    if (!lieux.length) return;
+    lieuActif = (i + lieux.length) % lieux.length;
+    [...listeLieux.children].forEach((li, j) => li.setAttribute('aria-selected', String(j === lieuActif)));
+    const li = listeLieux.children[lieuActif];
+    champLieu.setAttribute('aria-activedescendant', li.id);
+    li.scrollIntoView({ block: 'nearest' });
+}
+
+function allerAuLieu(l) {
+    try {
+        if (l.coordonnees) sessionStorage.removeItem(CLE_LIEU);
+        else sessionStorage.setItem(CLE_LIEU, JSON.stringify({ lat: l.lat, lon: l.lon, nom: l.nom }));
+    } catch (e) { /* stockage refusé : le nom viendra de la commune */ }
+    location.search = `?lat=${l.lat}&lon=${l.lon}${PARAM_ZONE}`;
+}
+
+/** Suggestions pour `texte` ; null si une frappe plus récente l'a annulée. */
+async function chercherLieux(texte) {
+    const coord = lireCoordonnees(texte);
+    if (coord) return [{ ...coord, nom: `${coord.lat}, ${coord.lon}`, detail: 'coordonnées', coordonnees: true }];
+    if (demandeLieux) demandeLieux.abort();
+    const demande = demandeLieux = new AbortController();
+    const url = `${URL_GEOCODAGE}/search?` + new URLSearchParams({
+        q: texte, autocomplete: 1, index: 'address,poi', limit: RECHERCHE_DEMANDES });
+    try {
+        const r = await fetch(url, { signal: demande.signal });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return suggestionsDe(await r.json(), SUGGESTIONS_MAX);
+    } catch (e) {
+        if (demande.signal.aborted) return null;
+        throw e;
+    }
+}
+
+async function suggererLieux() {
+    const texte = champLieu.value.trim();
+    if (texte.length < RECHERCHE_MIN_CARACTERES && !lireCoordonnees(texte)) { montrerLieux([]); return; }
+    try {
+        const liste = await chercherLieux(texte);
+        if (liste && champLieu.value.trim() === texte) {
+            montrerLieux(liste, 'Aucun lieu trouvé en France métropolitaine.');
+            texteLieux = texte;
+        }
+    } catch (e) {
+        montrerLieux([], 'Recherche indisponible : le géocodage de l\'IGN ne répond pas.');
+    }
+}
+
+champLieu.addEventListener('input', () => {
+    clearTimeout(minuterieLieux);
+    minuterieLieux = setTimeout(suggererLieux, RECHERCHE_PAUSE_MS);
 });
+champLieu.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (listeLieux.hidden && lieux.length) montrerLieux(lieux);
+        activerLieu(lieuActif + (e.key === 'ArrowDown' ? 1 : lieuActif < 0 ? 0 : -1));
+    } else if (e.key === 'Escape' && !listeLieux.hidden) {
+        e.preventDefault();
+        fermerLieux();
+    }
+});
+champLieu.addEventListener('focus', () => { if (lieux.length) montrerLieux(lieux); });
+champLieu.addEventListener('blur', fermerLieux);
+// Entrée ou « Voir » : la suggestion désignée, sinon la première — cherchée
+// sur-le-champ si la frappe n'a pas encore laissé à la liste le temps de venir.
+document.getElementById('form-point').addEventListener('submit', async e => {
+    e.preventDefault();
+    if (lieuActif >= 0 && !listeLieux.hidden) { allerAuLieu(lieux[lieuActif]); return; }
+    clearTimeout(minuterieLieux);
+    const texte = champLieu.value.trim();
+    if (texte.length < RECHERCHE_MIN_CARACTERES && !lireCoordonnees(texte)) return;
+    if (lieux.length && texteLieux === texte) { allerAuLieu(lieux[0]); return; }
+    try {
+        const liste = await chercherLieux(texte);
+        if (!liste) return;
+        if (liste.length) allerAuLieu(liste[0]);
+        else montrerLieux([], 'Aucun lieu trouvé en France métropolitaine.');
+    } catch (err) {
+        montrerLieux([], 'Recherche indisponible : le géocodage de l\'IGN ne répond pas.');
+    }
+});
+
+// Nom du point, au-dessus de ses coordonnées : celui choisi dans la liste si
+// c'est bien ce point, sinon la commune, par géocodage inverse. Pas le lieu
+// nommé le plus proche : il est trop souvent anodin — « Poste de gaz » à 48 m
+// du point de Gardanne, « Poste de Gordes » avant le château, « Clocher » à
+// Notre-Dame. Sans réponse, les coordonnées suffisent.
+(async () => {
+    const nomPoint = document.getElementById('nom-point');
+    let nom = null;
+    try {
+        const l = JSON.parse(sessionStorage.getItem(CLE_LIEU) || 'null');
+        if (l && Math.abs(l.lat - LAT0) < 1e-7 && Math.abs(l.lon - LON0) < 1e-7) nom = l.nom;
+    } catch (e) { /* stockage refusé ou illisible */ }
+    if (!nom) {
+        try {
+            const r = await fetch(`${URL_GEOCODAGE}/reverse?` + new URLSearchParams({
+                lat: LAT0, lon: LON0, index: 'address', limit: 1 }));
+            const p = r.ok ? (((await r.json()).features || [])[0] || {}).properties : null;
+            if (p && p.city) nom = p.postcode ? `${p.city} (${p.postcode})` : p.city;
+        } catch (e) { /* le nom n'est qu'un confort */ }
+    }
+    if (nom) { nomPoint.textContent = nom; nomPoint.hidden = false; }
+})();
 const selectZone = document.getElementById('in-zone');
 // Une zone hors des choix proposés (?zone=850) s'ajoute à la liste.
 if (ZONE !== null && ![...selectZone.options].some(o => o.value === String(ZONE))) {

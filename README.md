@@ -1,8 +1,8 @@
 # Vue 3D IGN
 
 Une vue 3D de n'importe quel lieu de France métropolitaine, reconstruite à partir
-des **données ouvertes de l'IGN** : on donne une latitude et une longitude, on
-obtient les bâtiments avec leurs vrais toits, les arbres un par un, le relief et
+des **données ouvertes de l'IGN** : on donne une adresse, un lieu ou des
+coordonnées, on obtient les bâtiments avec leurs vrais toits, les arbres un par un, le relief et
 la photo aérienne, sous un soleil qui suit sa vraie course.
 
 ![Le village de Gordes, au 21 décembre à 13 h](docs/capture-gordes.jpg)
@@ -20,8 +20,9 @@ docker compose up -d
 ```
 
 Puis ouvrir <http://localhost:8080/> : sans paramètre, la page s'ouvre sur le
-village de Gordes. Un autre point se saisit dans le panneau, ou dans l'URL
-(`?lat=…&lon=…`). La zone chargée mesure par défaut environ 356 m du nord au
+village de Gordes. Un autre lieu se cherche dans le panneau — adresse, lieu
+nommé (« château de Chambord ») ou coordonnées collées, avec suggestions dès
+la frappe — ou se donne dans l'URL (`?lat=…&lon=…`). La zone chargée mesure par défaut environ 356 m du nord au
 sud ; le sélecteur **Zone** du panneau, ou `&zone=…` dans l'URL, la porte de
 150 à 1 000 m (arrondie à 50 m). Le temps de construction suit la surface et
 la densité du bâti : à 1 000 m, 4 s à Gordes et 6 s à Strasbourg sur un Mac
@@ -335,6 +336,7 @@ Toutes servies sans clé par la Géoplateforme de l'IGN, sous
 | RGE ALTI | WMS, grille BIL | Le relief du terrain, et l'anneau alentour |
 | Orthophoto | WMS, WMTS | La photo aérienne, et l'indice de verdure qui reconnaît le feuillage |
 | Plan IGN v2 | WMTS `GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2` | Le fond plan, au choix de la photo |
+| Géocodage | `geocodage/search`, `geocodage/reverse` | La recherche d'un lieu (Base Adresse Nationale et lieux nommés), et la commune du point affiché ; appelé par le navigateur |
 | BD TOPO, hydrographie | WFS `surface_hydrographique`, `troncon_hydrographique` | Étendues et cours d'eau |
 | OpenStreetMap, `building:part` | API Overpass, © contributeurs OSM, [ODbL](https://www.openstreetmap.org/copyright) | Les monuments en vraie 3D, là où le LiDAR manque |
 
@@ -550,12 +552,13 @@ pytest
 ```
 
 Les tests Python ne voient pas le rendu. Pour la page elle-même, un essai dans un
-vrai navigateur charge un lieu, clique le bâtiment visé, change de saison et
-échoue à la moindre erreur JavaScript :
+vrai navigateur charge un lieu, clique le bâtiment visé, change de saison,
+cherche un autre lieu et s'y rend, et échoue à la moindre erreur JavaScript :
 
 ```bash
 npm install puppeteer-core
 node outils/essai-navigateur.mjs "http://localhost:8080/?lat=43.9116&lon=5.2003" capture.png
+node outils/verifier-recherche.mjs     # la recherche d'un lieu, sous Node, sans réseau
 ```
 
 ## Licence
