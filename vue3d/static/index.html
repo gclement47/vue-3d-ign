@@ -4995,15 +4995,11 @@ function facesHouppier(el) {
 }
 
 /**
- * Ajoute un houppier au tampon.
- *
- * Surface de révolution sur le profil mesuré : un anneau par couronne du
- * profil, du sommet vers le bord, puis retour à la base du houppier. L'aire
- * mesurée est conservée et l'allongement étire l'ellipse sur l'axe mesuré :
- * une haie reste une haie. Un relief angulaire, lobes basse fréquence et
- * grain par sommet, évite le vase tourné. Retourne le nombre de faces.
+ * Gabarit d'un houppier : port, hauteurs, demi-axes et axe de son emprise,
+ * teinte. Commun à sa forme détaillée (ajouterHouppier) et à sa forme simple
+ * (ajouterHouppierSimple), qui occupent ainsi le même volume.
  */
-function ajouterHouppier(tampon, el, sol) {
+function gabaritHouppier(el) {
     const port = portDe(el);
     const h = el.h;
     const p = el.profil && el.profil.length ? el.profil : [1, 0.9, 0.8, 0.7, 0.6, 0.5];
@@ -5039,9 +5035,6 @@ function ajouterHouppier(tampon, el, sol) {
     const hMin = hBase + Math.max(0.4, h * 0.08);
     const g = alea(el.lon, el.lat);          // tirage stable par houppier
     const teinte = 0.9 + g * 0.2;
-    // Dessus : le profil mesuré, du sommet vers le bord.
-    const anneaux = [{ u: 0, y: h }];
-    for (let k = 0; k < nb; k++) anneaux.push({ u: (k + 0.5) / nb, y: Math.max(p[k] * h, hMin) });
     // Le bord descend franchement sous la dernière couronne du profil. Sans
     // cette pente, les deux derniers anneaux se retrouvaient à la MÊME hauteur
     // (le profil y est déjà bloqué par hMin), et la bande entre eux devenait un
@@ -5051,7 +5044,6 @@ function ajouterHouppier(tampon, el, sol) {
     // la lisière du houppier s'ouvrait sur l'intérieur de la coque.
     const yBord = Math.max(p[nb - 1] * h - Math.min(0.8, (h - hBase) * 0.08),
                            hBase + 0.3);
-    anneaux.push({ u: 1.0, y: yBord });
     // Dessous : une lisière verticale au bord, puis une surface qui remonte
     // DOUCEMENT vers le tronc. C'est le sens physique — les branches basses
     // sont les plus extérieures — et l'inverse de ce que faisait la version
@@ -5063,6 +5055,27 @@ function ajouterHouppier(tampon, el, sol) {
     // La remontée reste sous le sommet du tronc, sinon le fût sortirait du
     // feuillage : au plus 0,6 m, contre 1 m de fût qui dépasse la base.
     const montee = Math.min(0.6, (h - hBase) * 0.04);
+    return { port, h, p, nb, a, b, axe, hBase, hMin, g, teinte, yBord, montee };
+}
+
+/**
+ * Ajoute un houppier au tampon.
+ *
+ * Surface de révolution sur le profil mesuré : un anneau par couronne du
+ * profil, du sommet vers le bord, puis retour à la base du houppier. L'aire
+ * mesurée est conservée et l'allongement étire l'ellipse sur l'axe mesuré :
+ * une haie reste une haie. Un relief angulaire, lobes basse fréquence et
+ * grain par sommet, évite le vase tourné. Retourne le nombre de faces.
+ */
+function ajouterHouppier(tampon, el, sol) {
+    const { port, h, p, nb, a, b, axe, hBase, hMin, g, teinte, yBord, montee } = gabaritHouppier(el);
+    // Dessus : le profil mesuré, du sommet vers le bord, puis le bord, qui
+    // descend franchement sous la dernière couronne (gabaritHouppier).
+    const anneaux = [{ u: 0, y: h }];
+    for (let k = 0; k < nb; k++) anneaux.push({ u: (k + 0.5) / nb, y: Math.max(p[k] * h, hMin) });
+    anneaux.push({ u: 1.0, y: yBord });
+    // Dessous : une lisière verticale au bord, puis une surface qui remonte
+    // doucement vers le tronc (gabaritHouppier).
     anneaux.push({ u: 1.0, y: hBase });
     anneaux.push({ u: 0.6, y: hBase + montee * 0.7 });
     anneaux.push({ u: 0, y: hBase + montee });
@@ -5117,6 +5130,74 @@ function ajouterHouppier(tampon, el, sol) {
     return faces;
 }
 
+// Segments de la forme simple : six, sans lobage ni grain.
+const SEGMENTS_SIMPLE = 6;
+
+/**
+ * Nombre de faces qu'ajouterHouppierSimple() pose : un éventail sous le
+ * sommet, deux bandes jusqu'au bord, un éventail dessous — 36, quand la
+ * forme détaillée en compte 200 avec un profil de six couronnes.
+ */
+function facesHouppierSimple() {
+    return 6 * SEGMENTS_SIMPLE;
+}
+
+/**
+ * Ajoute au tampon la forme simple d'un houppier, dessinée à sa place pendant
+ * le mouvement quand la vue rame (montrerVegetationSimple). Même gabarit que
+ * la forme détaillée — emprise, axe, sommet, bord, dessous, palette — sur
+ * quatre anneaux : le sommet, le profil au quart et aux trois quarts du
+ * rayon, le bord ; le dessous remonte en cône plat vers le tronc.
+ * Avec une seule couronne, celle du milieu, les feuillus sortaient en pointe
+ * et se lisaient comme des sapins. Le rayon croît du sommet au
+ * bord et la hauteur décroît : la surface ne se retourne pas. Retourne le
+ * nombre de faces.
+ */
+function ajouterHouppierSimple(tampon, el, sol) {
+    const { port, h, p, nb, a, b, axe, hBase, hMin, teinte, yBord, montee } = gabaritHouppier(el);
+    // Le profil lu au rayon u, entre ses couronnes (u = (k + 0.5) / nb) et
+    // depuis le sommet : deux anneaux distincts même sur un profil court.
+    const couronne = u => {
+        let u0 = 0, y0 = h;
+        for (let k = 0; k < nb; k++) {
+            const u1 = (k + 0.5) / nb, y1 = p[k] * h;
+            if (u <= u1) return { u, y: Math.max(y0 + (y1 - y0) * (u - u0) / (u1 - u0), hMin) };
+            u0 = u1; y0 = y1;
+        }
+        return { u, y: Math.max(y0, hMin) };
+    };
+    const anneaux = [{ u: 0, y: h }, couronne(0.25), couronne(0.75),
+                     { u: 1, y: yBord }, { u: 0, y: hBase + montee }];
+    const couleur = new THREE.Color();
+    const cx = el.x, cz = -el.y;
+    const cosA = Math.cos(axe), sinA = Math.sin(axe);
+    const pts = anneaux.map(({ u, y }) => {
+        const t = (y - hBase) / Math.max(h - hBase, 0.1);
+        couleur.copy(port.base).lerp(port.cime, Math.max(0, Math.min(1, t))).multiplyScalar(teinte);
+        // Sommet et centre du dessous : un seul sommet, d'où partent les éventails.
+        if (u === 0) return Array(SEGMENTS_SIMPLE).fill(tampon.sommet(cx, sol + y, cz, couleur));
+        return Array.from({ length: SEGMENTS_SIMPLE }, (_, s) => {
+            const ang = s / SEGMENTS_SIMPLE * Math.PI * 2;
+            const ex = a * u * Math.cos(ang), ez = b * u * Math.sin(ang);
+            // Même repère qu'ajouterHouppier : axe_deg depuis l'est vers le nord, nord en -Z.
+            return tampon.sommet(cx + ex * cosA - ez * sinA, sol + y, cz - (ex * sinA + ez * cosA), couleur);
+        });
+    });
+    // Mêmes faces qu'ajouterHouppier, d'un anneau au suivant, sans les
+    // triangles dégénérés au sommet et au centre du dessous.
+    let faces = 0;
+    for (let i = 0; i + 1 < pts.length; i++) {
+        for (let s = 0; s < SEGMENTS_SIMPLE; s++) {
+            const s1 = (s + 1) % SEGMENTS_SIMPLE;
+            // Le premier triangle dégénère quand l'anneau du dessous est un
+            // point (centre du dessous), le second quand c'est celui du dessus.
+            if (i + 2 < pts.length) { tampon.face(pts[i][s], pts[i + 1][s], pts[i + 1][s1]); faces++; }
+            if (i > 0) { tampon.face(pts[i][s], pts[i + 1][s1], pts[i][s1]); faces++; }
+        }
+    }
+    return faces;
+}
+
 /**
  * Hauteur de la toiture du bâtiment visé, en mètres.
  *
@@ -5144,6 +5225,9 @@ function features_hauteur(anneau) {
 // encore en zone morte y lèverait une ReferenceError.
 var vegPrete = false;
 var vegElements = [];   // houppiers et masses reçus du serveur, en local
+// Numéro de la dernière pose de chaque maillage fusionné (placerVegetation) :
+// la forme simple d'un maillage est reposée quand il l'a été.
+var posesVegetation = 0;
 
 /**
  * (Re)construit les maillages de végétation : un maillage fusionné pour les
@@ -5317,7 +5401,62 @@ function placerVegetation(maillages = groupeVegetation.children) {
         }
         geo.attributes.position.needsUpdate = true;
         sphereEnglobante(geo, [x0, y0, z0, x1, y1, z1]);
+        mesh.userData.pose = ++posesVegetation;
     }
+}
+
+// --- Végétation simple, pendant le mouvement -----------------------------------
+// Houppiers et masses de 36 faces au lieu de 200 (ajouterHouppierSimple),
+// montrés à la place des détaillés pendant le mouvement quand la vue rame
+// (surveillerMouvement). Durée médiane d'une image pendant l'orbite à Gordes
+// en zone de 1 000 m (4,4 millions de faces de végétation), sur un Mac M1 :
+//
+//   houppiers détaillés, ombre redessinée à chaque image   66,7 ms
+//   détaillés, ombre figée (figerOmbres)                   33,3 ms
+//   simples, ombre figée                                   16,7 ms
+//   sans végétation                                        16,7 ms
+//
+// Construits au premier besoin, à partir des maillages détaillés, et
+// reconstruits s'ils changent ; les troncs restent.
+const groupeVegSimple = new THREE.Group();
+groupeVegSimple.visible = false;
+scene.add(groupeVegSimple);
+
+/** Maillages simples à jour des détaillés `details` : reconstruits ou reposés. */
+function majVegetationSimple(details) {
+    const avant = new Map(groupeVegSimple.children.map(m => [m.userData.source, m]));
+    groupeVegSimple.clear();
+    for (const d of details) {
+        let m = avant.get(d);
+        avant.delete(d);
+        if (!m) {
+            const elements = d.userData.elements;
+            const tampon = nouveauTampon(elements.length * facesHouppierSimple());
+            elements.forEach((el, n) => { tampon.element(n); ajouterHouppierSimple(tampon, el, 0); });
+            m = new THREE.Mesh(tampon.geometrie(), d.material);
+            m.castShadow = true;
+            m.receiveShadow = true;
+            m.userData = { genre: d.userData.genre, elements, source: d, poseSource: null };
+        }
+        if (m.userData.poseSource !== d.userData.pose) {
+            placerVegetation([m]);
+            m.userData.poseSource = d.userData.pose;
+        }
+        groupeVegSimple.add(m);
+    }
+    for (const m of avant.values()) m.geometry.dispose();
+}
+
+/** Montre la forme simple (vrai) ou détaillée de la végétation. */
+function montrerVegetationSimple(simple) {
+    const details = groupeVegetation.children.filter(m => m.userData.vegetation);
+    const simples = groupeVegSimple.children;
+    if (simple && (details.length !== simples.length || details.some((d, i) =>
+            simples[i].userData.source !== d || simples[i].userData.poseSource !== d.userData.pose))) {
+        majVegetationSimple(details);
+    }
+    for (const d of details) d.visible = !simple;
+    groupeVegSimple.visible = simple && groupeVegetation.visible;
 }
 
 /** Élément (houppier ou masse) sous une face d'un maillage fusionné. */
@@ -5965,51 +6104,136 @@ dimensionner();
     }
 }
 
-// --- Conseil : l'orbite rame -------------------------------------------------
-// Durée médiane d'une image pendant l'orbite, mesurée sur un Mac M1 :
+// --- Mouvement : ombre figée, végétation simple, conseil ----------------------
+// La caméra bouge — orbite, glisser, molette, inertie — tant qu'elle se
+// déplace d'une image à l'autre de plus de CAMERA_SEUIL de sa distance à la
+// cible, ou tourne de plus de CAMERA_SEUIL radian, et encore REPOS_MS après :
+// la forme détaillée ne doit pas revenir entre deux gestes. Pas le « déplacée »
+// d'OrbitControls, vrai tant que la caméra glisse d'un millimètre par image :
+// l'inertie d'un glisser l'y laissait plus de 2,5 s, la vue arrêtée à l'œil.
+// L'orbite la plus lente, 1° par seconde, tourne de 1,2e-4 rad par image à
+// 144 Hz.
+const CAMERA_SEUIL = 5e-5;
+const REPOS_MS = 300;
+let derniereMobilite = -Infinity;
+const cameraAvant = { position: new THREE.Vector3(), quaternion: new THREE.Quaternion() };
+
+function cameraDeplacee() {
+    const bouge = camera.position.distanceTo(cameraAvant.position)
+                      > CAMERA_SEUIL * camera.position.distanceTo(controls.target)
+                  || camera.quaternion.angleTo(cameraAvant.quaternion) > CAMERA_SEUIL;
+    cameraAvant.position.copy(camera.position);
+    cameraAvant.quaternion.copy(camera.quaternion);
+    return bouge;
+}
+
+// Durée médiane d'une image pendant l'orbite, végétation affichée, mesurée
+// sur un Mac M1, avant que l'ombre ne soit figée :
 //
 //                                          végétation   sans
 //   Gordes, zone par défaut (2 160 arbres)    16,7 ms   16,7 ms
 //   Notre-Dame, 1 000 m (3 684 arbres)        33,4 ms   16,7 ms
 //   Gordes, 1 000 m (19 312 arbres)           50,0 ms   16,7 ms
 //
-// et sans carte graphique (SwiftShader), à Gordes : 650 ms, 283 sans. La
-// végétation est la plus grosse part de l'image : quand l'orbite rame, la
-// page propose de la masquer. Au-delà de 40 ms (moins de 25 images par
-// seconde) sur 4 s d'orbite — Gordes à 1 000 m y passe, Notre-Dame à 30
-// images par seconde non. La médiane, et non la moyenne : une compilation ou
-// une couche qui arrive font quelques images longues sans que l'orbite rame.
-// Le conseil n'est donné qu'une fois par page.
-const ORBITE_IMAGE_LENTE_MS = 40;
-const ORBITE_FENETRE_MS = 4000;
-const dureesOrbite = [];
-let debutFenetreOrbite = null;
+// et sans carte graphique (SwiftShader), à Gordes : 650 ms, 283 sans. Au-delà
+// de 40 ms (moins de 25 images par seconde) sur 2 s de mouvement, la
+// végétation passe en forme simple pendant le mouvement ; et si la vue rame
+// encore ainsi, la page propose de la masquer. Ombre figée, le M1 n'y vient
+// plus : Gordes à 1 000 m tourne à 33,3 ms, Notre-Dame à 16,7 ; la forme
+// simple sert les machines plus lentes. Rien ne change sur une scène qui
+// tourne vite : la forme ne saute pas à chaque geste pour rien. La médiane,
+// et non la moyenne : une compilation ou une couche qui arrive font quelques
+// images longues sans que la vue rame. Les secondes de mouvement se cumulent
+// d'un geste à l'autre.
+const IMAGE_LENTE_MS = 40;
+const FENETRE_MOUVEMENT_MS = 2000;
+const dureesMouvement = [];
+let cumulMouvement = 0;
+let vegSimplifiee = false;    // forme simple pendant le mouvement, décidée une fois
 let conseilVegDonne = false;
+let imagePrecedente = null;   // l'état dans lequel l'image précédente a été dessinée
 const conseilVeg = document.getElementById('conseil-veg');
+let minuterieConseil = 0;
 
-function surveillerOrbite(maintenant, duree) {
-    if (conseilVegDonne) return;
-    // La fenêtre ne compte que des images d'orbite, végétation affichée :
-    // tout arrêt la recommence.
-    if (!orbite || !btnVeg.classList.contains('on') || document.hidden) {
-        dureesOrbite.length = 0;
-        debutFenetreOrbite = null;
-        return;
-    }
-    // La première durée enjambe l'arrêt : elle n'est pas comptée.
-    if (debutFenetreOrbite === null) { debutFenetreOrbite = maintenant; return; }
-    dureesOrbite.push(duree);
-    if (maintenant - debutFenetreOrbite < ORBITE_FENETRE_MS) return;
-    const triees = dureesOrbite.sort((a, b) => a - b);
-    const mediane = triees[triees.length >> 1];
-    dureesOrbite.length = 0;
-    debutFenetreOrbite = maintenant;
-    if (mediane > ORBITE_IMAGE_LENTE_MS) {
+function montrerConseil(texte, action) {
+    clearTimeout(minuterieConseil);
+    conseilVeg.querySelector('span').textContent = texte;
+    conseilVeg.querySelector('.agir').hidden = !action;
+    conseilVeg.hidden = false;
+    if (!action) minuterieConseil = setTimeout(() => { conseilVeg.hidden = true; }, 6000);
+}
+
+/** Compte la durée de l'image précédente, si elle a été dessinée en mouvement. */
+function surveillerMouvement(duree) {
+    const p = imagePrecedente;
+    // Seules comptent les images en mouvement, végétation affichée, dans la
+    // forme qu'on juge ; pas celle qui a construit la forme simple.
+    if (conseilVegDonne || !p || !p.mouvement || !p.veg || p.bascule || p.simple !== vegSimplifiee
+        || document.hidden) return;
+    dureesMouvement.push(duree);
+    cumulMouvement += duree;
+    if (cumulMouvement < FENETRE_MOUVEMENT_MS) return;
+    const mediane = dureesMouvement.sort((a, b) => a - b)[dureesMouvement.length >> 1];
+    dureesMouvement.length = 0;
+    cumulMouvement = 0;
+    if (mediane <= IMAGE_LENTE_MS) return;
+    const ips = Math.round(1000 / mediane);
+    const cadence = `${ips} image${ips > 1 ? 's' : ''}/s`;
+    if (!vegSimplifiee) {
+        vegSimplifiee = true;
+        montrerConseil(`La vue ralentit (${cadence}) : arbres simplifiés pendant le mouvement.`, false);
+    } else {
         conseilVegDonne = true;
-        conseilVeg.querySelector('span').textContent = `L'orbite rame (${Math.round(1000 / mediane)} images/s) : `
-            + 'masquer la végétation l\'allège.';
-        conseilVeg.querySelector('.agir').hidden = false;
-        conseilVeg.hidden = false;
+        montrerConseil(`La vue rame encore (${cadence}) : masquer la végétation l'allège.`, true);
+    }
+}
+
+// L'ombre portée ne dépend que du soleil et de ce qui porte une ombre, jamais
+// de la caméra : pendant le mouvement, sa carte n'est redessinée que si l'un
+// des deux a changé — elle coûtait la moitié de l'image à Gordes en zone de
+// 1 000 m. La signature relève, avant chaque image, le soleil et chaque
+// maillage visible qui porte une ombre : identité, géométrie et version de
+// ses sommets, instances, position. 0,1 ms pour les 1 784 maillages de
+// Notre-Dame en zone de 1 000 m. Les houppiers détaillés comptent même
+// masqués par la forme simple, qui n'est pas comptée : la carte garde leur
+// ombre. Une position changée n'arrive dans matrixWorld qu'au rendu suivant :
+// la carte est alors redessinée une image plus tard, jamais oubliée.
+let signature = new Float64Array(1 << 14), signatureOmbre = new Float64Array(1 << 14);
+let longueur = 0, longueurOmbre = -1;
+function noter(v) {
+    if (longueur === signature.length) {
+        const t = new Float64Array(2 * signature.length);
+        t.set(signature);
+        signature = t;
+    }
+    signature[longueur++] = v;
+}
+function signer(o) {
+    if (o === groupeVegSimple || (!o.visible && !o.userData.vegetation)) return;
+    if (o.castShadow && o.geometry) {
+        const m = o.matrixWorld.elements, pos = o.geometry.attributes.position;
+        noter(o.id); noter(o.geometry.id); noter(pos ? pos.version : -1);
+        noter(o.isInstancedMesh ? o.instanceMatrix.version + 1e6 * o.count : -1);
+        noter(m[0]); noter(m[5]); noter(m[10]); noter(m[12]); noter(m[13]); noter(m[14]);
+    }
+    for (const c of o.children) signer(c);
+}
+
+/** Fige la carte d'ombre pendant le mouvement, tant que rien ne la change. */
+function figerOmbres(enMouvement) {
+    longueur = 0;
+    noter(soleil.castShadow ? 1 : 0);
+    for (const v of soleil.position.toArray().concat(soleil.target.position.toArray())) noter(v);
+    signer(scene);
+    const changee = longueur !== longueurOmbre
+        || signature.subarray(0, longueur).some((v, k) => v !== signatureOmbre[k]);
+    renderer.shadowMap.autoUpdate = !enMouvement;
+    // Immobile, la carte est redessinée à chaque image, comme avant.
+    if (!enMouvement || changee) {
+        renderer.shadowMap.needsUpdate = true;
+        if (signatureOmbre.length < longueur) signatureOmbre = new Float64Array(signature.length);
+        signatureOmbre.set(signature.subarray(0, longueur));
+        longueurOmbre = longueur;
     }
 }
 
@@ -6028,7 +6252,7 @@ btnVeg.addEventListener('click', () => {
 
 let precedent = performance.now();
 function boucle(maintenant) {
-    surveillerOrbite(maintenant, maintenant - precedent);
+    surveillerMouvement(maintenant - precedent);
     const dt = Math.min((maintenant - precedent) / 1000, 0.05);
     precedent = maintenant;
     if (orbite) {
@@ -6040,6 +6264,14 @@ function boucle(maintenant) {
         camera.position.z = controls.target.z + dx * sin + dz * cos;
     }
     controls.update();
+    if (cameraDeplacee()) derniereMobilite = maintenant;
+    const enMouvement = maintenant - derniereMobilite < REPOS_MS;
+    const veg = btnVeg.classList.contains('on');
+    const simple = vegSimplifiee && enMouvement && veg;
+    const bascule = simple !== groupeVegSimple.visible;
+    montrerVegetationSimple(simple);
+    figerOmbres(enMouvement);
+    imagePrecedente = { mouvement: enMouvement, veg, simple, bascule };
 
     // Boussole : le nord de la scène est -Z, l'est +X. L'azimut du regard se
     // mesure donc en atan2(dx, -dz), et la rose tourne à l'inverse pour que

@@ -65,13 +65,15 @@ const NOMS = ['couperPolygone', 'enveloppeConvexe', 'rectangleMin', 'rectangleSe
               'geometrieToitDecoupe', 'stationsLeLong', 'prismeLeLong', 'dalle',
               'blocsVehicule', 'repereVehicule', 'normalesFacettes', 'poserNormaleFacette', 'geometrieFacettes',
               'normalesPliees', 'normalesIndexees', 'sphereEnglobante',
-              'alea', 'portDe', 'portMesure', 'facesHouppier', 'ajouterHouppier', 'nouveauTampon',
+              'alea', 'portDe', 'portMesure', 'gabaritHouppier', 'facesHouppier', 'ajouterHouppier', 'nouveauTampon',
+              'facesHouppierSimple', 'ajouterHouppierSimple',
               'vegetationExtraite', 'partConstruite'];
-const CONSTS = ['PORTS', 'SEGMENTS_HOUPPIER', 'ANGLES_HOUPPIER', 'COS_HOUPPIER', 'BOSSES_HOUPPIER',
+const CONSTS = ['PORTS', 'SEGMENTS_HOUPPIER', 'SEGMENTS_SIMPLE', 'ANGLES_HOUPPIER', 'COS_HOUPPIER', 'BOSSES_HOUPPIER',
                 'EMPRISE_HOUPPIER', 'HAUTEUR_MIN_TRONC', 'PART_LECTURES'];
 const { rectangleMin, rectangleSelonAxe, geometrieToitDecoupe, stationsLeLong, prismeLeLong, dalle,
         blocsVehicule, repereVehicule, normalesFacettes, normalesPliees, normalesIndexees, sphereEnglobante,
         alea, portDe, facesHouppier, ajouterHouppier, nouveauTampon, vegetationExtraite, partConstruite,
+        facesHouppierSimple, ajouterHouppierSimple,
         SEGMENTS_HOUPPIER, EMPRISE_HOUPPIER, HAUTEUR_MIN_TRONC, PART_LECTURES } =
   new Function('THREE', 'toLocal', CONSTS.map(extraireConst).join('\n') + '\n' + NOMS.map(extraire).join('\n')
                + `\nreturn { ${NOMS.concat(CONSTS).join(', ')} };`)(THREE, toLocal);
@@ -492,6 +494,53 @@ for (const n of ['baseY', 'elements']) okE = okE && memes(extrait.geometrie.user
 okE = okE && vegetationExtraite(mesh, [elements[5], elements[2]]) === null;          // hors d'ordre
 console.log(`${okE ? 'OK ' : 'KO '} végétation sans les masses retirées : ${restants.length} éléments sur ${elements.length}, recopiés à l'identique de la reconstruction`);
 tout = tout && okE;
+
+// Forme simple, dessinée pendant le mouvement quand la vue rame : chaque
+// houppier fermé — chaque arête portée par deux triangles, en sens opposés —,
+// tourné vers l'extérieur (volume positif), au nombre de faces annoncé, et
+// culminant à la hauteur mesurée, comme le sommet de sa forme détaillée (le
+// grain d'une couronne intérieure peut, lui, la dépasser).
+{
+  // Les éléments du tampon, et des profils courts : une à trois couronnes,
+  // où le quart et les trois quarts du rayon tombent entre deux d'entre elles.
+  const essais = elements.concat(elements.slice(0, 30).map((el, k) => ({
+    ...el, profil: el.profil.length ? el.profil.slice(0, 1 + k % 3) : [0.9] })));
+  const parElement = (geo, f) => {
+    const pos = geo.attributes.position.array, quel = geo.userData.elements;
+    const tris = essais.map(() => []);
+    for (let t = 0; t < quel.length / 3; t++) {
+      const k = 9 * t;
+      tris[quel[3 * t]].push([[pos[k], pos[k + 1], pos[k + 2]], [pos[k + 3], pos[k + 4], pos[k + 5]], [pos[k + 6], pos[k + 7], pos[k + 8]]]);
+    }
+    return tris.map(f);
+  };
+  const bilan = tris => {
+    const cle = v => v.map(x => x.toFixed(5)).join(',');
+    const aretes = new Map();
+    let volume = 0;
+    for (const [a, b, c] of tris) {
+      volume += (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0])) / 6;
+      for (const [u, v] of [[a, b], [b, c], [c, a]]) { const k = cle(u) + '>' + cle(v); aretes.set(k, (aretes.get(k) || 0) + 1); }
+    }
+    let defauts = 0;
+    for (const [k, n] of aretes) {
+      const [u, v] = k.split('>');
+      if (u !== v && (n !== 1 || aretes.get(v + '>' + u) !== 1)) defauts++;
+    }
+    return { volume, defauts, sommet: Math.max(...tris.flat().map(v => v[1])) };
+  };
+  const t = nouveauTampon(essais.length * facesHouppierSimple());
+  let annonce = true;
+  essais.forEach((el, n) => { t.element(n); if (ajouterHouppierSimple(t, el, 0) !== facesHouppierSimple()) annonce = false; });
+  const simples = parElement(t.geometrie(), bilan);
+  const ouverts = simples.filter(b => b.defauts).length, retournes = simples.filter(b => !(b.volume > 0)).length;
+  const sommets = simples.filter((b, k) => Math.abs(b.sommet - essais[k].h) > 1e-4).length;
+  const okS = annonce && !ouverts && !retournes && !sommets;
+  console.log(`${okS ? 'OK ' : 'KO '} houppiers simples : ${essais.length} éléments dont ${essais.length - elements.length} à profil court, ${facesHouppierSimple()} faces chacun `
+              + `contre ${complet.geo.attributes.position.count / 3 / elements.length} en moyenne, ouverts ${ouverts}, `
+              + `retournés ${retournes}, sommet hors de la hauteur mesurée ${sommets}`);
+  tout = tout && okS;
+}
 }
 
 // --- Barre d'avancement ---------------------------------------------------------

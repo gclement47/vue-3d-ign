@@ -15,6 +15,19 @@ messages de commit et dans les commentaires des modules.
 
 ### Ajouté
 
+- **La vue en mouvement allégée.** Pendant une orbite, un glisser ou un
+  zoom, l'ombre portée n'est plus redessinée à chaque image : elle ne dépend
+  que du soleil et de la scène, que la page surveille, et suit aussitôt
+  l'heure ou une couche qui arrive. À Gordes en zone de 1 000 m, sur un Mac
+  M1, l'orbite passe de 15 à 30 images par seconde, Notre-Dame à 1 000 m de
+  30 à 60, sans rien changer à l'image. Si le mouvement rame encore (moins
+  de 25 images par seconde), les arbres passent, le temps du mouvement, en
+  formes simples de 36 faces au lieu de 200 — même emprise, même hauteur,
+  mêmes couleurs —, et la forme détaillée revient à l'arrêt : Gordes à
+  1 000 m y tourne à 60 images par seconde. La page le dit d'un message. Le
+  conseil de masquer la végétation ne vient plus qu'ensuite, si la vue rame
+  toujours.
+
 - **Un conseil quand l'orbite rame.** Si l'orbite tombe sous 25 images par
   seconde (image médiane de plus de 40 ms sur 4 s), la vue propose de masquer
   la végétation, d'un clic. C'est elle qui pèse : sur un Mac M1, Gordes en
