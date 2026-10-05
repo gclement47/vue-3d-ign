@@ -56,6 +56,13 @@
            indicateur par couche chargée après la scène. */
         .etat-couche { display:flex; align-items:center; gap:8px; }
         .etat-couche[hidden] { display:none; }
+        /* Le seul à se cliquer : #haut-gauche laisse passer la souris. */
+        .conseil { pointer-events:auto; flex-wrap:wrap; }
+        .conseil button { background:none; border:0; padding:0; font:inherit; cursor:pointer; }
+        .conseil .agir { color:var(--accent); font-weight:600; }
+        .conseil .agir:hover { text-decoration:underline; }
+        .conseil .agir[hidden] { display:none; }
+        .conseil .fermer { color:var(--muted); font-size:14px; line-height:1; }
         .etat-couche .roue { display:none; flex:none; box-sizing:border-box; width:12px; height:12px;
                              border-radius:50%; border:2px solid rgba(255,255,255,.25);
                              border-top-color:var(--accent); animation:tourner .8s linear infinite; }
@@ -268,6 +275,11 @@
             <div id="etat-monuments" class="etat-couche" role="status" hidden><i class="roue"></i><span></span></div>
             <div id="etat-ouvrages" class="etat-couche" role="status" hidden><i class="roue"></i><span></span></div>
             <div id="etat-vehicules" class="etat-couche" role="status" hidden><i class="roue"></i><span></span></div>
+            <div id="conseil-veg" class="etat-couche conseil" role="status" hidden>
+                <span></span>
+                <button type="button" class="agir">Masquer la végétation</button>
+                <button type="button" class="fermer" aria-label="Fermer le conseil">×</button>
+            </div>
         </div>
         <div id="attente" hidden></div>
         <div id="boussole" title="Orientation">
@@ -5953,8 +5965,70 @@ dimensionner();
     }
 }
 
+// --- Conseil : l'orbite rame -------------------------------------------------
+// Durée médiane d'une image pendant l'orbite, mesurée sur un Mac M1 :
+//
+//                                          végétation   sans
+//   Gordes, zone par défaut (2 160 arbres)    16,7 ms   16,7 ms
+//   Notre-Dame, 1 000 m (3 684 arbres)        33,4 ms   16,7 ms
+//   Gordes, 1 000 m (19 312 arbres)           50,0 ms   16,7 ms
+//
+// et sans carte graphique (SwiftShader), à Gordes : 650 ms, 283 sans. La
+// végétation est la plus grosse part de l'image : quand l'orbite rame, la
+// page propose de la masquer. Au-delà de 40 ms (moins de 25 images par
+// seconde) sur 4 s d'orbite — Gordes à 1 000 m y passe, Notre-Dame à 30
+// images par seconde non. La médiane, et non la moyenne : une compilation ou
+// une couche qui arrive font quelques images longues sans que l'orbite rame.
+// Le conseil n'est donné qu'une fois par page.
+const ORBITE_IMAGE_LENTE_MS = 40;
+const ORBITE_FENETRE_MS = 4000;
+const dureesOrbite = [];
+let debutFenetreOrbite = null;
+let conseilVegDonne = false;
+const conseilVeg = document.getElementById('conseil-veg');
+
+function surveillerOrbite(maintenant, duree) {
+    if (conseilVegDonne) return;
+    // La fenêtre ne compte que des images d'orbite, végétation affichée :
+    // tout arrêt la recommence.
+    if (!orbite || !btnVeg.classList.contains('on') || document.hidden) {
+        dureesOrbite.length = 0;
+        debutFenetreOrbite = null;
+        return;
+    }
+    // La première durée enjambe l'arrêt : elle n'est pas comptée.
+    if (debutFenetreOrbite === null) { debutFenetreOrbite = maintenant; return; }
+    dureesOrbite.push(duree);
+    if (maintenant - debutFenetreOrbite < ORBITE_FENETRE_MS) return;
+    const triees = dureesOrbite.sort((a, b) => a - b);
+    const mediane = triees[triees.length >> 1];
+    dureesOrbite.length = 0;
+    debutFenetreOrbite = maintenant;
+    if (mediane > ORBITE_IMAGE_LENTE_MS) {
+        conseilVegDonne = true;
+        conseilVeg.querySelector('span').textContent = `L'orbite rame (${Math.round(1000 / mediane)} images/s) : `
+            + 'masquer la végétation l\'allège.';
+        conseilVeg.querySelector('.agir').hidden = false;
+        conseilVeg.hidden = false;
+    }
+}
+
+conseilVeg.querySelector('.agir').addEventListener('click', () => {
+    // Avant le clic sur le bouton du panneau, qui sinon fermerait le conseil.
+    conseilVeg.querySelector('.agir').hidden = true;
+    conseilVeg.querySelector('span').textContent = 'Végétation masquée : le bouton « Végétation » du panneau la rallume.';
+    if (btnVeg.classList.contains('on')) btnVeg.click();
+    setTimeout(() => { conseilVeg.hidden = true; }, 6000);
+});
+conseilVeg.querySelector('.fermer').addEventListener('click', () => { conseilVeg.hidden = true; });
+// Rallumée ou masquée depuis le panneau : le conseil n'a plus d'objet.
+btnVeg.addEventListener('click', () => {
+    if (!conseilVeg.querySelector('.agir').hidden) conseilVeg.hidden = true;
+});
+
 let precedent = performance.now();
 function boucle(maintenant) {
+    surveillerOrbite(maintenant, maintenant - precedent);
     const dt = Math.min((maintenant - precedent) / 1000, 0.05);
     precedent = maintenant;
     if (orbite) {

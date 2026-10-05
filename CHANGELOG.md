@@ -15,6 +15,13 @@ messages de commit et dans les commentaires des modules.
 
 ### Ajouté
 
+- **Un conseil quand l'orbite rame.** Si l'orbite tombe sous 25 images par
+  seconde (image médiane de plus de 40 ms sur 4 s), la vue propose de masquer
+  la végétation, d'un clic. C'est elle qui pèse : sur un Mac M1, Gordes en
+  zone de 1 000 m (19 312 arbres) tourne à 20 images par seconde avec elle,
+  à 60 sans ; Notre-Dame à 1 000 m, à 30 avec elle, ne déclenche pas le
+  conseil. Il n'est donné qu'une fois par page.
+
 - **Chercher un lieu par son adresse ou son nom.** Un seul champ remplace
   la latitude et la longitude : il suggère, dès le troisième caractère, les
   adresses de la Base Adresse Nationale et les lieux nommés de l'IGN

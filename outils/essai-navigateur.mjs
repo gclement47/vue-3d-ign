@@ -42,6 +42,9 @@ const etat = await page.evaluate(() => ({
   vegetation: document.getElementById('v-note').textContent.slice(0, 160),
   soleil: document.getElementById('s-date').textContent + ' · ' + document.getElementById('s-hauteur').textContent,
   nom: document.getElementById('nom-point').hidden ? '(aucun)' : document.getElementById('nom-point').textContent,
+  // Sans carte graphique (SwiftShader), l'orbite rame : le conseil vient.
+  conseil: document.getElementById('conseil-veg').hidden ? '(aucun)'
+         : document.querySelector('#conseil-veg span').textContent,
 }));
 console.log(JSON.stringify(etat, null, 1));
 // Arrête l'orbite, puis survole et clique au centre (bâtiment visé).
