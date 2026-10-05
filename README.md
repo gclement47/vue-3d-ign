@@ -332,6 +332,7 @@ Toutes servies sans clé par la Géoplateforme de l'IGN, sous
 | BD TOPO, réservoirs et constructions ponctuelles | WFS `reservoir`, `construction_ponctuelle` | Citernes et châteaux d'eau ; torchères, cheminées, antennes, mâts |
 | BD TOPO, ouvrages | WFS `construction_lineaire`, `construction_surfacique`, `troncon_de_voie_ferree`, `terrain_de_sport` | Murs et ponts, par l'altitude de leurs sommets ; voies ferrées ; terrains de sport |
 | LiDAR HD, MNH | WMS, grille BIL à 0,5 m | Hauteur de tout ce qui dépasse du sol : toits et arbres |
+| LiDAR HD, nuage de points | Téléchargement, dalles COPC de 1 km² lues par plages | Le bâti en points ; les ouvrages ajourés (tour Eiffel, verrières) tels qu'ils sont mesurés |
 | MNS − MNT | WMS, repli photogrammétrique | Le même, hors couverture LiDAR HD, en moins net |
 | RGE ALTI | WMS, grille BIL | Le relief du terrain, et l'anneau alentour |
 | Orthophoto | WMS, WMTS | La photo aérienne, et l'indice de verdure qui reconnaît le feuillage |
@@ -525,6 +526,7 @@ principales :
 | `GET /api/ortho?lat=…&lon=…` | L'orthophoto de la scène, en JPEG |
 | `GET /api/monuments?lat=…&lon=…` | La couche des monuments OSM, en JSON gzippé (`null` sans partie), que la page demande une fois la scène affichée |
 | `GET /api/ouvrages?lat=…&lon=…` | La couche des murs, ponts, voies ferrées et terrains de sport, en JSON gzippé (`null` sans ouvrage), demandée elle aussi après la scène |
+| `GET /api/nuage?lat=…&lon=…` | Le bâti du nuage de points LiDAR HD, en JSON gzippé (`null` hors couverture), demandé après la scène : 10 à 90 s à la première demande |
 | `GET /api/piscines?lat=…&lon=…` | Les piscines de l'orthophoto, en JSON gzippé, demandées après la scène ; `{"mode": "aucun", "piscines": []}` si le service n'a pas de détecteur |
 | `GET /api/vehicules?lat=…&lon=…&detecteur=…` | Les véhicules vus d'un détecteur du service (`rtmdet` ou `yolo`), en JSON gzippé ; la page les demande dans l'ordre que donne `/api/sante`, du rapide au lent, et les réunit ; 400 sans le paramètre ou avec un détecteur que le service n'a pas |
 | `GET /api/avancement?lat=…&lon=…` | L'étape de la construction en cours (18 au total), que la page affiche pendant l'attente |

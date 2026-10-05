@@ -234,11 +234,13 @@ def en_parallele(*lectures):
         bassin.shutdown(wait=False, cancel_futures=True)
 
 
-def get_avec_reprise(url, timeout=30, essais=GEOPF_ESSAIS, attente=GEOPF_ATTENTE_S):
+def get_avec_reprise(url, timeout=30, essais=GEOPF_ESSAIS, attente=GEOPF_ATTENTE_S,
+                     headers=None):
     """GET sur la Géoplateforme, en réessayant les incidents de transport.
 
     Une lecture dont le groupe est abandonné ne réessaie pas : pendant une
-    panne, chaque essai peut tenir sa place 30 s.
+    panne, chaque essai peut tenir sa place 30 s. `headers` : en-têtes de la
+    requête, la plage d'octets d'une dalle LiDAR (vue3d/nuage.py).
 
     Raises:
         requests.RequestException si tous les essais échouent ;
@@ -254,7 +256,8 @@ def get_avec_reprise(url, timeout=30, essais=GEOPF_ESSAIS, attente=GEOPF_ATTENTE
             if groupe is not None:
                 groupe.verifier()
         try:
-            reponse = requests.get(url, timeout=timeout)
+            reponse = (requests.get(url, timeout=timeout, headers=headers) if headers
+                       else requests.get(url, timeout=timeout))
         except requests.RequestException as exc:
             dernier = exc
         else:

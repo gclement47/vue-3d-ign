@@ -6,6 +6,7 @@
     GET /api/ortho?lat=…&lon=…     l'orthophoto de la scène, en JPEG
     GET /api/monuments?lat=…&lon=…   la couche des monuments OSM, JSON gzippé
     GET /api/ouvrages?lat=…&lon=…    la couche des ouvrages BD TOPO, JSON gzippé
+    GET /api/nuage?lat=…&lon=…       le bâti du nuage LiDAR HD, JSON gzippé
     GET /api/piscines?lat=…&lon=…    les piscines de l'orthophoto, si le service a un détecteur
     GET /api/vehicules?lat=…&lon=…&detecteur=…   les véhicules vus d'un détecteur du service
     GET /api/panneaux?lat=…&lon=…    les panneaux solaires du registre, si le service en a un
@@ -25,11 +26,13 @@ import os
 from flask import Flask, jsonify, request, send_from_directory
 
 from .monuments import fetch_monuments
+from .nuage import fetch_nuage
 from .ouvrages import fetch_ouvrages
 from .panneaux import REGISTRE_LICENCE
 from .panneaux import lecteur as lecteur_panneaux
-from .scene import (NOM_MONUMENTS, NOM_ORTHO, NOM_OUVRAGES, NOM_PANNEAUX, NOM_SCENE, Cache,
-                    HorsEmprise, MonumentsIndisponibles, OuvragesIndisponibles,
+from .scene import (NOM_MONUMENTS, NOM_NUAGE, NOM_ORTHO, NOM_OUVRAGES, NOM_PANNEAUX, NOM_SCENE,
+                    Cache, HorsEmprise, MonumentsIndisponibles, NuageIndisponible,
+                    OuvragesIndisponibles,
                     PanneauxIndisponibles, ReconstructionRefusee, SceneIncomplete,
                     VehiculesDesactives, VehiculesIndisponibles, zone_normalisee)
 from .scene import construire as construire_scene
@@ -49,10 +52,11 @@ ICI = os.path.dirname(os.path.abspath(__file__))
 
 
 def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fetch_monuments,
-              lire_ouvrages=fetch_ouvrages, lire_vehicules=None, lire_panneaux=None):
-    """`construire`, `lire_monuments`, `lire_ouvrages`, `lire_vehicules` et
-    `lire_panneaux` sont injectables pour les tests, qui n'appellent ni l'IGN
-    ni Overpass et ne chargent aucun réseau ni registre. `lire_vehicules` :
+              lire_ouvrages=fetch_ouvrages, lire_vehicules=None, lire_panneaux=None,
+              lire_nuage=fetch_nuage):
+    """`construire`, `lire_monuments`, `lire_ouvrages`, `lire_vehicules`,
+    `lire_panneaux` et `lire_nuage` sont injectables pour les tests, qui
+    n'appellent ni l'IGN ni Overpass et ne chargent aucun réseau ni registre. `lire_vehicules` :
     de `vehicules.lecteur()` ; None, le service n'a ni véhicules ni piscines.
     `lire_panneaux` : de `panneaux.lecteur()` ; None, pas de panneaux."""
     app = Flask(__name__, static_folder=os.path.join(ICI, "static"), static_url_path="/static")
@@ -61,7 +65,8 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
     # VUE3D_CACHE=./cache, l'orthophoto répondait 404.
     cache = Cache(os.path.abspath(dossier_cache or os.environ.get("VUE3D_CACHE", "/tmp/vue3d-cache")),
                   lire_monuments=lire_monuments, lire_ouvrages=lire_ouvrages,
-                  lire_vehicules=lire_vehicules, lire_panneaux=lire_panneaux)
+                  lire_vehicules=lire_vehicules, lire_panneaux=lire_panneaux,
+                  lire_nuage=lire_nuage)
 
     def point():
         """(lat, lon, zone) de la requête ; None si l'un d'eux est illisible."""
@@ -87,6 +92,8 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
                 return cache.obtenir_monuments(*p, construire=construire, zone=zone), None
             if couche == NOM_OUVRAGES:
                 return cache.obtenir_ouvrages(*p, construire=construire, zone=zone), None
+            if couche == NOM_NUAGE:
+                return cache.obtenir_nuage(*p, construire=construire, zone=zone), None
             if couche == COUCHE_PISCINES:
                 return cache.obtenir_piscines(*p, construire=construire, zone=zone), None
             if couche == NOM_PANNEAUX:
@@ -118,6 +125,11 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
                                 "dans quelques instants.")
         except OuvragesIndisponibles as exc:
             app.logger.warning("Ouvrages indisponibles pour %s : %s", p, exc)
+            return None, erreur(503, "Un service de l'IGN n'a pas répondu ("
+                                f"{exc}). Rien n'a été mis en cache : réessayez "
+                                "dans quelques instants.")
+        except NuageIndisponible as exc:
+            app.logger.warning("Nuage LiDAR HD indisponible pour %s : %s", p, exc)
             return None, erreur(503, "Un service de l'IGN n'a pas répondu ("
                                 f"{exc}). Rien n'a été mis en cache : réessayez "
                                 "dans quelques instants.")
@@ -189,6 +201,15 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
         if err:
             return err
         return servir_gzip(dossier, NOM_OUVRAGES)
+
+    @app.get("/api/nuage")
+    def nuage():
+        """Le bâti du nuage LiDAR HD, demandé par la page une fois la scène
+        affichée : `null` hors couverture LiDAR HD ou sans relief."""
+        dossier, err = dossier_scene(couche=NOM_NUAGE)
+        if err:
+            return err
+        return servir_gzip(dossier, NOM_NUAGE)
 
     def sans_detecteur(**vide):
         """Réponse des couches de l'orthophoto quand le service n'a pas de

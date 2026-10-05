@@ -179,6 +179,7 @@
                 <button class="toggle on" id="t-lignes">Lignes HT</button>
                 <button class="toggle on" id="t-constructions" hidden title="Réservoirs, torchères, cheminées, antennes et mâts de la BD TOPO">Réservoirs, mâts</button>
                 <button class="toggle on" id="t-ouvrages" hidden title="Murs, ponts, voies ferrées et terrains de sport de la BD TOPO">Murs, ponts, rails</button>
+                <button class="toggle" id="t-nuage" hidden title="Tout le bâti en points du nuage LiDAR HD ; les ouvrages ajourés, comme la tour Eiffel, y sont toujours">Nuage LiDAR</button>
                 <button class="toggle on" id="t-vehicules" hidden title="Véhicules vus sur l'orthophoto, le jour de la prise de vue">Véhicules</button>
                 <button class="toggle on" id="t-piscines" hidden title="Piscines vues sur l'orthophoto">Piscines</button>
                 <button class="toggle on" id="t-panneaux" hidden title="Panneaux solaires du registre OpenPVMapper">Panneaux solaires</button>
@@ -274,6 +275,7 @@
             <div id="hint">Glisser pour pivoter · molette pour zoomer · survol pour mesurer · clic sur un bâtiment pour sa fiche</div>
             <div id="etat-monuments" class="etat-couche" role="status" hidden><i class="roue"></i><span></span></div>
             <div id="etat-ouvrages" class="etat-couche" role="status" hidden><i class="roue"></i><span></span></div>
+            <div id="etat-nuage" class="etat-couche" role="status" hidden><i class="roue"></i><span></span></div>
             <div id="etat-vehicules" class="etat-couche" role="status" hidden><i class="roue"></i><span></span></div>
             <div id="conseil-veg" class="etat-couche conseil" role="status" hidden>
                 <span></span>
@@ -1978,6 +1980,7 @@ function batimentsRemplaces() {
 /** Une partie OSM est-elle dessinée ? Avec LiDAR, celles des seuls bâtiments repris à OSM. */
 function partieDessinee(partie, remplaces) {
     if (!partie.contour || partie.contour.length < 4) return false;
+    if (partie.bat && ajouresNuage.has(partie.bat)) return false;     // en points (chargerNuage)
     return TOITS_SOURCE !== 'lidar_hd' || !!(partie.bat && remplaces && remplaces.has(partie.bat));
 }
 
@@ -1995,6 +1998,8 @@ function construire(features, toitsEnPente) {
         // Une tour de refroidissement est dessinée en coque, avec les
         // constructions : son emprise n'en est que le pied.
         if (tours.has(p.cleabs)) continue;
+        // Un ouvrage ajouré est dessiné en points (chargerNuage).
+        if (ajouresNuage.has(p.cleabs)) continue;
         const sol0 = p.altitude_minimale_sol;
         const hauteur = p.hauteur;
         // Le LiDAR est la référence quand sa mesure est fiable ; la BD TOPO
@@ -2444,6 +2449,7 @@ chargerScene()
         activerVegetation();
         chargerMonuments();
         chargerOuvrages();
+        chargerNuage();
         chargerDetections();
         chargerPanneaux();
     })
@@ -3057,6 +3063,7 @@ function appliquerExageration() {
     if (lignesElec.length) placerLignes();
     if (constructionsPosees && constructionsPosees.length) placerConstructions();
     if (ouvragesPoses && ouvragesPoses.length) placerOuvrages();
+    if (pointsNuage) placerNuage();
     if (vehiculesPoses && vehiculesPoses.length) placerVehicules();
     if (piscinesPosees) placerPiscines();
     // Le grand plan gris sert de fond au-delà de l'emprise, et sous les trous
@@ -3153,6 +3160,7 @@ async function chargerRelief() {
         construireConstructions();
         reliefRegle = true;
         construireOuvrages();
+        construireNuage();
         construireVehicules();
         construirePiscines();
         construirePanneaux();
@@ -3208,6 +3216,7 @@ async function chargerRelief() {
     construireConstructions();
     reliefRegle = true;
     construireOuvrages();
+    construireNuage();
     construireVehicules();
     construirePiscines();
     construirePanneaux();
@@ -4114,6 +4123,122 @@ document.getElementById('t-ouvrages').addEventListener('click', e => {
     e.currentTarget.classList.toggle('on', groupeOuvrages.visible);
     majCiblesSurvol();
     if (ouvragesEnVolume && vegPrete) construireVegetation();
+});
+
+// --- Nuage LiDAR HD ------------------------------------------------------------
+// Le bâti du nuage de points LiDAR HD (/api/nuage, vue3d/nuage.py), lu après la
+// scène : ses dalles se lisent en 10 à 90 s. Un ouvrage ajouré — le LiDAR voit
+// le sol à travers son emprise, et une structure dedans : la tour Eiffel, une
+// verrière, une cour que la BD TOPO couvre — est dessiné en points à la place
+// de son volume, plein dans la BD TOPO comme dans OSM. Le reste du bâti, allégé
+// par le serveur, au bouton « Nuage LiDAR ». Chaque point est posé à sa hauteur
+// au-dessus du relief : comme un bâtiment, il suit l'exagération par son pied.
+const URL_NUAGE = `api/nuage?${REQUETE}`;
+// Diamètre d'un point, en mètres. Le nuage compte 16 points/m² au sol, un tous
+// les 25 cm, mais bien moins sur un treillis vu de biais : à 0,7 m, essayé à la
+// tour Eiffel, le treillis se lit de près et la silhouette reste pleine de loin.
+const TAILLE_POINT_NUAGE = 0.7;
+// Pierre claire, plus claire en hauteur : un relief se lit sans éclairage, que
+// des points n'ont pas. Le sursol pérenne (antennes) en ocre, les tabliers en gris.
+const COULEURS_NUAGE = { 64: 0xd9a066, 17: 0x9a9488 };
+var NUAGE = null;
+var ajouresNuage = new Set();
+var pointsNuage = null;     // { lon, lat, h, pos, attributs } : pour reposer
+var groupeNuage = new THREE.Group();
+scene.add(groupeNuage);
+const MAT_NUAGE = new THREE.PointsMaterial({ size: TAILLE_POINT_NUAGE, vertexColors: true });
+
+/** Tableau typé `Type` d'un base64 d'octets petit-boutistes. */
+function depuisBase64(texte, Type) {
+    const chaine = atob(texte), octets = new Uint8Array(chaine.length);
+    for (let i = 0; i < chaine.length; i++) octets[i] = chaine.charCodeAt(i);
+    return new Type(octets.buffer);
+}
+
+function construireNuage() {
+    if (!NUAGE || !reliefRegle || pointsNuage) return;
+    const n = NUAGE.n, na = NUAGE.n_ajoures, [lon0, lat0] = NUAGE.origine;
+    const dlon = depuisBase64(NUAGE.lon, Int32Array), dlat = depuisBase64(NUAGE.lat, Int32Array);
+    const hcm = depuisBase64(NUAGE.h, Uint16Array), classe = depuisBase64(NUAGE.classe, Uint8Array);
+    const lon = new Float64Array(n), lat = new Float64Array(n), h = new Float32Array(n);
+    const pos = new Float32Array(3 * n), col = new Float32Array(3 * n), c = new THREE.Color();
+    for (let i = 0; i < n; i++) {
+        lon[i] = lon0 + dlon[i] * 1e-7;
+        lat[i] = lat0 + dlat[i] * 1e-7;
+        h[i] = hcm[i] / 100;
+        if (COULEURS_NUAGE[classe[i]]) c.set(COULEURS_NUAGE[classe[i]]);
+        else c.setHSL(0.08, 0.18, 0.42 + 0.25 * Math.min(h[i] / 60, 1));
+        col[3 * i] = c.r; col[3 * i + 1] = c.g; col[3 * i + 2] = c.b;
+    }
+    // Deux nuages sur les mêmes tableaux : les ouvrages ajourés, toujours, et
+    // le reste du bâti, au bouton.
+    const attributs = [];
+    const nuage = (debut, fin, visible) => {
+        const geo = new THREE.BufferGeometry();
+        const p = new THREE.BufferAttribute(pos.subarray(3 * debut, 3 * fin), 3);
+        geo.setAttribute('position', p);
+        geo.setAttribute('color', new THREE.BufferAttribute(col.subarray(3 * debut, 3 * fin), 3));
+        attributs.push(p);
+        const points = new THREE.Points(geo, MAT_NUAGE);
+        points.visible = visible;
+        groupeNuage.add(points);
+        return points;
+    };
+    nuage(0, na, true);
+    const bati = nuage(na, n, document.getElementById('t-nuage').classList.contains('on'));
+    pointsNuage = { lon, lat, h, pos, attributs, bati };
+    placerNuage();
+    document.getElementById('t-nuage').hidden = n === na;
+    if ((NUAGE.masses_expliquees.length || NUAGE.houppiers_expliques.length) && vegPrete) {
+        construireVegetation();
+    }
+}
+
+/** Pied de chaque point sur le relief (exagéré), hauteur réelle au-dessus. */
+function placerNuage() {
+    const { lon, lat, h, pos, attributs } = pointsNuage;
+    const sol = relief && terrain;
+    for (let i = 0; i < lon.length; i++) {
+        const [x, y] = toLocal(lon[i], lat[i]);
+        pos[3 * i] = x;
+        pos[3 * i + 1] = (sol ? ySol(lon[i], lat[i]) : 0) + h[i];
+        pos[3 * i + 2] = -y;
+    }
+    for (const a of attributs) a.needsUpdate = true;
+    for (const p of groupeNuage.children) p.geometry.computeBoundingSphere();
+}
+
+async function chargerNuage(essai = 1) {
+    const retard = setTimeout(
+        () => etatCouche('etat-nuage', 'Nuage LiDAR HD : lecture des dalles…', true),
+        essai === 1 ? RETARD_ETAT_MONUMENTS_MS : 0);
+    try {
+        const r = await fetch(URL_NUAGE);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const nuage = await r.json();
+        clearTimeout(retard);
+        etatCouche('etat-nuage', null);
+        if (!nuage) return;                   // hors couverture LiDAR HD
+        NUAGE = nuage;
+        ajouresNuage = new Set(nuage.ajoures);
+        // Les ouvrages ajourés quittent les volumes, BD TOPO comme OSM.
+        if (ajouresNuage.size) { construire(features, toitsEnPente); afficherCible(); }
+        construireNuage();
+    } catch (e) {
+        clearTimeout(retard);
+        if (essai >= ESSAIS_MONUMENTS) {
+            etatCouche('etat-nuage', 'Nuage LiDAR HD indisponible : recharger la page pour réessayer.');
+            return;
+        }
+        etatCouche('etat-nuage', `Nuage LiDAR HD indisponible : nouvel essai dans ${ATTENTE_MONUMENTS_S} s.`, true);
+        setTimeout(() => chargerNuage(essai + 1), ATTENTE_MONUMENTS_S * 1000);
+    }
+}
+
+document.getElementById('t-nuage').addEventListener('click', e => {
+    const on = !e.currentTarget.classList.contains('on');
+    e.currentTarget.classList.toggle('on', on);
+    if (pointsNuage) pointsNuage.bati.visible = on;
 });
 
 // --- Véhicules de l'orthophoto ---------------------------------------------------
@@ -5281,10 +5406,17 @@ function construireVegetation() {
     // Un rempart ou un tablier est, pour le MNH, du sursol non végétal : les
     // masses qu'un ouvrage affiché explique lui laissent la place
     // (vue3d/ouvrages.py), comme un bâtiment à ses parties OSM.
-    const expliquees = ouvragesEnVolume && groupeOuvrages.visible
-        ? new Set(OUVRAGES.masses_expliquees) : null;
-    const dessines = expliquees
-        ? vegElements.filter(e => e.masse == null || !expliquees.has(e.masse)) : vegElements;
+    // Les points d'un ouvrage ajouré aussi : le MNH voyait la tour Eiffel au-
+    // dessus de ses arches, en masses de sursol, et en houppiers là où
+    // l'orthophoto montre la pelouse dessous.
+    const expliquees = new Set([
+        ...(ouvragesEnVolume && groupeOuvrages.visible ? OUVRAGES.masses_expliquees : []),
+        ...(pointsNuage ? NUAGE.masses_expliquees : [])]);
+    const houppiersExpliques = new Set(pointsNuage ? NUAGE.houppiers_expliques : []);
+    const dessines = expliquees.size || houppiersExpliques.size
+        ? vegElements.filter(e => (e.masse == null || !expliquees.has(e.masse))
+                                  && (e.houppier == null || !houppiersExpliques.has(e.houppier)))
+        : vegElements;
     for (const [genre, elements, mat] of [
             ['houppier', dessines.filter(e => e.classe === 'vegetation'), MAT_FEUILLAGE],
             ['masse', dessines.filter(e => e.classe !== 'vegetation'), MAT_MASSE]]) {
@@ -5523,11 +5655,13 @@ async function chargerVegetation() {
 
     // lon/lat conservés : c'est par eux qu'on interroge l'altitude du terrain.
     // `masse` : rang dans les masses de la scène, par lequel la couche des
-    // ouvrages désigne celles qu'elle explique.
+    // ouvrages désigne celles qu'elle explique ; `houppier`, de même pour le
+    // nuage, dont un ouvrage ajouré explique aussi des houppiers.
     const nHouppiers = (res.houppiers || []).length;
     vegElements = [...(res.houppiers || []), ...(res.masses || [])].map((el, i) => {
         const [x, y] = toLocal(el.lon, el.lat);
-        return { ...el, x, y, masse: i >= nHouppiers ? i - nHouppiers : null };
+        return { ...el, x, y, masse: i >= nHouppiers ? i - nHouppiers : null,
+                 houppier: i < nHouppiers ? i : null };
     });
     vegPrete = true;
     construireVegetation();

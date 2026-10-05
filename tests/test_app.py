@@ -31,8 +31,15 @@ def client(tmp_path):
         return {"lineaires": {"features": []}, "surfaciques": {"features": []},
                 "voies": {"features": []}, "terrains": {"features": []}}
 
+    def lire_nuage(west, south, east, north):
+        # Au sud de 46° : une dalle LiDAR HD illisible ; ailleurs, hors couverture.
+        if south < 46:
+            raise ConnectionError("plage refusée")
+        return None
+
     appli = module_app.creer_app(str(tmp_path), construire=construire,
-                                 lire_monuments=lire_monuments, lire_ouvrages=lire_ouvrages)
+                                 lire_monuments=lire_monuments, lire_ouvrages=lire_ouvrages,
+                                 lire_nuage=lire_nuage)
     return appli.test_client()
 
 
@@ -163,6 +170,20 @@ def test_une_panne_des_ouvrages_rend_503_sans_toucher_la_scene(client):
     """La scène reste servie ; seule la couche attend un nouvel essai."""
     assert client.get("/api/scene?lat=45.5&lon=2").status_code == 200
     r = client.get("/api/ouvrages?lat=45.5&lon=2")
+    assert r.status_code == 503 and "IGN" in r.get_json()["erreur"]
+    assert client.get("/api/scene?lat=45.5&lon=2").status_code == 200
+
+
+def test_la_couche_du_nuage_est_servie_a_part(client):
+    """Hors couverture LiDAR HD : la couche vaut null, et se met en cache."""
+    r = client.get("/api/nuage?lat=48.8049&lon=2.1204")
+    assert r.status_code == 200 and r.headers["Content-Encoding"] == "gzip"
+    assert json.loads(gzip.decompress(r.data)) is None
+
+
+def test_une_panne_du_nuage_rend_503_sans_toucher_la_scene(client):
+    assert client.get("/api/scene?lat=45.5&lon=2").status_code == 200
+    r = client.get("/api/nuage?lat=45.5&lon=2")
     assert r.status_code == 503 and "IGN" in r.get_json()["erreur"]
     assert client.get("/api/scene?lat=45.5&lon=2").status_code == 200
 

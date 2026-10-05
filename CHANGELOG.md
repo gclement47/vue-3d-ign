@@ -15,6 +15,21 @@ messages de commit et dans les commentaires des modules.
 
 ### Ajouté
 
+- **Le nuage de points LiDAR HD, et les ouvrages ajourés tels qu'ils sont
+  mesurés.** Une nouvelle couche (`/api/nuage`) lit, après la scène, les
+  points du bâti dans les dalles LiDAR HD de l'IGN — bâtiments, tabliers,
+  sursol pérenne —, par plages d'octets, sans télécharger les dalles
+  entières. La tour Eiffel, que la BD TOPO extrude en cubes de 99 m de côté
+  et que le MNH perd au-dessus de 199 m, y est entière, des arches à
+  l'antenne (321 m). Un bâtiment dont le LiDAR voit le sol à travers
+  l'emprise, et une structure dedans, est un ouvrage ajouré : il est dessiné
+  en points à la place de son volume — la tour Eiffel, la verrière du Grand
+  Palais, une cour que la BD TOPO couvre. Aucun bâtiment ordinaire n'est
+  touché sur 322 emprises mesurées autour de six lieux ; un bâtiment plus
+  récent que le relevé LiDAR, qui n'y voit que le sol, garde son volume. Le
+  reste du bâti, allégé, s'affiche au bouton « Nuage LiDAR ». La lecture
+  prend 10 à 90 s à la première ouverture d'un lieu. Couche en version 1.
+
 - **Les troncs s'effacent dans le feuillage.** Opaques d'un bout à l'autre,
   ils se lisaient comme des poteaux à travers des houppiers transparents à
   30 % — 2 009 arbres sur 2 160 en ont un à Gordes. Le tronc est désormais

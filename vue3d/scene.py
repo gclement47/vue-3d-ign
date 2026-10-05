@@ -77,6 +77,7 @@ from .houppiers import houppiers_pour_emprise
 from .mnh import dimensions_grille, fetch_mnh_grid, fetch_sol_grid
 from .monuments import fetch_monuments, monuments_pour_emprise
 from .ortho import fetch_exg_grid, fetch_ortho_jpeg
+from .nuage import NUAGE_VERSION, fetch_nuage, nuage_pour_emprise
 from .ouvrages import OUVRAGES_VERSION, fetch_ouvrages, ouvrages_pour_emprise
 from .panneaux import PANNEAUX_VERSION, panneaux_pour_emprise
 from .relief import RELIEF_TAILLE, fetch_relief, fetch_relief_anneau
@@ -160,6 +161,7 @@ NOM_OUVRAGES = f"ouvrages-v{OUVRAGES_VERSION}.json.gz"
 
 # Les panneaux solaires ont une seule source : le registre, à sa version.
 NOM_PANNEAUX = f"panneaux-v{PANNEAUX_VERSION}.json.gz"
+NOM_NUAGE = f"nuage-v{NUAGE_VERSION}.json.gz"
 
 
 def nom_vehicules(detecteur):
@@ -210,6 +212,11 @@ class HorsEmprise(ValueError):
 class MonumentsIndisponibles(RuntimeError):
     """Overpass n'a pas répondu : la couche OSM n'est pas mise en cache, la
     scène reste affichée sans elle, réessayer plus tard."""
+
+
+class NuageIndisponible(RuntimeError):
+    """Une dalle LiDAR HD, ou leur liste, n'a pas pu être lue : rien n'est mis
+    en cache, la scène reste affichée sans le nuage, réessayer plus tard."""
 
 
 class OuvragesIndisponibles(RuntimeError):
@@ -687,7 +694,7 @@ class Cache:
     IMAGES_TENUES = 2
 
     def __init__(self, dossier, lire_monuments=fetch_monuments, lire_ouvrages=fetch_ouvrages,
-                 lire_vehicules=None, lire_panneaux=None):
+                 lire_vehicules=None, lire_panneaux=None, lire_nuage=fetch_nuage):
         """`lire_vehicules` : de `vehicules.lecteur()`, ou une doublure qui a
         la même forme — `mode`, `detecteurs`, `orthophoto(emprise)` -> tableau
         RGB, `piscines(emprise, rgb=None)` et `vehicules(detecteur)` -> une
@@ -718,6 +725,7 @@ class Cache:
         self.lire_vehicules = self._qui_cede(lire_vehicules)
         self.mode_vehicules = lire_vehicules.mode if lire_vehicules else None
         self.lire_panneaux = lire_panneaux
+        self.lire_nuage = lire_nuage
         self._lectures = {}
         self._taches = {
             NOM_MONUMENTS: concurrent.futures.ThreadPoolExecutor(
@@ -1030,6 +1038,28 @@ class Cache:
             lambda message: OuvragesIndisponibles(f"ouvrages illisibles : {message}"),
             lambda bbox, brut, scene: ouvrages_pour_emprise(
                 *bbox, brut, scene.get("relief"), scene.get("masses"), scene.get("routes")), zone=zone)
+
+    def obtenir_nuage(self, lat, lon, construire=construire, zone=None):
+        """Chemin du dossier où la couche du nuage LiDAR HD du point est écrite.
+
+        Lue à la demande de la vue, une fois la scène affichée, et non en
+        tâche de fond avec elle : ses dalles se lisent en 10 à 90 s, une à
+        une, et leurs plages tiendraient des places (geopf.place) dont la
+        scène a besoin. La couche lit le relief de la scène (la hauteur d'un
+        point est son altitude moins le relief), ses bâtiments (les ouvrages
+        ajourés), ses masses et ses houppiers (ceux qu'ils expliquent).
+
+        Raises:
+            NuageIndisponible si une dalle n'a pas pu être lue : rien n'est
+            écrit, la demande suivante réessaie.
+        """
+        return self._obtenir_couche(
+            NOM_NUAGE, lat, lon, construire, self.lire_nuage,
+            lambda message: NuageIndisponible(f"nuage LiDAR HD illisible : {message}"),
+            lambda bbox, brut, scene: nuage_pour_emprise(
+                *bbox, brut, scene.get("relief"), scene.get("batiments"), scene.get("masses"),
+                scene.get("houppiers")),
+            zone=zone)
 
     def prelire_panneaux(self, lat, lon, zone=None):
         """Lance la lecture du registre en tâche de fond, si le service en a un."""

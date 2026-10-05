@@ -66,9 +66,9 @@ En conteneur : `docker compose up -d --build`, sur le port 8080 (ou
 flowchart LR
     P["Page<br/>static/index.html<br/>three.js"] -->|"GET /api/scene"| A["app.py<br/>Flask"]
     P -.->|"GET /api/avancement<br/>toutes les 0,5 s"| A
-    P -.->|"GET /api/monuments<br/>GET /api/ouvrages<br/>après la scène"| A
+    P -.->|"GET /api/monuments<br/>GET /api/ouvrages<br/>GET /api/nuage<br/>après la scène"| A
     A --> C{"Cache<br/>scene.py"}
-    C -->|"déjà construite"| D[("cache/vN/lat_lon/<br/>scene.json.gz · ortho.jpg<br/>monuments.json.gz<br/>ouvrages-vM.json.gz")]
+    C -->|"déjà construite"| D[("cache/vN/lat_lon/<br/>scene.json.gz · ortho.jpg<br/>monuments.json.gz<br/>ouvrages-vM.json.gz<br/>nuage-vM.json.gz")]
     C -->|"absente : verrou par point"| B["construire()<br/>16 lectures ensemble"]
     C -.->|"tâche de fond"| OSM[("Overpass<br/>OpenStreetMap")]
     C -.->|"tâche de fond :<br/>ouvrages"| G
@@ -112,6 +112,12 @@ Le trajet d'une demande, dans l'ordre :
    terrains de sport, calculés sur les quatre couches lues en tâche de fond,
    le relief de la scène (la hauteur d'un mur est l'altitude de son sommet
    moins le relief) et ses masses de sursol (celles qu'un ouvrage explique).
+8. Elle demande enfin `/api/nuage` : le bâti du nuage de points LiDAR HD, lu
+   à ce moment-là et non en tâche de fond — ses dalles COPC se lisent par
+   plages en 10 à 90 s, et leurs requêtes prendraient à la scène ses places
+   vers la Géoplateforme. Un bâtiment dont le LiDAR voit le sol à travers
+   l'emprise, et une structure dedans, est un ouvrage ajouré : la page
+   dessine ses points à la place de son volume.
 
 L'emprise d'une scène est un carré de ±0,0016° autour du point : environ
 ±178 m du nord au sud, et ±115 à 130 m d'est en ouest selon la latitude. Un
@@ -137,6 +143,7 @@ anneau de relief grossier s'étend au-delà, sur 2 km de côté.
 | `lignes.py` | Lignes à haute tension | Hauteur des pylônes BD TOPO, à défaut médiane par tension |
 | `monuments.py` | Parties de monuments OSM | Seule source hors IGN, et la plus lente ; extrait embarqué pour les lieux d'exemple ; règle de remplacement aux deux tiers, enveloppes |
 | `ouvrages.py` | Murs, ponts, voies ferrées, terrains de sport | Couche à part, versionnée par `OUVRAGES_VERSION` ; hauteur d'un mur ou d'un pont = altitude de ses sommets − relief de la scène |
+| `nuage.py` | Bâti du nuage de points LiDAR HD, ouvrages ajourés | Couche à part, versionnée par `NUAGE_VERSION` ; dalles COPC lues par plages à travers `geopf` (laspy ne fait aucune requête), une à une : en 40 à la fois, la Géoplateforme répond 429 ; Lambert-93 écrit ici, vérifié contre pyproj au millimètre ; ajouré = sol vu à travers l'emprise et structure vue dedans, ou emprise qui chevauche un ajouré |
 | `vehicules.py` | Véhicules et piscines lus sur l'orthophoto | Couche à part et **optionnelle** (`VUE3D_VEHICULES`) : un réseau ONNX à boîtes orientées sur l'orthophoto à 0,2 m, une passe par objet, chacun à son échelle ; fichier de cache au nom du détecteur ; sans la variable, ni onnxruntime ni réseau ne sont chargés |
 | `panneaux.py` | Panneaux solaires du registre OpenPVMapper | Couche à part et **optionnelle** (`VUE3D_PANNEAUX`) : une base SQLite à index R-tree préparée à la construction de l'image ; projection EPSG:3035 → WGS84 écrite ici, vérifiée contre pyproj à 0,7 mm |
 | `static/index.html` | La page entière | HTML, CSS et JavaScript dans un seul fichier, three.js r160 |
@@ -162,6 +169,7 @@ framework ni build. three.js r160 est chargé depuis jsDelivr par un
 | Eau de surface, Routes, Lignes à haute tension | Les couches posées sur le relief |
 | Réservoirs et constructions ponctuelles | Citernes extrudées, torchères, cheminées, antennes et mâts |
 | Ouvrages | La couche `/api/ouvrages` : rubans et aplats drapés, murs et tabliers en volumes fermés (`prismeLeLong`, `dalle`) |
+| Nuage LiDAR HD | La couche `/api/nuage` : ouvrages ajourés en points à la place de leur volume, le reste du bâti au bouton |
 | Végétation | Rendu des houppiers mesurés |
 | Ma position | Géolocalisation et recentrage |
 | Interactions, Boutons, Soleil et ombres portées | Survol, clics, bascules, course du soleil |
@@ -221,6 +229,17 @@ un terrain, une `geometrie` GeoJSON. `masses_expliquees` liste les rangs, dans
 `masses`, de celles que la page retire quand la couche est affichée. La couche
 a sa propre version, `OUVRAGES_VERSION`, inscrite dans le nom de son fichier :
 la changer ne reconstruit aucune scène.
+
+Le nuage non plus : `/api/nuage` rend `{version, origine, n, n_ajoures, lon,
+lat, h, classe, ajoures, masses_expliquees, houppiers_expliques}`, ou `null`
+hors couverture LiDAR HD ou sans relief. `lon`, `lat`, `h` et `classe` sont
+des tableaux en base64 : entiers 32 bits en 1e-7 degré depuis `origine`
+(l'angle sud-ouest de l'emprise), hauteur au-dessus du relief en centimètres
+(16 bits), classe LiDAR HD (octet). Les `n_ajoures` premiers points sont ceux
+des ouvrages ajourés, que la page dessine toujours ; le reste du bâti, allégé
+par voxels, au bouton « Nuage LiDAR ». `ajoures` liste les cleabs des
+bâtiments que leurs points remplacent, BD TOPO comme OSM. Version :
+`NUAGE_VERSION`.
 
 Le profil d'un toit (`toits.toits[cleabs]`) porte `gouttiere`, `faitage`,
 `denivele`, `fiable`, `axe_deg`, éventuellement `corps` (un toit par corps pour
@@ -489,6 +508,7 @@ direct. Ils écrivent leurs sorties dans `cache/mesures/`, ignoré par git.
 | `chrono-page.mjs` | Chronologie d'un chargement dans Chrome : quand chaque demande part, est envoyée et revient (puppeteer-core) |
 | `mesure_pans.py` | Toits en pans sur des lieux réels, par le vrai chemin de la scène |
 | `mesure_constructions.py` | Réservoirs, constructions ponctuelles et ouvrages sur des lieux réels : hauteurs, effet du masque sur les houppiers, masses expliquées |
+| `mesure_nuage.py` | Nuage LiDAR HD sur des lieux réels : coût de la lecture selon la taille des blocs, part du sol et de la structure vus sous chaque emprise, ouvrages ajourés, volume de la couche |
 | `mesure_vehicules.py` | Véhicules et piscines sur des lieux réels, par le vrai chemin de la couche : comptes selon le seuil, la tuile et son recouvrement, gabarits, accord entre les deux détecteurs, images annotées, planches de vignettes des piscines ; demande les réseaux exportés et `requirements-vehicules.txt` |
 | `exporter_vehicules.py` | Pas une mesure : télécharge les poids de RTMDet-R ou de YOLO11-OBB et les convertit en ONNX ; tourne dans l'étage `export` du Dockerfile |
 | `preparer_modeles.sh` | Pas une mesure : le même export sans Docker, dans un environnement Python jetable aux versions du Dockerfile ; seuls les `.onnx` restent. `run_macOS_CoreML.sh` l'appelle quand un réseau manque |

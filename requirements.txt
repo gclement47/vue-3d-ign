@@ -4,3 +4,5 @@ numpy==2.2.6
 pillow==12.1.0
 requests==2.32.5
 shapely==2.1.2
+laspy==2.7.0
+lazrs==0.8.2
