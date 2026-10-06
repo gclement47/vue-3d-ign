@@ -48,7 +48,8 @@ from .geopf import en_parallele, get_avec_reprise, place
 journal = logging.getLogger(__name__)
 
 # Format de la couche. L'incrémenter ne refait que la couche, pas les scènes.
-NUAGE_VERSION = 1
+# 2 : la raison de chaque ouvrage ajouré (ajoures_detail), que la fiche dit.
+NUAGE_VERSION = 2
 
 COUCHE_DALLES = "IGNF_LIDAR-HD_METADONNEE:metadata"
 CLASSE_SOL = 2
@@ -64,27 +65,35 @@ BLOC_OCTETS = 256 * 1024
 # Ouvrages ajourés. Une emprise est jugée sur une grille de 1 m, réduite de
 # EROSION_M sur son pourtour : la BD TOPO annonce 2,5 m de précision
 # planimétrique, et le sol vu le long d'un mur n'est pas sous le bâtiment. Au
-# moins CELLULES_MIN m² doivent rester pour juger. Sur 322 emprises autour de
-# six lieux (tour Eiffel, Notre-Dame, Grand Palais, gare de l'Est,
-# Strasbourg, Gordes), la part du sol vu :
+# moins CELLULES_MIN m² doivent rester pour juger. Sur 1 356 emprises autour
+# de 21 lieux — six d'abord (tour Eiffel, Notre-Dame, Grand Palais, gare de
+# l'Est, Strasbourg, Gordes), puis l'Arc de Triomphe, La Défense, les gares
+# Saint-Lazare, les Halles et Châtelet, les centres de Lyon, Marseille,
+# Bordeaux, Toulouse, Nantes, Rennes et Carcassonne, Feyzin, Chambord et
+# Versailles —, la part du sol vu :
 #
 #   0-1 %   1-5 %   5-10 %   10-20 %   20-30 %   30-50 %   50-100 %
-#    270      22       8          9         3         4          6
+#   1 145    109      36         32         8        10         16
 #
-# Au-delà de 25 %, plus aucun bâtiment ordinaire. Ceux qui passent 30 % : les
-# trois étages de la tour Eiffel (32 à 83 %), la verrière du Grand Palais et
-# sa coupole (32 et 99 %), des emprises qui sont surtout une cour (Gordes, 58
-# et 85 % ; Notre-Dame, 41 % sur 41 m²). Mais aussi deux bâtiments créés dans la BD TOPO en novembre
-# 2025, que le LiDAR, plus ancien, ne voit pas : sol à 91 et 94 %, structure
-# à 0 et 11 %. D'où la seconde condition : le LiDAR voit aussi une structure
-# (CLASSES_BATI) sur PART_BATI_VU de l'emprise — 100 % sur la tour et le
-# Grand Palais, 21 à 88 % sur les cours. Le deuxième étage de la tour, sous
+# Ce qui passe 25 % n'est pas un volume plein : les étages de la tour Eiffel
+# (32 à 83 %), la verrière et la coupole du Grand Palais (32 et 99 %), la
+# Grande Arche de La Défense (44 %), la verrière de Saint-Lazare (36 %), la
+# Canopée des Halles (58 %), l'Arc de Triomphe (25,5 %, le sol sous ses
+# arches), et des emprises qui couvrent une cour ou une verrière, vérifiées à
+# l'orthophoto (Châtelet, 32 et 42 % ; Bordeaux, 28 %). Le seuil était à 30 %
+# avant l'Arc ; sous 25 %, le plus haut est à 22 % (Nantes, Carcassonne).
+#
+# Passent aussi des bâtiments plus récents que le relevé LiDAR, qui n'y voit
+# que le sol d'avant : créés dans la BD TOPO fin 2025, sol à 68 à 100 %,
+# structure à 0 à 11 % pour la plupart. D'où la seconde condition : le LiDAR
+# voit aussi une structure (CLASSES_BATI) sur PART_BATI_VU de l'emprise —
+# 100 % sur la tour, l'Arc et le Grand Palais, 21 à 95 % sur les cours. Le deuxième étage de la tour, sous
 # le premier, ne voit le sol qu'à 10 % : il est ajouré parce qu'il chevauche
 # un ouvrage ajouré (ajoures).
 PAS_SOL_VU_M = 1.0
 EROSION_M = 2.0
 CELLULES_MIN = 20
-PART_SOL_VU = 0.3
+PART_SOL_VU = 0.25
 PART_BATI_VU = 0.2
 # Autour d'un ouvrage ajouré, ses points lui sont rattachés : la précision de
 # l'emprise, arrondie.
@@ -329,7 +338,10 @@ def parts_vues(poly, grilles):
 
 
 def ajoures(batiments, grilles):
-    """(cleabs des ouvrages ajourés, leurs polygones Lambert-93).
+    """(cleabs des ouvrages ajourés, leurs polygones Lambert-93, et pour chacun
+    la raison : {sol, structure, chevauche} — parts vues sous l'emprise, None
+    si elle est trop petite pour juger, et cleabs de l'ouvrage ajouré qu'elle
+    chevauche quand c'est ce qui la fait retenir).
 
     Ajouré : le LiDAR voit le sol à travers l'emprise ET y voit une
     structure ; ou l'emprise chevauche celle d'un ouvrage ajouré — la BD TOPO
@@ -342,11 +354,14 @@ def ajoures(batiments, grilles):
                 polys.append((cle, poly))
         except Exception:
             continue
-    retenus = set()
+    # Retenus, et pour chacun l'emprise dont il chevauche l'ouvrage ajouré
+    # (None : retenu sur sa propre mesure).
+    retenus, mesures = {}, {}
     for k, (cle, poly) in enumerate(polys):
         sol, bati, _ = parts_vues(poly, grilles)
+        mesures[k] = (sol, bati)
         if sol is not None and sol >= PART_SOL_VU and bati >= PART_BATI_VU:
-            retenus.add(k)
+            retenus[k] = None
     pleins = [shapely.Polygon(p.exterior) for _, p in polys]
     arbre = shapely.STRtree(pleins)
     a_voir = list(retenus)
@@ -355,13 +370,19 @@ def ajoures(batiments, grilles):
         for v in arbre.query(pleins[k]):
             v = int(v)
             if v not in retenus and pleins[k].intersection(pleins[v]).area > 1.0:
-                retenus.add(v)
+                retenus[v] = k
                 a_voir.append(v)
-    cles = []
+    details = {}
     for k in sorted(retenus):
-        if polys[k][0] and polys[k][0] not in cles:
-            cles.append(polys[k][0])
-    return cles, [polys[k][1] for k in sorted(retenus)]
+        cle = polys[k][0]
+        if not cle or cle in details:
+            continue
+        sol, bati = mesures[k]
+        source = retenus[k]
+        details[cle] = {"sol": None if sol is None else round(sol, 2),
+                        "structure": None if bati is None else round(bati, 2),
+                        "chevauche": None if source is None else polys[source][0]}
+    return list(details), [polys[k][1] for k in sorted(retenus)], details
 
 
 def decimer(x, y, z, cote):
@@ -393,7 +414,7 @@ def nuage_pour_emprise(west, south, east, north, brut, relief, batiments=None, m
 
     Returns:
         None, ou dict(version, origine, n, n_ajoures, lon, lat, h, classe,
-        ajoures, masses_expliquees, houppiers_expliques) :
+        ajoures, ajoures_detail, masses_expliquees, houppiers_expliques) :
         - lon, lat : base64 d'entiers 32 bits, en 1e-7 degré depuis `origine`
           (l'angle sud-ouest de l'emprise) ;
         - h : base64 d'entiers 16 bits non signés, hauteur au-dessus du
@@ -401,6 +422,7 @@ def nuage_pour_emprise(west, south, east, north, brut, relief, batiments=None, m
         - classe : base64 d'octets, classe LiDAR HD ;
         - les n_ajoures premiers points sont ceux des ouvrages ajourés ;
         - ajoures : cleabs des bâtiments que leurs points remplacent ;
+        - ajoures_detail : pour chacun, pourquoi (voir ajoures) ;
         - masses_expliquees, houppiers_expliques : index dans `masses` et
           `houppiers`.
     """
@@ -412,7 +434,7 @@ def nuage_pour_emprise(west, south, east, north, brut, relief, batiments=None, m
     garde = np.isfinite(h)
     x, y, lon, lat, h, classe = x[garde], y[garde], lon[garde], lat[garde], h[garde], classe[garde]
 
-    cles, polys = ajoures(batiments, brut["grilles"])
+    cles, polys, details = ajoures(batiments, brut["grilles"])
     zone = shapely.union_all([Polygon(p.exterior).buffer(MARGE_AJOURE_M) for p in polys]) if polys else None
     dans = shapely.contains_xy(zone, x, y) if zone is not None else np.zeros(len(x), dtype=bool)
     hors = np.flatnonzero(~dans)
@@ -448,6 +470,7 @@ def nuage_pour_emprise(west, south, east, north, brut, relief, batiments=None, m
         "h": _b64(np.clip(np.round(h * 100), 0, 65535).astype("<u2")),
         "classe": _b64(classe.astype(np.uint8)),
         "ajoures": cles,
+        "ajoures_detail": details,
         "masses_expliquees": expliquees,
         "houppiers_expliques": houppiers_expliques,
     }

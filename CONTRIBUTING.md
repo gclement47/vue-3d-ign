@@ -231,14 +231,18 @@ a sa propre version, `OUVRAGES_VERSION`, inscrite dans le nom de son fichier :
 la changer ne reconstruit aucune scène.
 
 Le nuage non plus : `/api/nuage` rend `{version, origine, n, n_ajoures, lon,
-lat, h, classe, ajoures, masses_expliquees, houppiers_expliques}`, ou `null`
+lat, h, classe, ajoures, ajoures_detail, masses_expliquees,
+houppiers_expliques}`, ou `null`
 hors couverture LiDAR HD ou sans relief. `lon`, `lat`, `h` et `classe` sont
 des tableaux en base64 : entiers 32 bits en 1e-7 degré depuis `origine`
 (l'angle sud-ouest de l'emprise), hauteur au-dessus du relief en centimètres
 (16 bits), classe LiDAR HD (octet). Les `n_ajoures` premiers points sont ceux
 des ouvrages ajourés, que la page dessine toujours ; le reste du bâti, allégé
 par voxels, au bouton « Nuage LiDAR ». `ajoures` liste les cleabs des
-bâtiments que leurs points remplacent, BD TOPO comme OSM. Version :
+bâtiments que leurs points remplacent, BD TOPO comme OSM, et `ajoures_detail`
+pourquoi, pour la fiche : `{sol, structure, chevauche}`, parts vues sous
+l'emprise et cleabs de l'ouvrage ajouré qu'elle chevauche, le cas échéant.
+Chacun garde un volume invisible, que le survol et le clic désignent. Version :
 `NUAGE_VERSION`.
 
 Le profil d'un toit (`toits.toits[cleabs]`) porte `gouttiere`, `faitage`,

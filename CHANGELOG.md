@@ -23,12 +23,16 @@ messages de commit et dans les commentaires des modules.
   et que le MNH perd au-dessus de 199 m, y est entière, des arches à
   l'antenne (321 m). Un bâtiment dont le LiDAR voit le sol à travers
   l'emprise, et une structure dedans, est un ouvrage ajouré : il est dessiné
-  en points à la place de son volume — la tour Eiffel, la verrière du Grand
-  Palais, une cour que la BD TOPO couvre. Aucun bâtiment ordinaire n'est
-  touché sur 322 emprises mesurées autour de six lieux ; un bâtiment plus
+  en points à la place de son volume — la tour Eiffel, l'Arc de Triomphe sous
+  ses arches, la Grande Arche de La Défense, les verrières du Grand Palais et
+  de Saint-Lazare, la Canopée des Halles, une cour que la BD TOPO couvre.
+  Seuil mesuré sur 1 356 emprises autour de 21 lieux ; un bâtiment plus
   récent que le relevé LiDAR, qui n'y voit que le sol, garde son volume. Le
   reste du bâti, allégé, s'affiche au bouton « Nuage LiDAR ». La lecture
-  prend 10 à 90 s à la première ouverture d'un lieu. Couche en version 1.
+  prend 10 à 90 s à la première ouverture d'un lieu. Couche en version 2 :
+  la fiche d'un bâtiment dessiné en points dit pourquoi — la part de son
+  emprise où le LiDAR voit le sol et une structure, ou l'ouvrage ajouré dont
+  il est un étage —, et il se désigne toujours au survol et au clic.
 
 - **Les troncs s'effacent dans le feuillage.** Opaques d'un bout à l'autre,
   ils se lisaient comme des poteaux à travers des houppiers transparents à

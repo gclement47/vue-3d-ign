@@ -1939,7 +1939,7 @@ function afficherFicheBatiment(ud) {
                : (l.corps && l.corps.length >= 2 ? `${l.corps.length} corps de toit`
                   : (l.faitage - l.gouttiere > 0.5 ? 'deux pans' : 'plat')))
           + (l.ecart_resume != null ? stat('écart du toit résumé au LiDAR', metres(l.ecart_resume)) : '');
-    const mesure = ud.lidar
+    const mesure = ud.nuage ? noteNuage(ud.nuage) : ud.lidar
         ? stat('gouttière LiDAR', metres(ud.lidar.gouttiere))
           + stat('faîtage LiDAR', metres(ud.lidar.faitage)) + forme
         : (ud.inconnue
@@ -1994,12 +1994,14 @@ function construire(features, toitsEnPente) {
 
     for (const f of features) {
         const p = f.properties || {};
+        // Un ouvrage ajouré est dessiné en points (chargerNuage) : il ne garde
+        // qu'un volume invisible, pour la fiche. Avant les parties OSM, qui ne
+        // le dessinent pas non plus (partieDessinee).
+        if (ajouresNuage.has(p.cleabs)) { ajouterPrise(f, p); continue; }
         if (remplaces && remplaces.has(p.cleabs)) continue;
         // Une tour de refroidissement est dessinée en coque, avec les
         // constructions : son emprise n'en est que le pied.
         if (tours.has(p.cleabs)) continue;
-        // Un ouvrage ajouré est dessiné en points (chargerNuage).
-        if (ajouresNuage.has(p.cleabs)) continue;
         const sol0 = p.altitude_minimale_sol;
         const hauteur = p.hauteur;
         // Le LiDAR est la référence quand sa mesure est fiable ; la BD TOPO
@@ -4194,6 +4196,41 @@ function construireNuage() {
     }
 }
 
+/**
+ * Volume invisible d'un ouvrage ajouré : il ne se dessine pas et ne porte pas
+ * d'ombre — ses points le montrent —, mais répond au survol et au clic, qui
+ * ouvrent sa fiche. Sans lui, la tour Eiffel ne se désignait plus. Haut de sa
+ * hauteur BD TOPO ; relevé sur le relief avec les bâtiments (rebaserBatiments).
+ */
+const MAT_PRISE = new THREE.MeshBasicMaterial({ visible: false });
+function ajouterPrise(f, p) {
+    const h = p.hauteur > 0 ? p.hauteur : HAUTEUR_PAR_ETAGE;
+    const nuage = (NUAGE && NUAGE.ajoures_detail && NUAGE.ajoures_detail[p.cleabs]) || {};
+    for (const { anneau, trous } of polygonesDe(f.geometry)) {
+        if (!anneau || anneau.length < 4) continue;
+        const geo = new THREE.ExtrudeGeometry(anneauVersShape(anneau, trous), { depth: h, bevelEnabled: false });
+        geo.rotateX(-Math.PI / 2);
+        const prise = new THREE.Mesh(geo, MAT_PRISE);
+        prise.userData = { p, anneau, hMur: h, denivele: 0, lidar: null, nuage };
+        groupeBatiments.add(prise);
+        meshes.push(prise);
+    }
+}
+
+/** Pourquoi un bâtiment est dessiné en points, pour sa fiche (vue3d/nuage.py). */
+function noteNuage(n) {
+    const pct = v => v == null ? '—' : `${Math.round(100 * v)} %`;
+    const debut = '<div class="note">Dessiné en points du nuage LiDAR HD. ';
+    if (n.chevauche) {
+        return debut + `Son emprise chevauche celle d'un ouvrage ajouré (<code>${n.chevauche}</code>) : la `
+            + 'BD TOPO n\'empile des bâtiments que pour dire les étages d\'une même structure. '
+            + `Sous la sienne, le LiDAR voit le sol à ${pct(n.sol)}, une structure à ${pct(n.structure)}.</div>`;
+    }
+    return debut + `Le LiDAR voit le sol sous ${pct(n.sol)} de son emprise, et une structure sous `
+        + `${pct(n.structure)} : un volume plein ne laisse jamais voir le sol. Au-delà de 25 % de sol `
+        + 'et 20 % de structure, le bâtiment est ajouré — treillis, verrière, cour couverte.</div>';
+}
+
 /** Pied de chaque point sur le relief (exagéré), hauteur réelle au-dessus. */
 function placerNuage() {
     const { lon, lat, h, pos, attributs } = pointsNuage;
@@ -5858,6 +5895,12 @@ renderer.domElement.addEventListener('pointermove', e => {
 
 /** Les deux lignes de l'infobulle d'un bâtiment ou d'une partie OSM. */
 function resumeBatiment(ud) {
+    if (ud.nuage) {
+        const n = ud.nuage;
+        return `<b>${ud.p.usage_1 || ud.p.nature || 'Bâtiment'}</b><br>en points du nuage LiDAR HD `
+            + (n.chevauche ? '<i>(étage d\'un ouvrage ajouré)</i>'
+                           : `<i>(sol vu sous ${Math.round(100 * n.sol)} % de l'emprise)</i>`);
+    }
     if (ud.monument) {
         const m = ud.monument;
         return `<b>${m.nom || ud.p.usage_1 || ud.p.nature || 'Monument'}</b>`

@@ -121,7 +121,7 @@ def _batiment(cle, x0, y0, x1, y1, grilles):
 def test_un_batiment_plein_n_est_pas_ajoure():
     """Toit vu partout, sol nulle part : le volume BD TOPO reste."""
     g = _grilles(sol=lambda X, Y: np.zeros_like(X, bool), bati=lambda X, Y: np.ones_like(X, bool))
-    cles, _ = nuage.ajoures({"features": [_batiment("A", 10, 10, 40, 40, g)]}, g)
+    cles, _, _ = nuage.ajoures({"features": [_batiment("A", 10, 10, 40, 40, g)]}, g)
     assert cles == []
 
 
@@ -129,14 +129,14 @@ def test_un_treillis_qui_laisse_voir_le_sol_est_ajoure():
     """Une structure vue partout, le sol entre ses barres une cellule sur deux."""
     g = _grilles(sol=lambda X, Y: (X.astype(int) + Y.astype(int)) % 2 == 0,
                  bati=lambda X, Y: np.ones_like(X, bool))
-    cles, polys = nuage.ajoures({"features": [_batiment("TOUR", 10, 10, 40, 40, g)]}, g)
+    cles, polys, _ = nuage.ajoures({"features": [_batiment("TOUR", 10, 10, 40, 40, g)]}, g)
     assert cles == ["TOUR"] and len(polys) == 1
 
 
 def test_un_batiment_plus_recent_que_le_lidar_n_est_pas_ajoure():
     """Sol vu partout, aucune structure : créé après le relevé, il garde son volume."""
     g = _grilles(sol=lambda X, Y: np.ones_like(X, bool), bati=lambda X, Y: np.zeros_like(X, bool))
-    cles, _ = nuage.ajoures({"features": [_batiment("NEUF", 10, 10, 40, 40, g)]}, g)
+    cles, _, _ = nuage.ajoures({"features": [_batiment("NEUF", 10, 10, 40, 40, g)]}, g)
     assert cles == []
 
 
@@ -145,7 +145,7 @@ def test_le_sol_vu_le_long_des_murs_ne_compte_pas():
     est retiré par l'érosion."""
     g = _grilles(sol=lambda X, Y: ~((X > 11.5) & (X < 38.5) & (Y > 11.5) & (Y < 38.5)),
                  bati=lambda X, Y: np.ones_like(X, bool))
-    cles, _ = nuage.ajoures({"features": [_batiment("A", 10, 10, 40, 40, g)]}, g)
+    cles, _, _ = nuage.ajoures({"features": [_batiment("A", 10, 10, 40, 40, g)]}, g)
     assert cles == []
 
 
@@ -156,8 +156,11 @@ def test_un_etage_qui_chevauche_un_ouvrage_ajoure_l_est_aussi():
                  bati=lambda X, Y: np.ones_like(X, bool))
     batiments = {"features": [_batiment("BAS", 5, 5, 25, 55, g), _batiment("HAUT", 20, 20, 50, 50, g),
                               _batiment("VOISIN", 52, 5, 58, 55, g)]}
-    cles, _ = nuage.ajoures(batiments, g)
+    cles, _, details = nuage.ajoures(batiments, g)
     assert cles == ["BAS", "HAUT"]
+    # La fiche dit pourquoi : la mesure du bas, le chevauchement du haut.
+    assert details["BAS"]["chevauche"] is None and details["BAS"]["sol"] == pytest.approx(0.5, abs=0.05)
+    assert details["HAUT"]["chevauche"] == "BAS" and details["HAUT"]["structure"] == 1.0
 
 
 def test_un_voxel_ne_garde_qu_un_point():
@@ -195,6 +198,7 @@ def test_la_couche_rend_les_points_a_leur_hauteur_ajoures_d_abord():
     couche = nuage.nuage_pour_emprise(west, south, east, north, brut, _relief(west, south, east, north),
                                       {"features": [tour]}, masses, houppiers=masses[::-1])
     assert couche["ajoures"] == ["TOUR"] and couche["n_ajoures"] == 2
+    assert couche["ajoures_detail"]["TOUR"]["chevauche"] is None
     # Deux points dehors dans le même voxel de 0,5 m : un seul reste.
     assert couche["n"] == 3
     assert couche["masses_expliquees"] == [0] and couche["houppiers_expliques"] == [1]
