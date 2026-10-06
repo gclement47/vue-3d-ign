@@ -133,6 +133,22 @@ def test_un_treillis_qui_laisse_voir_le_sol_est_ajoure():
     assert cles == ["TOUR"] and len(polys) == 1
 
 
+def test_une_cour_a_ciel_ouvert_n_est_pas_un_ouvrage_ajoure():
+    """Des ailes autour d'une cour, sous une seule emprise BD TOPO (Châlons-
+    en-Champagne) : le sol vu dans la cour n'est sous aucune structure."""
+    cour = lambda X, Y: (X > 18) & (X < 32) & (Y > 18) & (Y < 32)
+    g = _grilles(sol=cour, bati=lambda X, Y: ~cour(X, Y))
+    cles, _, _ = nuage.ajoures({"features": [_batiment("ILOT", 10, 10, 40, 40, g)]}, g)
+    assert cles == []
+
+
+def test_une_petite_emprise_n_est_pas_jugee():
+    """Ce qui reste de 9 × 9 m après l'érosion ne suffit pas à juger."""
+    g = _grilles(sol=lambda X, Y: np.ones_like(X, bool), bati=lambda X, Y: np.ones_like(X, bool))
+    cles, _, _ = nuage.ajoures({"features": [_batiment("PETIT", 10, 10, 19, 19, g)]}, g)
+    assert cles == []
+
+
 def test_un_batiment_plus_recent_que_le_lidar_n_est_pas_ajoure():
     """Sol vu partout, aucune structure : créé après le relevé, il garde son volume."""
     g = _grilles(sol=lambda X, Y: np.ones_like(X, bool), bati=lambda X, Y: np.zeros_like(X, bool))
@@ -159,7 +175,7 @@ def test_un_etage_qui_chevauche_un_ouvrage_ajoure_l_est_aussi():
     cles, _, details = nuage.ajoures(batiments, g)
     assert cles == ["BAS", "HAUT"]
     # La fiche dit pourquoi : la mesure du bas, le chevauchement du haut.
-    assert details["BAS"]["chevauche"] is None and details["BAS"]["sol"] == pytest.approx(0.5, abs=0.05)
+    assert details["BAS"]["chevauche"] is None and details["BAS"]["sous_structure"] == pytest.approx(0.5, abs=0.05)
     assert details["HAUT"]["chevauche"] == "BAS" and details["HAUT"]["structure"] == 1.0
 
 

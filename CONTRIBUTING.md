@@ -143,7 +143,7 @@ anneau de relief grossier s'étend au-delà, sur 2 km de côté.
 | `lignes.py` | Lignes à haute tension | Hauteur des pylônes BD TOPO, à défaut médiane par tension |
 | `monuments.py` | Parties de monuments OSM | Seule source hors IGN, et la plus lente ; extrait embarqué pour les lieux d'exemple ; règle de remplacement aux deux tiers, enveloppes |
 | `ouvrages.py` | Murs, ponts, voies ferrées, terrains de sport | Couche à part, versionnée par `OUVRAGES_VERSION` ; hauteur d'un mur ou d'un pont = altitude de ses sommets − relief de la scène |
-| `nuage.py` | Bâti du nuage de points LiDAR HD, ouvrages ajourés | Couche à part, versionnée par `NUAGE_VERSION` ; dalles COPC lues par plages à travers `geopf` (laspy ne fait aucune requête), une à une : en 40 à la fois, la Géoplateforme répond 429 ; Lambert-93 écrit ici, vérifié contre pyproj au millimètre ; ajouré = sol vu à travers l'emprise et structure vue dedans, ou emprise qui chevauche un ajouré |
+| `nuage.py` | Bâti du nuage de points LiDAR HD, ouvrages ajourés | Couche à part, versionnée par `NUAGE_VERSION` ; dalles COPC lues par plages à travers `geopf` (laspy ne fait aucune requête), une à une : en 40 à la fois, la Géoplateforme répond 429 ; Lambert-93 écrit ici, vérifié contre pyproj au millimètre ; ajouré = sol vu sous une structure à travers l'emprise (une cour à ciel ouvert ne compte pas), ou emprise qui chevauche un ajouré |
 | `vehicules.py` | Véhicules et piscines lus sur l'orthophoto | Couche à part et **optionnelle** (`VUE3D_VEHICULES`) : un réseau ONNX à boîtes orientées sur l'orthophoto à 0,2 m, une passe par objet, chacun à son échelle ; fichier de cache au nom du détecteur ; sans la variable, ni onnxruntime ni réseau ne sont chargés |
 | `panneaux.py` | Panneaux solaires du registre OpenPVMapper | Couche à part et **optionnelle** (`VUE3D_PANNEAUX`) : une base SQLite à index R-tree préparée à la construction de l'image ; projection EPSG:3035 → WGS84 écrite ici, vérifiée contre pyproj à 0,7 mm |
 | `static/index.html` | La page entière | HTML, CSS et JavaScript dans un seul fichier, three.js r160 |
@@ -240,8 +240,9 @@ des tableaux en base64 : entiers 32 bits en 1e-7 degré depuis `origine`
 des ouvrages ajourés, que la page dessine toujours ; le reste du bâti, allégé
 par voxels, au bouton « Nuage LiDAR ». `ajoures` liste les cleabs des
 bâtiments que leurs points remplacent, BD TOPO comme OSM, et `ajoures_detail`
-pourquoi, pour la fiche : `{sol, structure, chevauche}`, parts vues sous
-l'emprise et cleabs de l'ouvrage ajouré qu'elle chevauche, le cas échéant.
+pourquoi, pour la fiche : `{sol, structure, sous_structure, chevauche}`,
+parts vues sous l'emprise — le sol, une structure, le sol sous une structure,
+qui décide — et cleabs de l'ouvrage ajouré qu'elle chevauche, le cas échéant.
 Chacun garde un volume invisible, que le survol et le clic désignent. Version :
 `NUAGE_VERSION`.
 

@@ -19,8 +19,8 @@ végétation, que la scène dessine déjà. Chacun à sa hauteur au-dessus du
 relief RGE ALTI de la scène, que la vue lit pareil : posé sur le relief, il
 retombe à son altitude, et suit l'exagération comme les bâtiments.
 
-**Ouvrages ajourés.** Un bâtiment dont le LiDAR voit le sol à travers
-l'emprise n'est pas un volume plein : la vue dessine ses points à sa place,
+**Ouvrages ajourés.** Un bâtiment dont le LiDAR voit le sol sous une
+structure, à travers l'emprise, n'est pas un volume plein : la vue dessine ses points à sa place,
 et retire les masses de sursol qu'ils expliquent (comme les ouvrages).
 
 **Lecture.** Chaque dalle de 1 km² est un fichier COPC : un octree LAZ dont on
@@ -49,7 +49,9 @@ journal = logging.getLogger(__name__)
 
 # Format de la couche. L'incrémenter ne refait que la couche, pas les scènes.
 # 2 : la raison de chaque ouvrage ajouré (ajoures_detail), que la fiche dit.
-NUAGE_VERSION = 2
+# 3 : le sol vu sous une structure, et non plus le sol vu seul — une cour à
+#     ciel ouvert n'est plus un ouvrage ajouré.
+NUAGE_VERSION = 3
 
 COUCHE_DALLES = "IGNF_LIDAR-HD_METADONNEE:metadata"
 CLASSE_SOL = 2
@@ -64,37 +66,42 @@ BLOC_OCTETS = 256 * 1024
 
 # Ouvrages ajourés. Une emprise est jugée sur une grille de 1 m, réduite de
 # EROSION_M sur son pourtour : la BD TOPO annonce 2,5 m de précision
-# planimétrique, et le sol vu le long d'un mur n'est pas sous le bâtiment. Au
-# moins CELLULES_MIN m² doivent rester pour juger. Sur 1 356 emprises autour
-# de 21 lieux — six d'abord (tour Eiffel, Notre-Dame, Grand Palais, gare de
-# l'Est, Strasbourg, Gordes), puis l'Arc de Triomphe, La Défense, les gares
-# Saint-Lazare, les Halles et Châtelet, les centres de Lyon, Marseille,
-# Bordeaux, Toulouse, Nantes, Rennes et Carcassonne, Feyzin, Chambord et
-# Versailles —, la part du sol vu :
+# planimétrique, et le sol vu le long d'un mur n'est pas sous le bâtiment.
 #
-#   0-1 %   1-5 %   5-10 %   10-20 %   20-30 %   30-50 %   50-100 %
-#   1 145    109      36         32         8        10         16
+# Ce qui la dit ajourée : le LiDAR y voit le sol SOUS une structure — sol et
+# structure dans la même cellule — sur PART_SOL_SOUS_STRUCTURE de l'emprise.
+# Le sol vu seul ne suffisait pas : une cour à ciel ouvert, qu'une seule
+# emprise BD TOPO couvre avec ses ailes, le montre autant qu'un treillis
+# (signalé à Châlons-en-Champagne, un immeuble de 95 logements dessiné en
+# points). Sur 1 009 emprises autour de quinze lieux :
 #
-# Ce qui passe 25 % n'est pas un volume plein : les étages de la tour Eiffel
-# (32 à 83 %), la verrière et la coupole du Grand Palais (32 et 99 %), la
-# Grande Arche de La Défense (44 %), la verrière de Saint-Lazare (36 %), la
-# Canopée des Halles (58 %), l'Arc de Triomphe (25,5 %, le sol sous ses
-# arches), et des emprises qui couvrent une cour ou une verrière, vérifiées à
-# l'orthophoto (Châtelet, 32 et 42 % ; Bordeaux, 28 %). Le seuil était à 30 %
-# avant l'Arc ; sous 25 %, le plus haut est à 22 % (Nantes, Carcassonne).
+#                                          sol vu   sous une structure
+#   tour Eiffel, trois étages             32-83 %        32-83 %
+#   Grand Palais, nef et coupole          32, 99 %       32, 99 %
+#   Canopée des Halles                      58 %           53 %
+#   Grande Arche de La Défense              44 %           28 %
+#   Châtelet, cour sous verrière            32 %           26 %
+#   Arc de Triomphe, sous ses arches        25 %           25 %
+#   verrière de Saint-Lazare                36 %           21 %
+#   Châlons, ailes autour d'une cour        33 %            8 %
+#   Châtelet, Bordeaux : cours ouvertes   42, 28 %       12, 5 %
 #
-# Passent aussi des bâtiments plus récents que le relevé LiDAR, qui n'y voit
-# que le sol d'avant : créés dans la BD TOPO fin 2025, sol à 68 à 100 %,
-# structure à 0 à 11 % pour la plupart. D'où la seconde condition : le LiDAR
-# voit aussi une structure (CLASSES_BATI) sur PART_BATI_VU de l'emprise —
-# 100 % sur la tour, l'Arc et le Grand Palais, 21 à 95 % sur les cours. Le deuxième étage de la tour, sous
-# le premier, ne voit le sol qu'à 10 % : il est ajouré parce qu'il chevauche
-# un ouvrage ajouré (ajoures).
+# Au-delà de 20 %, plus que des ouvrages ajourés ; en deçà, le plus haut des
+# bâtiments ordinaires est à 16 % (Bordeaux, Châtelet, La Défense). Un
+# bâtiment plus récent que le relevé LiDAR, qui n'y voit que le sol d'avant
+# (créés fin 2025, sol vu à 93 à 100 %), n'y a pas de structure : 0 à 2 %.
+#
+# L'emprise érodée doit garder CELLULES_MIN m². Les derniers faux positifs
+# passaient 20 % sur 20 à 44 m² — ce qui reste d'une petite emprise après
+# l'érosion, qu'un décalage de la BD TOPO fait déborder sur la rue. Le plus
+# petit vrai, le sommet de la tour Eiffel, en garde 66.
+#
+# Le deuxième étage de la tour, sous le premier, ne voit le sol qu'à 10 % :
+# il est ajouré parce qu'il chevauche un ouvrage ajouré (ajoures).
 PAS_SOL_VU_M = 1.0
 EROSION_M = 2.0
-CELLULES_MIN = 20
-PART_SOL_VU = 0.25
-PART_BATI_VU = 0.2
+CELLULES_MIN = 50
+PART_SOL_SOUS_STRUCTURE = 0.2
 # Autour d'un ouvrage ajouré, ses points lui sont rattachés : la précision de
 # l'emprise, arrondie.
 MARGE_AJOURE_M = 3.0
@@ -312,12 +319,12 @@ def _polygones_l93(geometrie):
 
 
 def parts_vues(poly, grilles):
-    """(part des cellules de l'emprise érodée où le LiDAR voit le sol, part
-    où il voit une structure, nombre de cellules) ; parts None si l'emprise
-    érodée est trop petite pour juger."""
+    """(parts des cellules de l'emprise érodée où le LiDAR voit le sol, une
+    structure, et les deux à la fois — le sol sous une structure —, nombre de
+    cellules) ; parts None si l'emprise érodée est trop petite pour juger."""
     erode = poly.buffer(-EROSION_M)
     if erode.is_empty:
-        return None, None, 0
+        return None, None, None, 0
     pas = grilles["pas"]
     ny, nx = grilles["sol"].shape
     gx0, gy0, gx1, gy1 = erode.bounds
@@ -326,26 +333,27 @@ def parts_vues(poly, grilles):
     j0 = max(int((gy0 - grilles["y0"]) / pas), 0)
     j1 = min(int((gy1 - grilles["y0"]) / pas) + 1, ny)
     if i1 <= i0 or j1 <= j0:
-        return None, None, 0
+        return None, None, None, 0
     I, J = np.meshgrid(np.arange(i0, i1), np.arange(j0, j1))
     cx, cy = grilles["x0"] + (I + 0.5) * pas, grilles["y0"] + (J + 0.5) * pas
     dedans = shapely.contains_xy(erode, cx, cy)
     n = int(dedans.sum())
     if n < CELLULES_MIN:
-        return None, None, n
+        return None, None, None, n
     J, I = J[dedans], I[dedans]
-    return float(grilles["sol"][J, I].mean()), float(grilles["bati"][J, I].mean()), n
+    sol, bati = grilles["sol"][J, I], grilles["bati"][J, I]
+    return float(sol.mean()), float(bati.mean()), float((sol & bati).mean()), n
 
 
 def ajoures(batiments, grilles):
     """(cleabs des ouvrages ajourés, leurs polygones Lambert-93, et pour chacun
-    la raison : {sol, structure, chevauche} — parts vues sous l'emprise, None
-    si elle est trop petite pour juger, et cleabs de l'ouvrage ajouré qu'elle
-    chevauche quand c'est ce qui la fait retenir).
+    la raison : {sol, structure, sous_structure, chevauche} — parts vues sous
+    l'emprise (parts_vues), None si elle est trop petite pour juger, et cleabs
+    de l'ouvrage ajouré qu'elle chevauche quand c'est ce qui la fait retenir).
 
-    Ajouré : le LiDAR voit le sol à travers l'emprise ET y voit une
-    structure ; ou l'emprise chevauche celle d'un ouvrage ajouré — la BD TOPO
-    ne superpose des bâtiments que pour dire des étages."""
+    Ajouré : le LiDAR voit le sol sous une structure à travers l'emprise ; ou
+    l'emprise chevauche celle d'un ouvrage ajouré — la BD TOPO ne superpose
+    des bâtiments que pour dire des étages."""
     polys = []
     for f in (batiments or {}).get("features", []):
         cle = (f.get("properties") or {}).get("cleabs")
@@ -358,9 +366,9 @@ def ajoures(batiments, grilles):
     # (None : retenu sur sa propre mesure).
     retenus, mesures = {}, {}
     for k, (cle, poly) in enumerate(polys):
-        sol, bati, _ = parts_vues(poly, grilles)
-        mesures[k] = (sol, bati)
-        if sol is not None and sol >= PART_SOL_VU and bati >= PART_BATI_VU:
+        sol, bati, sous, _ = parts_vues(poly, grilles)
+        mesures[k] = (sol, bati, sous)
+        if sous is not None and sous >= PART_SOL_SOUS_STRUCTURE:
             retenus[k] = None
     pleins = [shapely.Polygon(p.exterior) for _, p in polys]
     arbre = shapely.STRtree(pleins)
@@ -377,10 +385,9 @@ def ajoures(batiments, grilles):
         cle = polys[k][0]
         if not cle or cle in details:
             continue
-        sol, bati = mesures[k]
         source = retenus[k]
-        details[cle] = {"sol": None if sol is None else round(sol, 2),
-                        "structure": None if bati is None else round(bati, 2),
+        details[cle] = {**{nom: None if v is None else round(v, 2) for nom, v
+                           in zip(("sol", "structure", "sous_structure"), mesures[k])},
                         "chevauche": None if source is None else polys[source][0]}
     return list(details), [polys[k][1] for k in sorted(retenus)], details
 

@@ -185,6 +185,17 @@ messages de commit et dans les commentaires des modules.
 
 ### Corrigé
 
+- **Une cour n'est plus un ouvrage ajouré.** À Châlons-en-Champagne, un
+  immeuble de 95 logements était dessiné en points : sa seule emprise BD TOPO
+  couvre ses ailes et la cour qu'elles entourent, où le LiDAR voit le sol
+  (33 %). Un bâtiment n'est plus ajouré que si le LiDAR voit le sol SOUS une
+  structure — treillis, verrière, arche : 21 à 99 % pour la tour Eiffel,
+  l'Arc de Triomphe, la Grande Arche, les verrières du Grand Palais et de
+  Saint-Lazare, la Canopée des Halles ; 5 à 12 % pour les cours ouvertes,
+  16 % au plus pour un bâtiment ordinaire, sur 1 009 emprises autour de
+  quinze lieux. Une emprise de moins de 50 m², une fois son pourtour retiré,
+  n'est plus jugée. Couche du nuage en version 3.
+
 - **La page réessaie seule quand la scène n'est pas disponible.** Après un
   503 (un service de l'IGN n'a pas répondu) ou une connexion coupée (le
   serveur relancé pendant l'attente, que Firefox annonçait par « NetworkError

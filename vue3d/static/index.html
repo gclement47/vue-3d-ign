@@ -4224,11 +4224,12 @@ function noteNuage(n) {
     if (n.chevauche) {
         return debut + `Son emprise chevauche celle d'un ouvrage ajouré (<code>${n.chevauche}</code>) : la `
             + 'BD TOPO n\'empile des bâtiments que pour dire les étages d\'une même structure. '
-            + `Sous la sienne, le LiDAR voit le sol à ${pct(n.sol)}, une structure à ${pct(n.structure)}.</div>`;
+            + `Sous la sienne, le LiDAR voit le sol sous une structure à ${pct(n.sous_structure)}.</div>`;
     }
-    return debut + `Le LiDAR voit le sol sous ${pct(n.sol)} de son emprise, et une structure sous `
-        + `${pct(n.structure)} : un volume plein ne laisse jamais voir le sol. Au-delà de 25 % de sol `
-        + 'et 20 % de structure, le bâtiment est ajouré — treillis, verrière, cour couverte.</div>';
+    return debut + `Le LiDAR voit le sol sous une structure — dans la même maille d'un mètre — sur `
+        + `${pct(n.sous_structure)} de son emprise : un volume plein ne laisse jamais voir le sol dessous, `
+        + 'une cour le laisse voir à ciel ouvert. Au-delà de 20 %, le bâtiment est ajouré — treillis, '
+        + 'verrière, arche.</div>';
 }
 
 /** Pied de chaque point sur le relief (exagéré), hauteur réelle au-dessus. */
@@ -5899,7 +5900,7 @@ function resumeBatiment(ud) {
         const n = ud.nuage;
         return `<b>${ud.p.usage_1 || ud.p.nature || 'Bâtiment'}</b><br>en points du nuage LiDAR HD `
             + (n.chevauche ? '<i>(étage d\'un ouvrage ajouré)</i>'
-                           : `<i>(sol vu sous ${Math.round(100 * n.sol)} % de l'emprise)</i>`);
+                           : `<i>(sol vu sous la structure, ${Math.round(100 * n.sous_structure)} % de l'emprise)</i>`);
     }
     if (ud.monument) {
         const m = ud.monument;

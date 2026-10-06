@@ -6,7 +6,8 @@ Pour chaque lieu, sur l'emprise par défaut :
 - ce que coûte la lecture des dalles COPC : requêtes, octets, secondes, selon
   la taille des blocs lus (--blocs) ;
 - pour chaque bâtiment de la scène, la part de son emprise érodée où le
-  LiDAR voit le sol (part_sol_vu), et les bâtiments au-delà de 5 % ;
+  LiDAR voit le sol, et le sol sous une structure (parts_vues) ; les
+  bâtiments au-delà de 5 % de sol vu ;
 - les points du bâti transmis, et ceux des ouvrages ajourés.
 
 C'est la mesure à relancer avant de toucher une constante de nuage.py.
@@ -54,18 +55,18 @@ def mesurer(nom, lat, lon, blocs, zone=None):
     for f in batiments["features"]:
         p = f["properties"]
         for poly in nuage._polygones_l93(f["geometry"]):
-            part, bati, n = nuage.parts_vues(poly, brut["grilles"])
+            part, bati, sous, n = nuage.parts_vues(poly, brut["grilles"])
             if part is not None:
-                parts.append((part, n, p, bati))
+                parts.append((part, n, p, bati, sous))
     bornes = (0.0, 0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 1.01)
     compte = collections.Counter(next(f"{a:.0%}-{b:.0%}" for a, b in zip(bornes, bornes[1:]) if a <= part < b)
-                                 for part, _, _, _ in parts)
+                                 for part, _, _, _, _ in parts)
     print(f"- {len(parts)} emprises jugées ; part du sol vu : "
           + ", ".join(f"{k} : {compte[k]}" for k in (f"{a:.0%}-{b:.0%}" for a, b in zip(bornes, bornes[1:]))))
-    for part, n, p, bati in sorted(parts, key=lambda t: -t[0]):
+    for part, n, p, bati, sous in sorted(parts, key=lambda t: -t[0]):
         if part < 0.05:
             break
-        print(f"    sol vu {part:5.0%}, structure vue {bati:5.0%} sur {n:5d} m²  {p.get('cleabs')}  "
+        print(f"    sol vu {part:5.0%}, structure {bati:5.0%}, sol sous une structure {sous:5.0%} sur {n:5d} m²  {p.get('cleabs')}  "
               f"{p.get('nature')} / {p.get('usage_1')}, {p.get('hauteur')} m, créé {str(p.get('date_creation'))[:10]}")
     print(f"    ajourés : {nuage.ajoures(batiments, brut['grilles'])[0]}")
     couche = nuage.nuage_pour_emprise(*bbox, brut, fetch_relief(*bbox), batiments, [])
