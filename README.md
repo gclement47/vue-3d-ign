@@ -10,13 +10,23 @@ la photo aérienne, sous un soleil qui suit sa vraie course.
 *Gordes (Vaucluse) au 21 décembre à 13 h : 249 bâtiments, 2 160 houppiers,
 84 m de relief. Orthophoto et données © IGN.*
 
-Aucune clé d'API, aucune base de données : un conteneur Docker, un cache disque,
-et les services publics de la [Géoplateforme](https://geoservices.ign.fr/).
+Aucune clé d'API, aucune base de données : un script (ou un conteneur
+Docker), un cache disque, et les services publics de la
+[Géoplateforme](https://geoservices.ign.fr/).
+
+![Démo : la tour Eiffel en points LiDAR, l'orbite, les ombres au fil des heures, les véhicules lus sur la photo aérienne](docs/demo/demo-readme.gif)
+
+*Quatorze secondes de la démo : la tour Eiffel en points du nuage LiDAR HD,
+l'orbite, les ombres au fil des heures, les véhicules lus sur la photo aérienne.
+La démo complète, commentée, se fabrique avec `outils/demo-video.mjs`
+(voir [Développer](#développer)).*
 
 ## Démarrer
 
+Sur un Mac, sans Docker :
+
 ```bash
-docker compose up -d
+./run_macOS_CoreML.sh
 ```
 
 Puis ouvrir <http://localhost:8080/> : sans paramètre, la page s'ouvre sur le
@@ -29,15 +39,55 @@ la densité du bâti : à 1 000 m, 4 s à Gordes et 6 s à Strasbourg sur un Mac
 M4 hors conteneur, 4 et 4,5 s dans le conteneur.
 
 La **première** ouverture d'un lieu construit sa scène en quelques secondes
-(1 s dans le conteneur pour l'emprise par défaut), le temps de
+(1 s pour l'emprise par défaut), le temps de
 télécharger une grille de hauteurs à 0,5 m, d'y mesurer les toits et d'y
 segmenter les arbres.
-Les ouvertures suivantes sont instantanées, la scène étant gardée sur disque dans
-le volume `scenes`. Le lien **↻ Reconstruire la scène** du panneau la relit à
-l'IGN, avec ses couches, au plus une fois toutes les 10 minutes. Pour changer de port : `VUE3D_PORT=9000 docker compose up -d`.
+Les ouvertures suivantes sont instantanées, la scène étant gardée sur disque
+dans `./cache`. Le lien **↻ Reconstruire la scène** du panneau la relit à
+l'IGN, avec ses couches, au plus une fois toutes les 10 minutes. Pour changer
+de port : `VUE3D_PORT=9000 ./run_macOS_CoreML.sh`.
 
-Après une mise à jour du code, il faut reconstruire l'image : le code y est
-copié, `docker compose up -d` seul relancerait l'ancienne.
+Seul prérequis : [uv](https://docs.astral.sh/uv/) (`brew install uv`) ou
+`python3.12`. Au premier lancement, le script prépare tout seul :
+
+- **le `.venv`**, en Python 3.12 comme l'image Docker. Il refuse un `.venv`
+  dans une autre version : en 3.14, la segmentation des arbres rend
+  0 houppier sans la moindre erreur. À chaque lancement, il y installe les
+  versions exactes des dépendances, une fraction de seconde quand elles y
+  sont déjà ;
+- **les réseaux** des véhicules dans `./modeles`
+  (`outils/preparer_modeles.sh`) : environ 1 Go à télécharger dans un
+  environnement jetable, effacé ensuite, et une minute sur un Mac M4. Le
+  script active les deux détecteurs (`VUE3D_VEHICULES=tous`), parce que
+  c'est sa raison d'être : sur un Mac, ils tournent sur CoreML, que le
+  conteneur n'atteint pas (voir plus bas). `VUE3D_VEHICULES=aucun
+  ./run_macOS_CoreML.sh` s'en passe, et n'exporte rien.
+
+Il prend les mêmes variables que `docker-compose.yml` (`VUE3D_VEHICULES`,
+`VUE3D_PANNEAUX=oui`, `VUE3D_PORT`), et `VUE3D_MOTEUR`. Ses fichiers sont à
+côté du dépôt, ignorés par git : `./cache` pour les scènes, `./modeles` pour
+les réseaux. Après un `git pull`, le relancer suffit : il remet les
+dépendances à jour. Pour repartir de zéro, scènes comprises : `rm -rf
+./cache`, et chaque lieu sera reconstruit à sa première ouverture.
+
+Le service calcule les toitures sur un bassin de processus, un par cœur et
+seize au plus, qui naît à son démarrage (`VUE3D_TOITS_PROCESSUS=1` pour s'en
+passer, au prix de toitures cinq à dix fois plus lentes sur les grandes
+scènes). Chacun occupe 100 à 280 Mo sous macOS après de grandes scènes,
+environ 30 Mo dans le conteneur.
+
+### Avec Docker
+
+Le même service, sur le même port, partout où Docker tourne :
+
+```bash
+docker compose up -d
+```
+
+Les scènes sont gardées dans le volume `scenes`. Pour changer de port :
+`VUE3D_PORT=9000 docker compose up -d`. Après une mise à jour du code, il
+faut reconstruire l'image : le code y est copié, `docker compose up -d` seul
+relancerait l'ancienne.
 
 ```bash
 docker compose up -d --build
@@ -51,65 +101,36 @@ docker compose up -d --build
 ```
 
 `-v` supprime le volume `scenes` : chaque lieu sera reconstruit à sa première
-ouverture.
-
-Le service calcule les toitures sur un bassin de processus, un par cœur et
-seize au plus, qui naît à son démarrage (`VUE3D_TOITS_PROCESSUS=1` pour s'en
-passer, au prix de toitures cinq à dix fois plus lentes sur les grandes
-scènes). Chacun occupe environ 30 Mo dans le conteneur, 100 à 280 Mo sous
-macOS après de grandes scènes.
-
-### Deux scripts de lancement
-
-```bash
-./run_docker.sh                              # Docker, depuis zéro, les deux détecteurs
-./run_macOS_CoreML.sh                        # sans Docker, les deux détecteurs sur CoreML
-```
-
-`run_docker.sh` enchaîne les deux commandes ci-dessus avec
+ouverture. `run_docker.sh` enchaîne ces deux commandes avec
 `VUE3D_VEHICULES=tous` : il **efface les scènes du volume** à chaque
 lancement, puis reconstruit l'image avec les deux détecteurs.
 
-`run_macOS_CoreML.sh` lance le même service sans Docker, avec le Python du
-`.venv`, sur le port 8080 : c'est sur un Mac la seule façon de faire tourner
-les détecteurs sur CoreML (voir plus bas), que le conteneur n'atteint pas.
-Il prend les mêmes variables que `docker-compose.yml` (`VUE3D_VEHICULES`,
-mais `tous` par défaut ; `VUE3D_PANNEAUX=oui` ; `VUE3D_PORT`), et `VUE3D_MOTEUR`. Ses
-fichiers sont à côté du dépôt, ignorés par git : `./cache` pour les scènes,
-`./modeles` pour les réseaux.
+```bash
+./run_docker.sh                              # Docker, depuis zéro, les deux détecteurs
+```
 
-Seul prérequis : [uv](https://docs.astral.sh/uv/) (`brew install uv`) ou
-`python3.12`. Au premier lancement, le script prépare tout seul :
-
-- **le `.venv`**, en Python 3.12 comme l'image. Il refuse un `.venv` dans une
-  autre version : en 3.14, la segmentation des arbres rend 0 houppier sans
-  la moindre erreur. À chaque lancement, il y installe les versions exactes
-  des dépendances, une fraction de seconde quand elles y sont déjà ;
-- **les réseaux** dans `./modeles` (`outils/preparer_modeles.sh`), les mêmes
-  que ceux de l'image Docker : environ 1 Go à télécharger dans un
-  environnement jetable, effacé ensuite, et une minute sur un Mac M4.
-
-Si une image a déjà été construite avec `VUE3D_VEHICULES`, copier ses
-réseaux est plus rapide, et ses scènes avec :
+Le conteneur et le script macOS ne peuvent pas écouter le même port : le
+script refuse de démarrer, en disant quoi faire, si le port est déjà écouté
+(`docker compose stop` libère celui du conteneur ; revenir à Docker : Ctrl-C,
+puis `docker compose start`). Les réseaux et les scènes d'une image déjà
+construite se copient vers le script, ce qui évite l'export et la
+reconstruction :
 
 ```bash
 docker cp vue-3d-ign-vue3d-1:/modeles ./modeles
 docker cp vue-3d-ign-vue3d-1:/cache ./cache       # facultatif : les scènes déjà construites
 ```
 
-Le script refuse de démarrer, en disant quoi faire, si le port est déjà
-écouté : `docker compose stop` libère celui du conteneur. Revenir à Docker :
-Ctrl-C, puis `docker compose start`.
-
 ### Les véhicules et les piscines, en option
 
 L'orthophoto montre des véhicules et des piscines ; un réseau de neurones
-peut les y lire, et la vue les pose en volume. C'est une option de
-construction de l'image, désactivée par défaut :
+peut les y lire, et la vue les pose en volume. C'est une option : `tous`
+par défaut dans `run_macOS_CoreML.sh`, désactivée dans l'image Docker, où
+c'est un choix de construction :
 
 ```bash
-docker compose down -v
-VUE3D_VEHICULES=rtmdet docker compose up -d --build
+VUE3D_VEHICULES=rtmdet ./run_macOS_CoreML.sh          # aucun | rtmdet | yolo | tous
+docker compose down -v && VUE3D_VEHICULES=rtmdet docker compose up -d --build
 ```
 
 | `VUE3D_VEHICULES` | Détecteur | Véhicules à Gordes | à Carcassonne | Piscines | Calcul par lieu |
@@ -143,10 +164,10 @@ Aucun des deux réseaux ne suffit partout : `rtmdet` lit mal un parking serré,
   1,2 Go sur l'emprise par défaut et 2 Go en zone de 1 000 m, contre 0,4 et
   0,9 Go sans détecteur : plusieurs tuiles passent à la fois dans chaque
   réseau.
-- **Changer d'option reconstruit l'image** (une par détecteur) et recalcule la
-  couche des véhicules de chaque lieu ; les scènes, elles, restent en cache.
-  Pour garder le choix d'un lancement à l'autre, l'inscrire dans un fichier
-  `.env` à côté de `docker-compose.yml`.
+- **Changer d'option recalcule la couche des véhicules** de chaque lieu, et
+  sous Docker reconstruit l'image (une par détecteur) ; les scènes, elles,
+  restent en cache. Pour garder le choix d'un lancement à l'autre, l'inscrire
+  dans un fichier `.env` à côté de `docker-compose.yml`.
 - **Ce sont les véhicules du jour de la prise de vue**, et seulement ceux que
   le réseau a reconnus : voir [Limites](#limites).
 - **La variable s'appelle `VUE3D_VEHICULES` et apporte aussi les piscines** :
@@ -163,16 +184,19 @@ installations résidentielles en toiture, chacune avec son polygone, sa
 surface, sa puissance estimée et l'année de la photo. Ici aucun réseau ne
 tourne : la construction de l'image télécharge le registre (211 Mo) et en
 fait une base à index spatial (119 Mo), qu'une scène lit en quelques
-millisecondes.
+millisecondes. Sans Docker, c'est `outils/preparer_panneaux.py` qui prépare
+la base dans `./donnees`.
 
 ```bash
+VUE3D_PANNEAUX=oui ./run_macOS_CoreML.sh
 VUE3D_PANNEAUX=oui docker compose up -d --build
 ```
 
-Les deux options se combinent, chacune avec son image. Tout à la fois —
-véhicules des deux détecteurs, piscines et panneaux solaires :
+Les deux options se combinent, chacune avec son image sous Docker. Tout à
+la fois — véhicules des deux détecteurs, piscines et panneaux solaires :
 
 ```bash
+VUE3D_PANNEAUX=oui ./run_macOS_CoreML.sh              # les deux détecteurs y sont déjà
 VUE3D_VEHICULES=tous VUE3D_PANNEAUX=oui docker compose up -d --build
 ```
 
@@ -185,7 +209,7 @@ année. Ni centrales au sol ni grandes toitures : le registre s'arrête à
 36 kWc. Le registre ne dit pas la hauteur : chaque polygone est posé sur le
 toit tel que la vue le dessine.
 
-Sans Docker, **avec Python 3.12**, celui de l'image Docker :
+À la main, sans le script ni Docker, **avec Python 3.12**, celui de l'image :
 
 ```bash
 python3.12 -m venv .venv && . .venv/bin/activate
@@ -193,10 +217,10 @@ pip install -r requirements.txt
 VUE3D_CACHE=./cache flask --app vue3d.app run --port 8080
 ```
 
-Les véhicules, sans Docker : exporter les réseaux une fois (dans un
+Les véhicules, à la main : exporter les réseaux une fois (dans un
 environnement jetable, avec les versions de l'étage `export` du
-`Dockerfile`), puis lancer le serveur avec le moteur d'inférence.
-`run_macOS_CoreML.sh` fait les deux.
+`Dockerfile`), puis lancer le serveur avec le moteur d'inférence. C'est ce
+que `run_macOS_CoreML.sh` fait.
 
 ```bash
 outils/preparer_modeles.sh rtmdet ./modeles           # rtmdet | yolo | tous
@@ -562,6 +586,23 @@ npm install puppeteer-core
 node outils/essai-navigateur.mjs "http://localhost:8080/?lat=43.9116&lon=5.2003" capture.png
 node outils/verifier-recherche.mjs     # la recherche d'un lieu, sous Node, sans réseau
 ```
+
+La démo filmée se tourne de la même façon, dans un Chrome sans écran, sur un
+serveur qui tourne avec la couche des véhicules : la caméra suit un scénario
+(la tour Eiffel en points LiDAR, puis orbite, toits, végétation, course du
+soleil, véhicules, piscines), chaque image est capturée à horloge figée, et
+ffmpeg assemble la vidéo, muette, légendes incrustées.
+
+```bash
+node outils/demo-video.mjs youtube     # docs/demo/demo-youtube.mp4 (1080p, panneau visible)
+node outils/demo-video.mjs linkedin    # docs/demo/demo-linkedin.mp4 (1080×1350, vue seule)
+node outils/demo-video.mjs readme      # docs/demo/demo-readme.gif, celui ci-dessus
+```
+
+Pour une voix off, enregistrer les phrases de `docs/demo/demo-voix-off.txt`,
+une par séquence, et donner le dossier par `VOIX_DOSSIER=…` : chaque
+séquence prend la durée de sa phrase. `VOIX="Audrey (Premium)"` prend à la
+place une voix de synthèse de macOS.
 
 ## Licence
 

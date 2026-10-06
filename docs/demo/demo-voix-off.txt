@@ -1,0 +1,35 @@
+Voix off de la démo, une phrase par séquence : à enregistrer sous le nom de la séquence
+(titre.m4a, orbite.m4a, …) dans un dossier donné par VOIX_DOSSIER à outils/demo-video.mjs.
+
+titre
+  Vue 3D IGN reconstruit en trois dimensions n’importe quel lieu de France métropolitaine, à partir des seules données ouvertes de l’IGN.
+
+eiffel
+  Un ouvrage ajouré n’a pas de volume dans la BD TOPO. La tour Eiffel, que la base extrude en blocs, est dessinée en points du nuage LiDAR HD, des arches à l’antenne.
+
+nuage
+  Le bouton Nuage LiDAR montre tout le bâti en points, tel que l’avion l’a mesuré.
+
+orbite
+  Le mode orbite fait tourner la vue autour du point, à la vitesse que l’on choisit.
+
+toits
+  Les toits sont mesurés dans le nuage LiDAR HD : gouttière, faîtage, et des pans ajustés sur les points, publiés seulement quand le volume est fermé.
+
+vegetation
+  Chaque arbre est segmenté sur la grille de hauteur à cinquante centimètres : ici, deux mille cent soixante houppiers, chacun à sa hauteur, avec sa couronne.
+
+heure
+  Le soleil est calculé pour le lieu, la date et l’heure. Les ombres portées suivent sa course, du matin au soir.
+
+saison
+  Et sa saison : au 21 décembre, le soleil rase le relief et les ombres s’allongent ; au 21 juin, il est haut.
+
+vehicules
+  Un réseau de neurones lit la photo aérienne : les véhicules sont posés là où ils étaient le jour de la prise de vue, à leurs dimensions.
+
+piscines
+  Les piscines, lues de la même façon, prennent la couleur de leur eau ce jour-là.
+
+fin
+  Vue 3D IGN est un logiciel libre, sous licence MIT. Le code est sur GitHub : ysimonx/vue-3d-ign.

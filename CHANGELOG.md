@@ -15,6 +15,17 @@ messages de commit et dans les commentaires des modules.
 
 ### Ajouté
 
+- **Une démo filmée.** `outils/demo-video.mjs` tourne la démo de la page
+  dans un Chrome sans écran — la tour Eiffel en points LiDAR d'abord, puis
+  orbite, toits mesurés, végétation, course du soleil et saisons, véhicules
+  et piscines, l'abbaye du Mont-Saint-Michel — en trois formats : YouTube (1080p, panneau
+  visible), LinkedIn (1080×1350, vue seule, texte court) et un
+  GIF de quatorze secondes dans le README. Chaque image est
+  capturée à horloge figée (requestAnimationFrame et performance.now repris
+  à la page), si bien que l'orbite et l'ombre figée en mouvement sont celles
+  de la page, à la cadence exacte de la vidéo. Muette : une voix off, la
+  vôtre ou de synthèse, se monte sur demande, une phrase par séquence.
+
 - **Le nuage de points LiDAR HD, et les ouvrages ajourés tels qu'ils sont
   mesurés.** Une nouvelle couche (`/api/nuage`) lit, après la scène, les
   points du bâti dans les dalles LiDAR HD de l'IGN — bâtiments, tabliers,

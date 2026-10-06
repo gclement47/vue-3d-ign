@@ -1,0 +1,509 @@
+// Démo filmée de la page : un Chrome sans écran charge des lieux, la caméra
+// suit un scénario (orbite, toits, végétation, course du soleil, véhicules,
+// piscines, nuage LiDAR), et chaque image est capturée à horloge figée, puis
+// ffmpeg assemble la vidéo et, sur demande, une voix off.
+//
+//   npm install puppeteer-core
+//   node outils/demo-video.mjs youtube     # 1920×1080, panneau visible, légendes incrustées
+//   node outils/demo-video.mjs linkedin    # 1080×1350, vue seule, texte court
+//   node outils/demo-video.mjs readme      # GIF muet de quelques secondes, pour le README
+//
+// Sans voix par défaut : les légendes incrustées portent le texte, et les
+// voix de synthèse de macOS, jugées à l'écoute, n'ont pas leur place dans la
+// vidéo. Le texte à lire est écrit dans SORTIE (demo-voix-off.txt),
+// une phrase par séquence ; VOIX_DOSSIER désigne un dossier d'enregistrements
+// nommés comme les séquences (titre.m4a, orbite.m4a, …), montés sur la
+// vidéo, chacun donnant sa durée à sa séquence. VOIX="Audrey (Premium)"
+// prend à la place une voix de `say` (les voix Premium ou Enhanced
+// s'installent dans Réglages Système › Accessibilité › Contenu énoncé).
+// CHROME, VUE3D_URL (http://localhost:8080) et SORTIE (docs/demo) sont les
+// autres réglages. Un serveur doit tourner, avec les véhicules (VUE3D_VEHICULES) ;
+// les lieux filmés sont construits à la première demande, ce qui peut
+// prendre plusieurs minutes pour le nuage de la tour Eiffel.
+//
+// Pourquoi une horloge figée : le rendu est capturé image par image (84 ms
+// la capture JPEG en 1080p, mesuré), bien plus lent que la cadence de la
+// vidéo. requestAnimationFrame et performance.now sont donc repris à la
+// page : chaque pas avance le temps de 1/30 s et exécute la boucle de rendu,
+// puis l'image est prise. L'orbite, l'inertie et la carte d'ombre figée en
+// mouvement sont ceux de la page, à la vitesse exacte de la vidéo, quelle
+// que soit celle de la machine.
+import puppeteer from 'puppeteer-core';
+import { spawn, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+
+const FORMAT = process.argv[2] || 'youtube';
+const BASE = (process.env.VUE3D_URL || 'http://localhost:8080').replace(/\/$/, '');
+const VOIX = process.env.VOIX || '';
+const VOIX_DOSSIER = process.env.VOIX_DOSSIER || '';
+const AVEC_VOIX = Boolean(VOIX || VOIX_DOSSIER);
+const SORTIE = process.env.SORTIE || 'docs/demo';
+const CHROME = process.env.CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const FPS = 30;
+const DEPOT = 'github.com/ysimonx/vue-3d-ign';
+
+const FORMATS = {
+    // Le panneau de la page reste visible : c'est l'application telle quelle.
+    youtube: { largeur: 1920, hauteur: 1080, panneau: true, voix: AVEC_VOIX, texte: 'long', police: 30 },
+    // Lu sur un téléphone, souvent sans le son : vue seule, texte court et gros.
+    linkedin: { largeur: 1080, hauteur: 1350, panneau: false, voix: AVEC_VOIX, texte: 'court', police: 40 },
+    // Un GIF de quelques secondes dans le README, sans son.
+    readme: { largeur: 1280, hauteur: 720, panneau: false, voix: false, texte: 'court', police: 34, gif: true },
+};
+const fmt = FORMATS[FORMAT];
+if (!fmt) { console.error(`format inconnu : ${FORMAT} (youtube | linkedin | readme)`); process.exit(2); }
+
+const TRAVAIL = path.join(os.tmpdir(), 'vue3d-demo', FORMAT);
+fs.rmSync(TRAVAIL, { recursive: true, force: true });
+fs.mkdirSync(TRAVAIL, { recursive: true });
+fs.mkdirSync(SORTIE, { recursive: true });
+
+// --- Lieux ------------------------------------------------------------------
+const GORDES = { lat: 43.9116, lon: 5.2003 };
+const EIFFEL = { lat: 48.8583, lon: 2.2942, zone: 1000, tour: { lat: 48.85837, lon: 2.29448 } };
+const MONT = { lat: 48.6360, lon: -1.5113, abbaye: { lat: 48.6361, lon: -1.5115 } };
+const urlDe = l => `${BASE}/?lat=${l.lat}&lon=${l.lon}${l.zone ? `&zone=${l.zone}` : ''}`;
+
+// --- Scénario ---------------------------------------------------------------
+// Chaque séquence : le lieu, le texte lu (long) et sa forme courte, la durée
+// minimale à l'écran (la voix l'allonge au besoin), et ce que fait la caméra.
+// `gif` est la durée, plus courte, du GIF du README. `cadre` décrit une prise de vue : le point visé, la distance de la caméra,
+// son azimut (d'où elle regarde, 0 = du nord) et son élévation, en degrés.
+const SEQUENCES = [
+    {
+        // La tour d'abord, seule à l'écran : le titre ne vient qu'après trois
+        // secondes de vue libre, le voile de la carte cacherait le plus
+        // spectaculaire.
+        id: 'titre', lieu: EIFFEL, duree: 9, gif: 4, formats: ['youtube', 'linkedin', 'readme'],
+        long: 'Vue 3D IGN reconstruit en trois dimensions n’importe quel lieu de France métropolitaine, à partir des seules données ouvertes de l’IGN.',
+        court: 'N’importe quel lieu de France, en 3D, depuis les données ouvertes de l’IGN',
+        carte: { titre: 'Vue 3D IGN', sous: 'La France en 3D, à partir des données ouvertes de l’IGN' }, carteDifferee: true,
+        async jouer(s) {
+            const debut = Math.min(3, s.duree * 0.4);
+            await s.orbiter(s.duree, { cadre: { ...EIFFEL.tour, hauteur: 120, distance: 620, azimut: 150, elevation: 18 }, vitesse: 5,
+                                       fn: t => s.carte(Math.min(1, Math.max(0, (t * s.duree - debut) / FONDU_S))) });
+        },
+    },
+    {
+        id: 'eiffel', lieu: EIFFEL, duree: 12, formats: ['youtube', 'linkedin'],
+        long: 'Un ouvrage ajouré n’a pas de volume dans la BD TOPO. La tour Eiffel, que la base extrude en blocs, est dessinée en points du nuage LiDAR HD, des arches à l’antenne.',
+        court: 'La tour Eiffel en points du nuage LiDAR HD, des arches à l’antenne',
+        async jouer(s) {
+            await s.glisser(s.duree * 0.4, null, { ...EIFFEL.tour, hauteur: 120, distance: 520, azimut: 230, elevation: 12 });
+            await s.orbiter(s.duree * 0.6, { vitesse: 6 });
+        },
+    },
+    {
+        id: 'nuage', lieu: EIFFEL, duree: 9, formats: ['youtube', 'linkedin'],
+        long: 'Le bouton Nuage LiDAR montre tout le bâti en points, tel que l’avion l’a mesuré.',
+        court: 'Tout le bâti en points LiDAR, d’un bouton',
+        async jouer(s) {
+            await s.basculer('t-nuage');
+            await s.orbiter(s.duree, { cadre: { ...EIFFEL.tour, hauteur: 60, distance: 650, azimut: 230, elevation: 30 }, vitesse: 5 });
+            await s.basculer('t-nuage');
+        },
+    },
+    {
+        // Caméra au sud-ouest, à 60° du soleil de midi (azimut 150 à 180°) :
+        // dans l'axe du soleil, les ombres se cachent derrière les bâtiments et
+        // la vue paraît plate ; plus bas que 35°, le ciel noir mange le cadre.
+        id: 'sources', lieu: GORDES, duree: 9, formats: ['youtube'],
+        long: 'On donne une adresse, un lieu ou des coordonnées. Ici le village de Gordes : la BD TOPO fournit les bâtiments, le RGE ALTI le relief, et la photo aérienne habille le sol.',
+        court: 'Bâtiments de la BD TOPO, relief du RGE ALTI, photo aérienne au sol',
+        async jouer(s) {
+            await s.glisser(s.duree, { ...GORDES, distance: 330, azimut: 235, elevation: 40 },
+                                     { ...GORDES, distance: 230, azimut: 250, elevation: 34 });
+        },
+    },
+    {
+        id: 'orbite', lieu: GORDES, duree: 8, gif: 3, formats: ['youtube', 'linkedin', 'readme'],
+        long: 'Le mode orbite fait tourner la vue autour du point, à la vitesse que l’on choisit.',
+        court: 'Mode orbite, à la vitesse choisie',
+        async jouer(s) {
+            await s.orbiter(s.duree * 0.45, { cadre: { ...GORDES, distance: 230, azimut: 250, elevation: 34 }, vitesse: 5 });
+            await s.orbiter(s.duree * 0.55, { vitesse: 14 });
+        },
+    },
+    {
+        id: 'toits', lieu: GORDES, duree: 11, formats: ['youtube', 'linkedin'],
+        long: 'Les toits sont mesurés dans le nuage LiDAR HD : gouttière, faîtage, et des pans ajustés sur les points, publiés seulement quand le volume est fermé.',
+        court: 'Toits mesurés au LiDAR HD : gouttière, faîtage, pans',
+        async jouer(s) {
+            const cadre = { ...GORDES, distance: 90, azimut: 200, elevation: 35 };
+            await s.glisser(s.duree * 0.35, null, cadre);
+            // Sans la mesure, puis avec : la différence se voit sur les faîtages.
+            await s.basculer('t-mesure'); await s.orbiter(s.duree * 0.25, { vitesse: 3 });
+            await s.basculer('t-mesure'); await s.orbiter(s.duree * 0.40, { vitesse: 3 });
+        },
+    },
+    {
+        id: 'vegetation', lieu: GORDES, duree: 10, formats: ['youtube', 'linkedin'],
+        long: 'Chaque arbre est segmenté sur la grille de hauteur à cinquante centimètres : ici, deux mille cent soixante houppiers, chacun à sa hauteur, avec sa couronne.',
+        court: 'Chaque arbre segmenté sur la grille de hauteur : 2 160 houppiers',
+        async jouer(s) {
+            await s.basculer('t-veg');                    // sans, d'abord
+            await s.glisser(s.duree * 0.3, null, { ...GORDES, distance: 260, azimut: 240, elevation: 30 });
+            await s.basculer('t-veg');                    // puis les arbres apparaissent
+            await s.orbiter(s.duree * 0.7, { vitesse: 5 });
+        },
+    },
+    {
+        id: 'heure', lieu: GORDES, duree: 11, gif: 4, formats: ['youtube', 'linkedin', 'readme'],
+        long: 'Le soleil est calculé pour le lieu, la date et l’heure. Les ombres portées suivent sa course, du matin au soir.',
+        court: 'Les ombres suivent la course du soleil, heure par heure',
+        async jouer(s) {
+            await s.glisser(1.5, null, { ...GORDES, distance: 260, azimut: 240, elevation: 30 });
+            await s.heures(s.duree - 1.5, 7.5, 19.5);
+        },
+    },
+    {
+        id: 'saison', lieu: GORDES, duree: 10, formats: ['youtube', 'linkedin'],
+        long: 'Et sa saison : au 21 décembre, le soleil rase le relief et les ombres s’allongent ; au 21 juin, il est haut.',
+        court: '21 décembre : soleil rasant · 21 juin : soleil haut',
+        async jouer(s) {
+            await s.saison(12, 21, 14); await s.orbiter(s.duree * 0.5, { vitesse: 3 });
+            await s.saison(6, 21, 14); await s.orbiter(s.duree * 0.5, { vitesse: 3 });
+        },
+    },
+    {
+        id: 'vehicules', lieu: GORDES, duree: 11, gif: 3, formats: ['youtube', 'linkedin', 'readme'],
+        long: 'Un réseau de neurones lit la photo aérienne : les véhicules sont posés là où ils étaient le jour de la prise de vue, à leurs dimensions.',
+        court: 'Véhicules lus sur la photo aérienne par un réseau de neurones',
+        async jouer(s) {
+            await s.saison(null);                        // retour à aujourd'hui, midi
+            const ou = await s.amas('vehicules');
+            await s.glisser(s.duree * 0.4, null, { ...ou, distance: 70, azimut: 210, elevation: 45 });
+            await s.survoler(ou.exemple, s.duree * 0.6);
+        },
+    },
+    {
+        id: 'piscines', lieu: GORDES, duree: 8, formats: ['youtube', 'linkedin'],
+        long: 'Les piscines, lues de la même façon, prennent la couleur de leur eau ce jour-là.',
+        court: 'Les piscines aussi, à la couleur de leur eau',
+        async jouer(s) {
+            const ou = await s.amas('piscines');
+            await s.glisser(s.duree * 0.45, null, { ...ou, distance: 80, azimut: 160, elevation: 40 });
+            await s.survoler(ou.exemple, s.duree * 0.55);
+        },
+    },
+    {
+        id: 'mont', lieu: MONT, duree: 9, formats: ['youtube'],
+        long: 'Hors couverture LiDAR, un monument est repris au modèle 3D d’OpenStreetMap : l’abbaye du Mont-Saint-Michel, flèche comprise.',
+        court: 'Hors LiDAR, l’abbaye vient du modèle 3D d’OpenStreetMap',
+        async jouer(s) { await s.orbiter(s.duree, { cadre: { ...MONT.abbaye, hauteur: 40, distance: 420, azimut: 200, elevation: 22 }, vitesse: 5 }); },
+    },
+    {
+        id: 'fin', lieu: MONT, duree: 7, formats: ['youtube', 'linkedin'],
+        long: `Vue 3D IGN est un logiciel libre, sous licence MIT. Le code est sur GitHub : ${DEPOT.replace('github.com/', '')}.`,
+        court: 'Logiciel libre (MIT) · github.com/ysimonx/vue-3d-ign',
+        carte: { titre: 'Vue 3D IGN', sous: `Logiciel libre (MIT) · ${DEPOT}\nDonnées © IGN, Licence Ouverte 2.0` },
+        async jouer(s) { await s.orbiter(s.duree, { vitesse: 4 }); },
+    },
+];
+
+// --- Voix -------------------------------------------------------------------
+// Avec une voix, les phrases sont dites avant le tournage : la durée de chaque
+// séquence est le plus long de sa durée minimale et de sa phrase, plus une
+// respiration. Sans voix, la durée minimale, qui laisse lire la légende.
+const RESPIRATION_S = 0.7;
+const dureeAudio = f => Number(spawnSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', f]).stdout);
+const sequences = SEQUENCES.filter(q => q.formats.includes(FORMAT));
+for (const q of sequences) {
+    q.legende = fmt.texte === 'long' ? q.long : q.court;
+    if (fmt.gif && q.gif) q.duree = q.gif;
+    if (fmt.voix) {
+        const enregistre = ['m4a', 'wav', 'aiff', 'mp3'].map(e => path.join(VOIX_DOSSIER, `${q.id}.${e}`)).find(f => VOIX_DOSSIER && fs.existsSync(f));
+        if (enregistre) q.audio = enregistre;
+        else if (!VOIX) { console.error(`aucun enregistrement pour « ${q.id} » dans ${VOIX_DOSSIER}`); process.exit(1); }
+        else {
+            q.audio = path.join(TRAVAIL, `${q.id}.aiff`);
+            const r = spawnSync('say', ['-v', VOIX, '-o', q.audio, q.long]);
+            if (r.status !== 0) { console.error(`say a échoué pour « ${q.id} » : ${r.stderr}`); process.exit(1); }
+        }
+        q.duree = Math.max(q.duree, dureeAudio(q.audio) + RESPIRATION_S);
+    }
+}
+if (!fmt.gif) {
+    fs.writeFileSync(path.join(SORTIE, 'demo-voix-off.txt'),
+        'Voix off de la démo, une phrase par séquence : à enregistrer sous le nom de la séquence\n'
+        + '(titre.m4a, orbite.m4a, …) dans un dossier donné par VOIX_DOSSIER à outils/demo-video.mjs.\n\n'
+        + sequences.map(q => `${q.id}\n  ${q.long}\n`).join('\n'));
+}
+console.log(`${FORMAT} : ${sequences.length} séquences, ${sequences.reduce((a, q) => a + q.duree, 0).toFixed(0)} s`);
+
+// --- Chrome -----------------------------------------------------------------
+const navigateur = await puppeteer.launch({
+    executablePath: CHROME, headless: 'new',
+    // Le rendu doit passer par la carte graphique : SwiftShader rend 4 images
+    // par seconde à Gordes, Metal 60.
+    args: ['--ignore-gpu-blocklist', '--use-angle=metal', `--window-size=${fmt.largeur},${fmt.hauteur}`],
+});
+const page = await navigateur.newPage();
+await page.setViewport({ width: fmt.largeur, height: fmt.hauteur, deviceScaleFactor: 1 });
+const erreurs = [];
+page.on('pageerror', e => erreurs.push('pageerror: ' + e.message));
+page.on('console', m => { if (m.type() === 'error') erreurs.push('console: ' + m.text()); });
+page.on('response', r => { if (r.status() >= 400) erreurs.push(`HTTP ${r.status()} ${r.url().slice(0, 120)}`); });
+
+// Horloge figée : voir l'en-tête. Posée avant tout script de la page.
+await page.evaluateOnNewDocument(() => {
+    const vraiRAF = window.requestAnimationFrame.bind(window);
+    const vraiNow = performance.now.bind(performance);
+    let manuel = false, horloge = 0, file = [];
+    window.requestAnimationFrame = cb => { if (!manuel) return vraiRAF(cb); file.push(cb); return file.length; };
+    performance.now = () => manuel ? horloge : vraiNow();
+    window.__manuel = () => { horloge = vraiNow(); manuel = true; };
+    window.__pret = () => file.length > 0;
+    window.__pas = dt => { horloge += dt; const cbs = file; file = []; for (const cb of cbs) cb(horloge); };
+});
+
+// La page est servie telle quelle, à deux ajouts près : les objets de la
+// scène exposés au script (window.__demo), et le style des légendes.
+const STYLE_DEMO = `
+    ${fmt.panneau ? '' : '#panel, #hint { display:none !important; }'}
+    #tip { font-size:${Math.round(fmt.police * 0.55)}px !important; line-height:1.35 !important; max-width:${fmt.police * 12}px; }
+    #demo-legende { position:absolute; left:50%; bottom:7%; transform:translateX(-50%); z-index:5;
+        max-width:84%; padding:${fmt.police * 0.45}px ${fmt.police * 0.8}px; border-radius:${fmt.police * 0.35}px;
+        background:rgba(18,20,24,.82); color:#fff; font:500 ${fmt.police}px/1.3 system-ui, -apple-system, "Helvetica Neue", sans-serif;
+        text-align:center; text-wrap:balance; opacity:0; pointer-events:none; }
+    #demo-carte { position:absolute; inset:0; z-index:4; display:flex; flex-direction:column; align-items:center;
+        justify-content:center; gap:${fmt.police * 0.6}px; background:rgba(18,20,24,.62); color:#fff; opacity:0; pointer-events:none;
+        font-family:system-ui, -apple-system, "Helvetica Neue", sans-serif; text-align:center; padding:0 8%; }
+    #demo-carte h1 { margin:0; font-size:${fmt.police * 2.6}px; font-weight:700; letter-spacing:-.02em; }
+    #demo-carte p { margin:0; font-size:${fmt.police * 1.1}px; opacity:.9; white-space:pre-line; line-height:1.4; }
+`;
+const HTML_DEMO = '<div id="demo-carte"><h1></h1><p></p></div><div id="demo-legende"></div>';
+await page.setRequestInterception(true);
+page.on('request', async r => {
+    if (r.resourceType() !== 'document') return r.continue();
+    const rep = await fetch(r.url());
+    let html = await rep.text();
+    const ancre = 'requestAnimationFrame(boucle);\n</script>';
+    if (!html.includes(ancre)) { console.error('page inattendue : la boucle de rendu est introuvable'); process.exit(1); }
+    html = html.replace(ancre, `window.__demo = { THREE, camera, controls, renderer, scene, ySol, majSoleil, DATE_SIMULEE,
+            LON0, LAT0, M_PAR_DEGRE_LON, M_PAR_DEGRE_LAT, vegChargee: () => vegChargee };\n${ancre}`)
+               .replace('</style>', STYLE_DEMO + '</style>')
+               .replace('<div id="tip"></div>', '<div id="tip"></div>' + HTML_DEMO);
+    r.respond({ status: rep.status, contentType: 'text/html; charset=utf-8', body: html });
+});
+
+// --- Encodage au fil de l'eau ------------------------------------------------
+// Les images partent dans ffmpeg par un tube : 5 000 JPEG ne tiennent pas sur
+// disque pour rien.
+const VIDEO_MUETTE = path.join(TRAVAIL, 'muette.mp4');
+const ffmpeg = spawn('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'image2pipe', '-framerate', String(FPS), '-i', '-',
+    '-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-pix_fmt', 'yuv420p', VIDEO_MUETTE], { stdio: ['pipe', 'inherit', 'inherit'] });
+let images = 0;
+async function capturer() {
+    const jpeg = await page.screenshot({ type: 'jpeg', quality: 92 });
+    if (!ffmpeg.stdin.write(jpeg)) await new Promise(r => ffmpeg.stdin.once('drain', r));
+    images++;
+}
+
+// --- Prises de vue ----------------------------------------------------------
+const lisser = t => t * t * (3 - 2 * t);
+// Clic par le DOM : le panneau peut être masqué (formats sans panneau).
+const cliquer = id => page.$eval('#' + id, b => b.click());
+const allume = id => page.$eval('#' + id, b => b.classList.contains('on'));
+const RAD = Math.PI / 180;
+let lieuCourant = null;
+
+/** Charge un lieu, attend la scène et toutes ses couches, puis fige l'horloge. */
+async function charger(lieu) {
+    if (lieuCourant === lieu) return;
+    lieuCourant = lieu;
+    console.log(`  ${urlDe(lieu)}`);
+    await page.goto(urlDe(lieu), { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => document.getElementById('attente').hidden, { timeout: 15 * 60 * 1000 });
+    await page.waitForFunction(() => window.__demo && window.__demo.vegChargee()
+        && [...document.querySelectorAll('.etat-couche')].every(e => e.hidden || !e.classList.contains('en-cours')),
+        { timeout: 15 * 60 * 1000 });
+    await new Promise(r => setTimeout(r, 2500));       // textures et compilation des matériaux
+    // L'orbite démarre d'elle-même avec la scène : la caméra est au script.
+    if (await allume('t-orbit')) await cliquer('t-orbit');
+    await page.evaluate(() => window.__manuel());
+    // Scruté à intervalle : par défaut, puppeteer scrute par requestAnimationFrame, désormais figé.
+    await page.waitForFunction(() => window.__pret(), { timeout: 5000, polling: 100 });
+    await page.evaluate(() => { document.getElementById('tip').style.display = 'none'; });
+}
+
+/** Caméra posée sur un cadre : point visé (lon, lat, hauteur au-dessus du sol), distance, azimut, élévation. */
+const poserCadre = c => page.evaluate(c => {
+    const d = window.__demo;
+    const x = (c.lon - d.LON0) * d.M_PAR_DEGRE_LON, z = -(c.lat - d.LAT0) * d.M_PAR_DEGRE_LAT;
+    const y = d.ySol(c.lon, c.lat) + (c.hauteur || 0);
+    const r = Math.PI / 180, cosE = Math.cos(c.elevation * r);
+    d.controls.target.set(x, y, z);
+    d.camera.position.set(x + c.distance * Math.sin(c.azimut * r) * cosE, y + c.distance * Math.sin(c.elevation * r),
+                          z - c.distance * Math.cos(c.azimut * r) * cosE);
+}, c);
+const cadreEntre = (a, b, t) => ({
+    lon: a.lon + (b.lon - a.lon) * t, lat: a.lat + (b.lat - a.lat) * t,
+    hauteur: (a.hauteur || 0) + ((b.hauteur || 0) - (a.hauteur || 0)) * t,
+    distance: Math.exp(Math.log(a.distance) + (Math.log(b.distance) - Math.log(a.distance)) * t),
+    azimut: a.azimut + (b.azimut - a.azimut) * t, elevation: a.elevation + (b.elevation - a.elevation) * t,
+});
+let dernierCadre = null;
+
+/** Cadre courant lu sur la caméra (après une orbite, par exemple). */
+const lireCadre = () => page.evaluate(() => {
+    const d = window.__demo, t = d.controls.target, p = d.camera.position;
+    const v = p.clone().sub(t), dist = v.length();
+    return { lon: d.LON0 + t.x / d.M_PAR_DEGRE_LON, lat: d.LAT0 - t.z / d.M_PAR_DEGRE_LAT,
+             hauteur: t.y - d.ySol(d.LON0 + t.x / d.M_PAR_DEGRE_LON, d.LAT0 - t.z / d.M_PAR_DEGRE_LAT),
+             distance: dist, azimut: Math.atan2(v.x, -v.z) / (Math.PI / 180), elevation: Math.asin(v.y / dist) / (Math.PI / 180) };
+});
+
+/** Légende et carte de titre : opacité réglée image par image, l'horloge étant figée. */
+let legende = { texte: '', debut: 0, fin: 0 };
+const FONDU_S = 0.4;
+async function habiller() {
+    const t = images / FPS;
+    const o = Math.max(0, Math.min(1, (t - legende.debut) / FONDU_S, (legende.fin - t) / FONDU_S));
+    await page.evaluate(o => { document.getElementById('demo-legende').style.opacity = o; }, legende.texte ? o : 0);
+}
+async function carte(c, opacite) {
+    await page.evaluate((c, o) => {
+        const e = document.getElementById('demo-carte');
+        if (c) { e.querySelector('h1').textContent = c.titre; e.querySelector('p').textContent = c.sous; }
+        e.style.opacity = o;
+    }, c, opacite);
+}
+
+/** `n` images, `fn(t)` appelée avant chacune avec l'avancement de 0 à 1. */
+async function filmer(secondes, fn) {
+    const n = Math.max(1, Math.round(secondes * FPS));
+    for (let i = 0; i < n; i++) {
+        if (fn) await fn(n > 1 ? i / (n - 1) : 1);
+        await page.evaluate(dt => window.__pas(dt), 1000 / FPS);
+        await habiller();
+        await capturer();
+    }
+}
+
+const outils = {
+    /** Pose la caméra sans mouvement. */
+    async poser(c) { dernierCadre = c; await poserCadre(c); },
+    /** Glissement lissé d'un cadre à l'autre ; `de` absent : depuis la caméra actuelle. */
+    async glisser(secondes, de, vers) {
+        de = de || dernierCadre || await lireCadre();
+        dernierCadre = vers;
+        await filmer(secondes, t => poserCadre(cadreEntre(de, vers, lisser(t))));
+    },
+    /** L'orbite de la page, à sa vitesse (degrés par seconde), depuis un cadre ou la caméra actuelle. */
+    async orbiter(secondes, { cadre, vitesse, fn }) {
+        if (cadre) await outils.poser(cadre);
+        await page.evaluate(v => { document.getElementById('speed').value = v; }, vitesse);
+        if (!await allume('t-orbit')) await cliquer('t-orbit');
+        await filmer(secondes, fn);
+        await cliquer('t-orbit');
+        dernierCadre = null;
+    },
+    /** Opacité de la carte de titre de la séquence (carteDifferee). */
+    async carte(opacite) { await carte(null, opacite); },
+    /** Bouton du panneau, puis quelques images pour que la bascule se voie. */
+    async basculer(id) { await cliquer(id); await filmer(0.25); },
+    /** Le curseur de l'heure, de `de` à `a` heures. */
+    async heures(secondes, de, a) {
+        await filmer(secondes, t => page.evaluate(h => {
+            const c = document.getElementById('heure'); c.value = h; c.dispatchEvent(new Event('input'));
+        }, de + (a - de) * lisser(t)));
+    },
+    /** Un cran de saison (mois, jour) à l'heure donnée ; `null` : aujourd'hui à midi. */
+    async saison(mois, jour, heure = 12) {
+        await page.evaluate((mois, jour, heure) => {
+            const c = document.getElementById('heure'); c.value = heure; c.dispatchEvent(new Event('input'));
+            if (mois) document.querySelector(`.saison-cran[data-mois="${mois}"][data-jour="${jour}"]`).click();
+            else document.getElementById('saison-aujourdhui').click();
+        }, mois, jour, heure);
+    },
+    /** L'amas le plus dense d'une couche de l'orthophoto (véhicules ou piscines) du lieu courant, et un exemple dedans. */
+    async amas(couche) {
+        const l = lieuCourant;
+        const url = `${BASE}/api/${couche}?lat=${l.lat}&lon=${l.lon}${l.zone ? `&zone=${l.zone}` : ''}${couche === 'vehicules' ? '&detecteur=rtmdet' : ''}`;
+        const objets = (await (await fetch(url)).json())[couche] || [];
+        if (!objets.length) throw new Error(`aucun objet dans ${url}`);
+        // Mailles de 25 m : la plus peuplée, et l'objet le plus près de son centre.
+        const m = 25 / 111320, cases = new Map();
+        for (const o of objets) {
+            const k = `${Math.floor(o[0] / m)},${Math.floor(o[1] / m)}`;
+            (cases.get(k) || cases.set(k, []).get(k)).push(o);
+        }
+        const amas = [...cases.values()].sort((a, b) => b.length - a.length)[0];
+        const lon = amas.reduce((s, o) => s + o[0], 0) / amas.length, lat = amas.reduce((s, o) => s + o[1], 0) / amas.length;
+        const ex = amas.sort((a, b) => Math.hypot(a[0] - lon, a[1] - lat) - Math.hypot(b[0] - lon, b[1] - lat))[0];
+        return { lon, lat, exemple: { lon: ex[0], lat: ex[1], hauteur: couche === 'vehicules' ? 1 : 0 } };
+    },
+    /** La souris va sur un objet et y reste : son infobulle s'ouvre. */
+    async survoler(p, secondes) {
+        const ecran = await page.evaluate(p => {
+            const d = window.__demo;
+            const v = new d.THREE.Vector3((p.lon - d.LON0) * d.M_PAR_DEGRE_LON, d.ySol(p.lon, p.lat) + p.hauteur, -(p.lat - d.LAT0) * d.M_PAR_DEGRE_LAT);
+            v.project(d.camera);
+            const r = d.renderer.domElement.getBoundingClientRect();
+            return { x: r.left + (v.x + 1) / 2 * r.width, y: r.top + (1 - v.y) / 2 * r.height };
+        }, p);
+        await page.evaluate(() => { document.getElementById('tip').style.display = ''; });
+        const depart = { x: ecran.x + 120, y: ecran.y + 90 };
+        await filmer(secondes * 0.3, t => page.mouse.move(depart.x + (ecran.x - depart.x) * lisser(t), depart.y + (ecran.y - depart.y) * lisser(t)));
+        await filmer(secondes * 0.7);
+        await page.mouse.move(5, fmt.hauteur - 5);
+        await page.evaluate(() => { document.getElementById('tip').style.display = 'none'; });
+    },
+};
+
+// --- Tournage -----------------------------------------------------------------
+for (const q of sequences) {
+    console.log(`${q.id} (${q.duree.toFixed(1)} s)`);
+    await charger(q.lieu);
+    const debut = images / FPS;
+    q.debut = debut;
+    legende = { texte: q.legende, debut, fin: debut + q.duree };
+    await page.evaluate(t => { document.getElementById('demo-legende').textContent = t; }, q.legende);
+    if (q.carte) await carte(q.carte, q.carteDifferee ? 0 : 1);
+    const avant = images;
+    await q.jouer({ ...outils, duree: q.duree });
+    // Au nombre d'images près, la séquence dure ce que dit sa voix.
+    const manque = Math.round(q.duree * FPS) - (images - avant);
+    if (manque > 0) await filmer(manque / FPS);
+    if (q.carte) await carte(null, 0);
+}
+ffmpeg.stdin.end();
+await new Promise(r => ffmpeg.on('close', r));
+await navigateur.close();
+if (erreurs.length) console.warn('Erreurs de la page :\n  ' + erreurs.join('\n  '));
+
+// --- Assemblage ---------------------------------------------------------------
+const nom = path.join(SORTIE, `demo-${FORMAT}`);
+if (fmt.gif) {
+    // Deux passes : la palette est calculée sur toute la séquence, puis
+    // appliquée avec un tramage ordonné. Le GIF ne compresse que ce qui ne
+    // bouge pas d'une image à l'autre, et l'orthophoto ne se répète jamais :
+    // 22 s en 800 px à 12 images/s pesaient 51 Mo, les mêmes 14 s en 640 px à
+    // 10 images/s 15 Mo, en 480 px à 8 images/s et 96 couleurs 6,7 Mo. Sans
+    // tramage, ou en sierra, le fichier grossit (11,7 et 13,5 Mo en 560 px).
+    const filtre = `fps=8,scale=480:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=96:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle`;
+    spawnSync('ffmpeg', ['-y', '-loglevel', 'error', '-i', VIDEO_MUETTE, '-filter_complex', filtre, `${nom}.gif`], { stdio: 'inherit' });
+    fs.copyFileSync(VIDEO_MUETTE, `${nom}.mp4`);
+} else if (!fmt.voix) {
+    spawnSync('ffmpeg', ['-y', '-loglevel', 'error', '-i', VIDEO_MUETTE, '-c:v', 'copy', '-movflags', '+faststart', `${nom}.mp4`], { stdio: 'inherit' });
+} else {
+    // La piste son : chaque phrase complétée de silence à la durée de sa séquence.
+    const liste = path.join(TRAVAIL, 'pistes.txt');
+    const lignes = [];
+    for (const q of sequences) {
+        const piste = path.join(TRAVAIL, `${q.id}.wav`);
+        const duree = (Math.round(q.duree * FPS) / FPS).toFixed(3);
+        spawnSync('ffmpeg', ['-y', '-loglevel', 'error', '-i', q.audio, '-af', `apad=whole_dur=${duree}`, '-ar', '48000', '-ac', '2', '-t', duree, piste], { stdio: 'inherit' });
+        lignes.push(`file '${piste}'`);
+    }
+    fs.writeFileSync(liste, lignes.join('\n') + '\n');
+    const son = path.join(TRAVAIL, 'son.wav');
+    spawnSync('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', liste, '-c', 'copy', son], { stdio: 'inherit' });
+    spawnSync('ffmpeg', ['-y', '-loglevel', 'error', '-i', VIDEO_MUETTE, '-i', son, '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k',
+                         '-shortest', '-movflags', '+faststart', `${nom}.mp4`], { stdio: 'inherit' });
+}
+console.log(`${images} images, ${(images / FPS).toFixed(1)} s → ${nom}.${fmt.gif ? 'gif' : 'mp4'}`);
+process.exit(erreurs.length ? 1 : 0);
