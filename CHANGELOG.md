@@ -15,6 +15,16 @@ messages de commit et dans les commentaires des modules.
 
 ### Ajouté
 
+- **Décaler la scène d'un clic.** Quatre flèches, N, E, S et O, au bord de la
+  vue, là où chaque point cardinal se trouve à l'écran ; elles tournent avec
+  la vue, comme la boussole. Une flèche décale le point d'un quart du côté de
+  la zone (89 m du nord au sud et 64 m d'est en ouest à Gordes, pour la zone
+  par défaut) : un point pris à quelques dizaines de mètres près se rattrape
+  sans retaper de coordonnées. La nouvelle scène s'ouvre avec la caméra au
+  même endroit par rapport au point, et l'orbite arrêtée le reste. Le nouveau
+  point est arrondi comme la clé du cache : un aller-retour retombe sur la
+  scène de départ.
+
 - **Une démo filmée.** `outils/demo-video.mjs` tourne la démo de la page
   dans un Chrome sans écran — la tour Eiffel en points LiDAR d'abord, puis
   orbite, toits mesurés, végétation, course du soleil et saisons, véhicules

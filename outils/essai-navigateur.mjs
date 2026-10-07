@@ -1,5 +1,6 @@
 // Essai de la page dans un vrai navigateur : charge un point, attend la scène,
-// survole et clique le bâtiment visé, bascule au 21 décembre, cherche un lieu
+// survole et clique le bâtiment visé, bascule au 21 décembre, décale la scène
+// vers le nord, cherche un lieu
 // (« place du chateau gordes ») et s'y rend, et relève toute erreur JavaScript
 // ou requête en échec. C'est le seul moyen de vérifier les
 // chemins d'exécution du rendu, que les tests Python ne voient pas.
@@ -76,6 +77,35 @@ await page.evaluate(() => { const h = document.getElementById('heure'); h.value 
 console.log('soleil au 21 décembre, 13 h :', await page.$eval('#s-date', e => e.textContent), '·', await page.$eval('#s-hauteur', e => e.textContent));
 await new Promise(r => setTimeout(r, 800));
 await page.screenshot({ path: sortie });
+// Flèche du nord : un quart de zone plus au nord, au pas de la clé du cache ;
+// la caméra garde son cap (les pointes des flèches n'ont pas tourné) et
+// l'orbite, arrêtée plus haut, ne repart pas.
+try {
+  const depart = new URL(page.url()).searchParams;
+  const zone = Number(depart.get('zone')) || null;
+  const demi = zone ? Math.min(Math.max(Math.round(zone / 50) * 50, 150), 1000) / 2 / 111320 : 0.0016;
+  const attendu = [Number(depart.get('lat') ?? 43.9116) + demi / 2, Number(depart.get('lon') ?? 5.2003)]
+    .map(v => String(Number(v.toFixed(4))));
+  const caps = () => page.$$eval('#decalage .pointe', ps => ps.map(p => p.style.transform).join(' '));
+  const avant = await caps();
+  if (!avant.trim()) erreurs.push('décalage : flèches non posées');
+  console.log('flèche du nord :', await page.$eval('#decalage [data-vers="n"]', b => b.title));
+  quittee = true;
+  await Promise.all([page.waitForNavigation({ waitUntil: 'domcontentloaded' }),
+                     page.click('#decalage [data-vers="n"]')]);
+  const u = new URL(page.url());
+  console.log('après décalage :', u.search);
+  if (u.searchParams.get('lat') !== attendu[0] || u.searchParams.get('lon') !== attendu[1]) {
+    erreurs.push(`décalage : ${u.search}, attendu lat=${attendu[0]}&lon=${attendu[1]}`);
+  }
+  await page.waitForFunction(() => !document.getElementById('decalage').hidden, { timeout: 120000 });
+  await new Promise(r => setTimeout(r, 1500));
+  const apres = await caps();
+  if (apres !== avant) erreurs.push(`décalage : cap changé, ${avant} → ${apres}`);
+  if (await page.$eval('#t-orbit', e => e.classList.contains('on'))) erreurs.push('décalage : orbite repartie');
+} catch (e) {
+  erreurs.push('décalage : ' + e.message);
+}
 // Recherche d'un lieu : suggestions du géocodage de l'IGN, puis Entrée, qui
 // mène à la première. Le nom choisi doit suivre, sans passer par l'URL.
 await page.type('#in-lieu', 'place du chateau gordes');

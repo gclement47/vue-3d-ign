@@ -85,6 +85,23 @@
                               transform:translate(-50%,-100%);
                               border-left:5px solid transparent; border-right:5px solid transparent;
                               border-bottom:20px solid var(--accent); }
+        /* Décalage de la scène : une flèche par point cardinal, au bord de la
+           vue là où ce point cardinal se trouve à l'écran. La pointe tourne
+           avec la vue ; la lettre reste droite. */
+        #decalage[hidden] { display:none; }
+        #decalage button { position:absolute; left:0; top:0; z-index:2; width:30px; height:30px;
+                           margin:-15px 0 0 -15px; padding:0; border-radius:50%;
+                           background:rgba(31,35,40,.85); border:1px solid var(--line);
+                           color:var(--muted); font:inherit; font-size:10px; font-weight:700;
+                           cursor:pointer; }
+        #decalage button.n { color:var(--accent); }
+        #decalage button:hover { border-color:var(--accent); color:var(--text); }
+        #decalage button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+        #decalage .pointe { position:absolute; inset:0; pointer-events:none; }
+        #decalage .pointe::before { content:''; position:absolute; left:50%; top:-8px;
+                                    transform:translateX(-50%);
+                                    border-left:5px solid transparent; border-right:5px solid transparent;
+                                    border-bottom:7px solid var(--accent); }
         .form-point { display:flex; align-items:flex-start; gap:4px; margin:8px 0 6px; }
         .form-point .recherche { flex:1; min-width:0; }
         .form-point input { box-sizing:border-box; width:100%; background:#161a1e; color:#e8eaed;
@@ -291,6 +308,12 @@
                 <span class="s">S</span><span class="o">O</span>
             </div>
         </div>
+        <div id="decalage" hidden>
+            <button type="button" class="n" data-vers="n"><span class="pointe"></span>N</button>
+            <button type="button" data-vers="e"><span class="pointe"></span>E</button>
+            <button type="button" data-vers="s"><span class="pointe"></span>S</button>
+            <button type="button" data-vers="o"><span class="pointe"></span>O</button>
+        </div>
         <div id="tip"></div>
         <div id="credits"></div>
     </div>
@@ -361,6 +384,20 @@ if (RELANCE_MOI) {
     u.searchParams.delete('moi');
     history.replaceState(null, '', u.pathname + u.search + u.hash);
 }
+// Page rechargée par une flèche de décalage : la caméra y laisse sa pose
+// (cadrer) et l'état de l'orbite, pour ce point seulement et une fois. Dans
+// l'onglet, jamais dans l'URL : un lien partagé s'ouvre cadré d'office.
+const CLE_POSE = 'vue3d-pose';
+const POSE_HERITEE = (() => {
+    try {
+        const p = JSON.parse(sessionStorage.getItem(CLE_POSE) || 'null');
+        sessionStorage.removeItem(CLE_POSE);
+        const vecteur = v => Array.isArray(v) && v.length === 3 && v.every(Number.isFinite);
+        if (p && p.lat === LAT0 && p.lon === LON0 && p.zone === ZONE
+            && vecteur(p.cible) && vecteur(p.ecart)) return p;
+    } catch (e) { /* stockage refusé ou illisible */ }
+    return null;
+})();
 const REQUETE = `lat=${LAT0}&lon=${LON0}${PARAM_ZONE}`;
 const URL_VUE3D = `api/scene?${REQUETE}`;
 const URL_VUE3D_ORTHO = `api/ortho?${REQUETE}`;
@@ -2482,6 +2519,15 @@ function distanceAEmprise(lon, lat) {
 }
 
 function cadrer() {
+    // Arrivée par une flèche de décalage : la caméra garde sa place par
+    // rapport au point, et sa hauteur au-dessus du sol sous la cible.
+    if (POSE_HERITEE) {
+        const [x, h, z] = POSE_HERITEE.cible;
+        controls.target.set(x, ySol(...toLonLat(x, -z)) + h, z);
+        camera.position.copy(controls.target).add(new THREE.Vector3(...POSE_HERITEE.ecart));
+        controls.update();
+        return;
+    }
     const centre = new THREE.Vector3(0, ySol(CENTER[0], CENTER[1]), 0);
     controls.target.copy(centre);
     camera.position.set(centre.x + 110, centre.y + 90, centre.z + 110);
@@ -5995,13 +6041,101 @@ btnOrbit.addEventListener('click', () => {
 });
 
 function demarrerOrbite() {
-    if (orbiteChoisie) return;
+    // Arrêtée avant un décalage, elle le reste.
+    if (orbiteChoisie || (POSE_HERITEE && !POSE_HERITEE.orbite)) return;
     orbite = true;
     btnOrbit.classList.add('on');
 }
 // OrbitControls fait tourner la caméra autour de sa cible : l'inertie
 // (enableDamping) donne un mouvement fluide sans boucle manuelle sur le cap.
 controls.addEventListener('start', () => { if (orbite) { orbite = false; btnOrbit.classList.remove('on'); } });
+
+// --- Décalage de la scène ------------------------------------------------
+// Un point pris à quelques dizaines de mètres près laisse au bord, coupé, ce
+// qu'on voulait voir. Une flèche par point cardinal décale le point d'un quart
+// du côté de la zone — 89 m du nord au sud, 64 m d'est en ouest à Gordes :
+// trois quarts de la scène restent en vue, et un écart de quelques dixièmes
+// de la zone se rattrape en un ou deux clics. La page se recharge sur la
+// nouvelle scène, la caméra à la même place par rapport au point : la vue
+// glisse d'autant, sans changer de cap.
+const DECALAGE = 0.25;
+const VERS = {
+    n: { x: 0, z: -1, nom: 'le nord' }, e: { x: 1, z: 0, nom: "l'est" },
+    s: { x: 0, z: 1, nom: 'le sud' }, o: { x: -1, z: 0, nom: "l'ouest" },
+};
+const decalage = document.getElementById('decalage');
+const flechesDecalage = [...decalage.querySelectorAll('button')].map(b => {
+    const v = VERS[b.dataset.vers];
+    // Le nord est -Z, l'est +X ; l'emprise a le même écart en degrés dans les
+    // deux sens (scene.emprise).
+    const dLat = -v.z * 2 * DEMI_EMPRISE_DEG * DECALAGE;
+    const dLon = v.x * 2 * DEMI_EMPRISE_DEG * DECALAGE;
+    const metres = Math.round(Math.abs(dLat) * M_PAR_DEGRE_LAT + Math.abs(dLon) * M_PAR_DEGRE_LON);
+    b.title = `Décaler la scène de ${metres} m vers ${v.nom}`;
+    b.setAttribute('aria-label', b.title);
+    b.addEventListener('click', () => decaler(dLat, dLon));
+    return { b, pointe: b.firstElementChild, x: v.x, z: v.z };
+});
+
+function decaler(dLat, dLon) {
+    // Arrondi comme la clé du cache (scene.SCENE_ARRONDI) : la page est
+    // centrée sur le point même de sa scène, et un aller-retour retombe sur
+    // la scène de départ.
+    const lat = Number((LAT0 + dLat).toFixed(4)), lon = Number((LON0 + dLon).toFixed(4));
+    const t = controls.target;
+    try {
+        sessionStorage.setItem(CLE_POSE, JSON.stringify({ lat, lon, zone: ZONE, orbite,
+            cible: [t.x, t.y - ySol(...toLonLat(t.x, -t.z)), t.z],
+            ecart: camera.position.clone().sub(t).toArray() }));
+    } catch (e) { /* stockage refusé : la nouvelle scène sera cadrée d'office */ }
+    const u = new URL(location.href);
+    u.searchParams.set('lat', lat);
+    u.searchParams.set('lon', lon);
+    location.assign(u.pathname + u.search + u.hash);
+}
+
+// Les flèches courent sur une ellipse inscrite dans la vue : loin des coins,
+// où sont l'aide, la boussole et les crédits ; sous l'aide en haut, qui tient
+// sur trois lignes sur un téléphone, au-dessus des crédits en bas.
+const aideVue = document.getElementById('hint');
+const creditsVue = document.getElementById('credits');
+let ellipseDecalage = null;
+function mesurerDecalage() {
+    const w = host.clientWidth, h = host.clientHeight;
+    const haut = Math.max(64, aideVue.getBoundingClientRect().bottom - host.getBoundingClientRect().top + 27);
+    const bas = creditsVue.offsetHeight + 42, cote = 40;
+    ellipseDecalage = { cx: w / 2, cy: (haut + h - bas) / 2,
+                        a: Math.max(w / 2 - cote, 20), b: Math.max((h - haut - bas) / 2, 20) };
+}
+window.addEventListener('resize', mesurerDecalage);
+if (window.ResizeObserver) {
+    const ro = new ResizeObserver(mesurerDecalage);
+    ro.observe(host);
+    ro.observe(creditsVue);
+}
+mesurerDecalage();
+chargementArtefact.then(a => { if (a) decalage.hidden = false; });
+
+const versCible = new THREE.Vector3(), droiteEcran = new THREE.Vector3(), hautEcran = new THREE.Vector3();
+/** Pose chaque flèche dans la direction où son point cardinal part à l'écran. */
+function placerFleches() {
+    if (decalage.hidden || !ellipseDecalage) return;
+    // Droite et haut de l'écran, dans la scène. Au centre de la vue, où est
+    // la cible, la perspective ne fait que les mettre à l'échelle : la
+    // direction d'un vecteur du sol y est exacte.
+    versCible.subVectors(controls.target, camera.position).normalize();
+    droiteEcran.set(-versCible.z, 0, versCible.x).normalize();
+    hautEcran.crossVectors(droiteEcran, versCible);
+    const { cx, cy, a, b } = ellipseDecalage;
+    for (const f of flechesDecalage) {
+        const angle = Math.atan2(f.x * droiteEcran.x + f.z * droiteEcran.z,
+                                 f.x * hautEcran.x + f.z * hautEcran.z);
+        const ux = Math.sin(angle), uy = -Math.cos(angle);
+        const r = 1 / Math.hypot(ux / a, uy / b);
+        f.b.style.transform = `translate(${(cx + r * ux).toFixed(1)}px,${(cy + r * uy).toFixed(1)}px)`;
+        f.pointe.style.transform = `rotate(${(angle * 180 / Math.PI).toFixed(1)}deg)`;
+    }
+}
 
 // --- Zoom : repris à OrbitControls -------------------------------------
 // `handleMouseWheel` de three r160 ignore l'amplitude de l'événement : chaque
@@ -6484,6 +6618,7 @@ function boucle(maintenant) {
     const dz = controls.target.z - camera.position.z;
     const azimut = Math.atan2(dx, -dz);
     rose.style.transform = `rotate(${(-azimut * 180 / Math.PI).toFixed(1)}deg)`;
+    placerFleches();
 
     renderer.render(scene, camera);
     requestAnimationFrame(boucle);

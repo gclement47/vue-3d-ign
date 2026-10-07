@@ -32,7 +32,9 @@ Sur un Mac, sans Docker :
 Puis ouvrir <http://localhost:8080/> : sans paramètre, la page s'ouvre sur le
 village de Gordes. Un autre lieu se cherche dans le panneau — adresse, lieu
 nommé (« château de Chambord ») ou coordonnées collées, avec suggestions dès
-la frappe — ou se donne dans l'URL (`?lat=…&lon=…`). La zone chargée mesure par défaut environ 356 m du nord au
+la frappe — ou se donne dans l'URL (`?lat=…&lon=…`). Les flèches N, E, S et O,
+au bord de la vue, décalent la scène d'un quart de zone dans leur direction.
+La zone chargée mesure par défaut environ 356 m du nord au
 sud ; le sélecteur **Zone** du panneau, ou `&zone=…` dans l'URL, la porte de
 150 à 1 000 m (arrondie à 50 m). Le temps de construction suit la surface et
 la densité du bâti : à 1 000 m, 4 s à Gordes et 6 s à Strasbourg sur un Mac

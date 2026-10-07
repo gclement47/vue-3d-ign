@@ -263,6 +263,7 @@ await page.evaluateOnNewDocument(() => {
 // scène exposés au script (window.__demo), et le style des légendes.
 const STYLE_DEMO = `
     ${fmt.panneau ? '' : '#panel, #hint { display:none !important; }'}
+    #decalage { display:none !important; }
     #tip { font-size:${Math.round(fmt.police * 0.55)}px !important; line-height:1.35 !important; max-width:${fmt.police * 12}px; }
     #demo-legende { position:absolute; left:50%; bottom:7%; transform:translateX(-50%); z-index:5;
         max-width:84%; padding:${fmt.police * 0.45}px ${fmt.police * 0.8}px; border-radius:${fmt.police * 0.35}px;
