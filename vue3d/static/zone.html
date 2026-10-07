@@ -572,8 +572,23 @@ async function genererZone() {
                 }
             );
 
-            const rep = await r.json();
+const texte = await r.text();
 
+let rep;
+
+try {
+    rep = JSON.parse(texte);
+} catch {
+    const message = texte
+        .replace(/<[^>]*>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 300);
+
+    throw new Error(
+        `Serveur HTTP ${r.status} : ${message || 'réponse non JSON'}`
+    );
+}
             if (!r.ok || !rep.ok) {
                 throw new Error(
                     rep.erreur ||
@@ -617,8 +632,23 @@ async function genererZone() {
             }
         );
 
-        const fin = await rFinal.json();
+const texteFinal = await rFinal.text();
 
+let fin;
+
+try {
+    fin = JSON.parse(texteFinal);
+} catch {
+    const message = texteFinal
+        .replace(/<[^>]*>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 300);
+
+    throw new Error(
+        `Serveur HTTP ${rFinal.status} : ${message || 'réponse non JSON'}`
+    );
+}
         if (!rFinal.ok || !fin.ok) {
             throw new Error(
                 fin.erreur ||
