@@ -24,6 +24,9 @@ import logging
 import os
 import io
 import zipfile
+import json
+import re
+import requests
 
 from flask import Flask, jsonify, request, send_from_directory, send_file
 
@@ -36,7 +39,8 @@ from .scene import (NOM_MONUMENTS, NOM_NUAGE, NOM_ORTHO, NOM_OUVRAGES, NOM_PANNE
                     Cache, HorsEmprise, MonumentsIndisponibles, NuageIndisponible,
                     OuvragesIndisponibles,
                     PanneauxIndisponibles, ReconstructionRefusee, SceneIncomplete,
-                    VehiculesDesactives, VehiculesIndisponibles, zone_normalisee)
+                    VehiculesDesactives, VehiculesIndisponibles,
+                    point_normalise, zone_normalisee)
 from .scene import construire as construire_scene
 from .toits import autoriser_bassin
 from .vehicules import MODE_PAR_DEFAUT
@@ -83,6 +87,68 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
 
     def erreur(code, message):
         return jsonify({"erreur": message}), code
+
+    def slug_zone(nom):
+        """Nom de dossier sûr pour Geovalys."""
+        nom = (nom or "").strip().lower()
+        nom = re.sub(r"[^a-z0-9_-]+", "-", nom)
+        nom = re.sub(r"-+", "-", nom).strip("-")
+        return nom[:80]
+
+    def stockage_configure():
+        return bool(
+            os.environ.get("VUE3D_STORAGE_URL")
+            and os.environ.get("VUE3D_STORAGE_TOKEN")
+        )
+
+    def envoyer_octets(zone, scope, nom, contenu, tile=None,
+                       type_mime="application/octet-stream"):
+        """Envoie un fichier vers save_scene.php sur Geovalys."""
+        url = os.environ.get("VUE3D_STORAGE_URL")
+        token = os.environ.get("VUE3D_STORAGE_TOKEN")
+
+        if not url or not token:
+            raise RuntimeError("Stockage Geovalys non configuré.")
+
+        donnees = {
+            "token": token,
+            "zone": zone,
+            "scope": scope,
+        }
+
+        if tile:
+            donnees["tile"] = tile
+
+        fichiers = {
+            "file": (
+                nom,
+                contenu,
+                type_mime,
+            )
+        }
+
+        r = requests.post(
+            url,
+            data=donnees,
+            files=fichiers,
+            timeout=120,
+        )
+
+        if not r.ok:
+            raise RuntimeError(
+                f"Geovalys HTTP {r.status_code}: {r.text[:300]}"
+            )
+
+        retour = r.json()
+
+        if not retour.get("ok"):
+            raise RuntimeError(
+                retour.get("error", "Erreur de stockage Geovalys")
+            )
+
+        return retour
+
+                  
 
     def dossier_scene(couche=None, prelire=False, detecteur=None):
         p = point()
@@ -307,7 +373,183 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
             as_attachment=True,
             download_name=nom_zip
         )
-    @app.get("/api/ortho")
+   
+             @app.post("/api/zone/tuile")
+    def generer_tuile_zone():
+        """Construit une scène puis l'enregistre sur Geovalys."""
+        if not stockage_configure():
+            return erreur(503, "Stockage Geovalys non configuré.")
+
+        data = request.get_json(silent=True) or {}
+
+        nom = data.get("zone")
+        slug = slug_zone(nom)
+
+        if not slug:
+            return erreur(400, "Nom de zone invalide.")
+
+        try:
+            lat = float(data["lat"])
+            lon = float(data["lon"])
+            zone = zone_normalisee(data.get("taille"))
+        except (KeyError, TypeError, ValueError):
+            return erreur(
+                400,
+                "lat, lon et taille sont attendus."
+            )
+
+        try:
+            # Construction de la scène si elle n'existe pas encore.
+            dossier = cache.obtenir(
+                lat,
+                lon,
+                construire=construire,
+                zone=zone,
+            )
+        except HorsEmprise as exc:
+            return erreur(422, str(exc))
+        except SceneIncomplete as exc:
+            return erreur(503, str(exc))
+        except Exception as exc:
+            app.logger.exception(
+                "Erreur génération tuile %.6f %.6f",
+                lat,
+                lon,
+            )
+            return erreur(500, str(exc))
+
+        latn, lonn = point_normalise(lat, lon)
+
+        tile_id = (
+            f"{latn:.4f}_{lonn:.4f}"
+            f"_z{zone or 'default'}"
+        )
+
+        envoyes = []
+
+        # Les deux fichiers indispensables à une scène.
+        for nom_fichier, mime in (
+            (NOM_SCENE, "application/gzip"),
+            (NOM_ORTHO, "image/jpeg"),
+        ):
+            chemin = os.path.join(
+                dossier,
+                nom_fichier,
+            )
+
+            if not os.path.isfile(chemin):
+                continue
+
+            with open(chemin, "rb") as f:
+                envoyer_octets(
+                    slug,
+                    "tile",
+                    nom_fichier,
+                    f,
+                    tile=tile_id,
+                    type_mime=mime,
+                )
+
+            envoyes.append(nom_fichier)
+
+        # Ajoute aussi toutes les couches déjà calculées.
+        for nom_fichier in sorted(os.listdir(dossier)):
+            if nom_fichier in envoyes:
+                continue
+
+            chemin = os.path.join(
+                dossier,
+                nom_fichier,
+            )
+
+            if not os.path.isfile(chemin):
+                continue
+
+            with open(chemin, "rb") as f:
+                envoyer_octets(
+                    slug,
+                    "tile",
+                    nom_fichier,
+                    f,
+                    tile=tile_id,
+                )
+
+            envoyes.append(nom_fichier)
+
+        return jsonify({
+            "ok": True,
+            "tile": tile_id,
+            "lat": latn,
+            "lon": lonn,
+            "taille": zone,
+            "fichiers": envoyes,
+        })         
+
+    @app.post("/api/zone/finaliser")
+    def finaliser_zone():
+        """Enregistre le GeoJSON et le manifeste de la zone sur Geovalys."""
+        if not stockage_configure():
+            return erreur(503, "Stockage Geovalys non configuré.")
+
+        data = request.get_json(silent=True) or {}
+
+        nom = data.get("nom")
+        slug = slug_zone(nom)
+
+        geojson = data.get("geojson")
+        tuiles = data.get("tuiles", [])
+        taille = data.get("taille")
+
+        if not slug or not geojson:
+            return erreur(
+                400,
+                "Nom et GeoJSON sont obligatoires."
+            )
+
+        zone_bytes = json.dumps(
+            geojson,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+        manifest = {
+            "nom": nom,
+            "slug": slug,
+            "taille_tuile": taille,
+            "nombre_tuiles": len(tuiles),
+            "tuiles": tuiles,
+        }
+
+        manifest_bytes = json.dumps(
+            manifest,
+            ensure_ascii=False,
+            indent=2,
+        ).encode("utf-8")
+
+        envoyer_octets(
+            slug,
+            "zone",
+            "zone.geojson",
+            zone_bytes,
+            type_mime="application/geo+json",
+        )
+
+        envoyer_octets(
+            slug,
+            "zone",
+            "manifest.json",
+            manifest_bytes,
+            type_mime="application/json",
+        )
+
+        return jsonify({
+            "ok": True,
+            "zone": slug,
+            "nombre_tuiles": len(tuiles),
+        })
+
+        
+        @app.get("/api/ortho")
     def ortho():
         dossier, err = dossier_scene()
         if err:
