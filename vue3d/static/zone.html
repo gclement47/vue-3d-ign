@@ -375,18 +375,9 @@ function calculerGrille() {
         lat - pasLat / 2 <= nord
     ) {
 
-        const cosLat =
-            Math.cos(
-                lat * Math.PI / 180
-            );
+    const pasLon = pasLat;
 
-        const pasLon =
-            tailleM /
-            (
-                111320 *
-                Math.max(cosLat, 0.1)
-            );
-
+      
         let lon =
             ouest + pasLon / 2;
 
