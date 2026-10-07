@@ -22,8 +22,10 @@ trentaine de secondes, que la page annonce. Les suivantes la lisent sur disque.
 
 import logging
 import os
+import io
+import zipfile
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory, send_file
 
 from .monuments import fetch_monuments
 from .nuage import fetch_nuage
@@ -262,7 +264,49 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
         if err:
             return err
         return servir_gzip(dossier, NOM_PANNEAUX)
+    @app.get("/api/export")
+    def exporter_scene():
+        """Télécharge les fichiers déjà calculés de la scène dans un ZIP."""
+        dossier, err = dossier_scene()
+        if err:
+            return err
 
+        p = point()
+        if p is None:
+            return erreur(400, MESSAGE_POINT)
+
+        lat, lon, zone = p
+
+        memoire = io.BytesIO()
+
+        with zipfile.ZipFile(
+            memoire,
+            "w",
+            compression=zipfile.ZIP_DEFLATED
+        ) as archive:
+            for nom in sorted(os.listdir(dossier)):
+                chemin = os.path.join(dossier, nom)
+
+                if os.path.isfile(chemin):
+                    archive.write(chemin, arcname=nom)
+
+            archive.writestr(
+                "scene-info.txt",
+                f"Latitude : {lat}\n"
+                f"Longitude : {lon}\n"
+                f"Zone : {zone or 'par défaut'}\n"
+            )
+
+        memoire.seek(0)
+
+        nom_zip = f"vue3d_{lat:.6f}_{lon:.6f}.zip"
+
+        return send_file(
+            memoire,
+            mimetype="application/zip",
+            as_attachment=True,
+            download_name=nom_zip
+        )
     @app.get("/api/ortho")
     def ortho():
         dossier, err = dossier_scene()
