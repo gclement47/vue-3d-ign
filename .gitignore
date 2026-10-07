@@ -16,3 +16,5 @@ package-lock.json
 # Vidéos de la démo (outils/demo-video.mjs), trop lourdes pour le dépôt : seul
 # le GIF du README y est.
 /docs/demo/*.mp4
+# Métadonnées du Finder de macOS, dans chaque dossier ouvert.
+.DS_Store
