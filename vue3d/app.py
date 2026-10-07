@@ -23,6 +23,7 @@ trentaine de secondes, que la page annonce. Les suivantes la lisent sur disque.
 """
 
 import logging
+import gzip
 import os
 import json
 import re
@@ -33,6 +34,7 @@ from flask import Flask, jsonify, request, send_from_directory
 from .monuments import fetch_monuments
 from .nuage import fetch_nuage
 from .ouvrages import fetch_ouvrages
+from .ortho import fetch_ortho_jpeg
 from .panneaux import REGISTRE_LICENCE
 from .panneaux import lecteur as lecteur_panneaux
 from .scene import (NOM_MONUMENTS, NOM_NUAGE, NOM_ORTHO, NOM_OUVRAGES, NOM_PANNEAUX, NOM_SCENE,
@@ -50,6 +52,9 @@ from .vehicules import lecteur as lecteur_vehicules
 # du détecteur.
 COUCHE_VEHICULES = "vehicules"
 COUCHE_PISCINES = "piscines"
+
+# Orthophoto persistante du relief périphérique.
+NOM_ORTHO_ANNEAU = "ortho_anneau.jpg"
 
 logging.basicConfig(level=os.environ.get("VUE3D_LOG", "INFO"),
                     format="%(asctime)s %(levelname)s %(name)s : %(message)s")
@@ -156,6 +161,63 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
             )
 
         return retour
+
+    def assurer_ortho_anneau(dossier):
+        """Crée l'orthophoto de l'anneau si elle n'est pas encore dans le cache.
+
+        On essaie d'abord 4 096 px sur le plus grand côté pour une image nettement
+        plus précise que le fond WMTS zoom 15 du navigateur. Si le WMS refuse cette
+        taille, on retombe automatiquement à 2 048 px.
+        """
+        chemin = os.path.join(dossier, NOM_ORTHO_ANNEAU)
+
+        if os.path.isfile(chemin):
+            return chemin
+
+        scene_path = os.path.join(dossier, NOM_SCENE)
+
+        with gzip.open(scene_path, "rt", encoding="utf-8") as f:
+            scene = json.load(f)
+
+        anneau = scene.get("anneau")
+        bbox = anneau.get("bbox") if isinstance(anneau, dict) else None
+
+        if not bbox or len(bbox) != 4:
+            raise RuntimeError(
+                "La scène ne contient pas d'emprise d'anneau exploitable."
+            )
+
+        try:
+            octets, largeur, hauteur = fetch_ortho_jpeg(
+                *bbox,
+                max_pixels=4096,
+            )
+        except Exception as exc:
+            app.logger.warning(
+                "Orthophoto d'anneau 4096 px refusée, repli 2048 px : %s",
+                exc,
+            )
+            octets, largeur, hauteur = fetch_ortho_jpeg(
+                *bbox,
+                max_pixels=2048,
+            )
+
+        temporaire = chemin + ".tmp"
+
+        with open(temporaire, "wb") as f:
+            f.write(octets)
+
+        os.replace(temporaire, chemin)
+
+        app.logger.info(
+            "Orthophoto d'anneau prête : %s (%d × %d, %.1f Ko)",
+            NOM_ORTHO_ANNEAU,
+            largeur,
+            hauteur,
+            len(octets) / 1024,
+        )
+
+        return chemin
 
                   
 
@@ -391,12 +453,16 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
                 f"_z{zone or 'default'}"
             )
 
+            # Prépare aussi l'orthophoto persistante du relief périphérique.
+            assurer_ortho_anneau(dossier)
+
             envoyes = []
 
-            # Les deux fichiers indispensables à une scène.
+            # Fichiers indispensables à une scène archivée complète.
             for nom_fichier, mime in (
                 (NOM_SCENE, "application/gzip"),
                 (NOM_ORTHO, "image/jpeg"),
+                (NOM_ORTHO_ANNEAU, "image/jpeg"),
             ):
                 chemin = os.path.join(
                     dossier,
