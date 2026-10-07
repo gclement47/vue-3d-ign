@@ -738,7 +738,7 @@ async function lireScene(demande) {
     catch (err) { throw new ScenePasDisponible(`le serveur ne répond pas (${err.message})`); }
     if (r.ok) {
         const a = await r.json();
-        demanderSuite();
+        // demanderSuite();
         // La main rendue une fois : Chrome n'envoie ces demandes qu'à une
         // tâche suivante. Sans cela, elles partaient après les maillages,
         // 413 ms après la fin de la scène à Gordes en zone de 1 000 m,
