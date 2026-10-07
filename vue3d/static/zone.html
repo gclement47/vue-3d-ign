@@ -163,6 +163,10 @@ découpée en scènes 3D.
 Calculer les tuiles
 </button>
 
+  <button id="generer">
+Générer et sauvegarder
+</button>
+  
 <div class="info">
     Surface
     <span class="value" id="surface">—</span>
@@ -500,6 +504,147 @@ function calculerGrille() {
         + ' scène(s) seront générées.';
 }
 
+
+  document.getElementById('generer')
+.addEventListener('click', genererZone);
+
+async function genererZone() {
+
+    if (!geojson) {
+        document.getElementById('etat').textContent =
+            'Charge d’abord un GeoJSON.';
+        return;
+    }
+
+    const nom =
+        document.getElementById('nomZone')
+        .value.trim();
+
+    if (!nom) {
+        document.getElementById('etat').textContent =
+            'Donne un nom à la zone.';
+        return;
+    }
+
+    calculerGrille();
+
+    const tuiles =
+        window.TUILES_3D || [];
+
+    if (!tuiles.length) return;
+
+    const bouton =
+        document.getElementById('generer');
+
+    bouton.disabled = true;
+
+    const terminees = [];
+
+    try {
+
+        for (
+            let i = 0;
+            i < tuiles.length;
+            i++
+        ) {
+
+            const t = tuiles[i];
+
+            document.getElementById(
+                'etat'
+            ).textContent =
+                `Génération ${i + 1}/${tuiles.length}…`;
+
+            const r = await fetch(
+                '/api/zone/tuile',
+                {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type':
+                            'application/json'
+                    },
+                    body: JSON.stringify({
+                        zone: nom,
+                        lat: t.lat,
+                        lon: t.lon,
+                        taille: t.taille
+                    })
+                }
+            );
+
+            const rep = await r.json();
+
+            if (!r.ok || !rep.ok) {
+                throw new Error(
+                    rep.erreur ||
+                    `HTTP ${r.status}`
+                );
+            }
+
+            terminees.push({
+                id: rep.tile,
+                lat: rep.lat,
+                lon: rep.lon,
+                taille: rep.taille,
+                fichiers: rep.fichiers
+            });
+
+            document.getElementById(
+                'etat'
+            ).textContent =
+                `${i + 1}/${tuiles.length} sauvegardée(s) sur Geovalys.`;
+        }
+
+        const rFinal = await fetch(
+            '/api/zone/finaliser',
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type':
+                        'application/json'
+                },
+                body: JSON.stringify({
+                    nom,
+                    geojson,
+                    taille:
+                        parseInt(
+                            taille.value,
+                            10
+                        ),
+                    tuiles:
+                        terminees
+                })
+            }
+        );
+
+        const fin = await rFinal.json();
+
+        if (!rFinal.ok || !fin.ok) {
+            throw new Error(
+                fin.erreur ||
+                `HTTP ${rFinal.status}`
+            );
+        }
+
+        document.getElementById(
+            'etat'
+        ).textContent =
+            `Terminé : ${terminees.length} scène(s) sauvegardée(s) sur Geovalys.`;
+
+    } catch (err) {
+
+        document.getElementById(
+            'etat'
+        ).textContent =
+            'Arrêt : '
+            + err.message
+            + ` (${terminees.length} scène(s) déjà sauvegardée(s)).`;
+
+    } finally {
+
+        bouton.disabled = false;
+    }
+}
 </script>
 
 </body>
