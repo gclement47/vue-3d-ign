@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<title>Générateur de zone 3D</title>
+
+<link
+  rel="stylesheet"
+  href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+/>
+
+<style>
+html, body {
+    margin: 0;
+    height: 100%;
+    font-family: Arial, sans-serif;
+    background: #161b22;
+    color: #eee;
+}
+
+#app {
+    display: grid;
+    grid-template-columns: 340px 1fr;
+    height: 100%;
+}
+
+#panel {
+    padding: 18px;
+    overflow-y: auto;
+    background: #20262e;
+    border-right: 1px solid #444;
+}
+
+h1 {
+    margin-top: 0;
+    font-size: 22px;
+}
+
+label {
+    display: block;
+    margin-top: 18px;
+    margin-bottom: 6px;
+    font-weight: bold;
+}
+
+input,
+select,
+button {
+    box-sizing: border-box;
+    width: 100%;
+    padding: 9px;
+    font-size: 14px;
+}
+
+input,
+select {
+    background: #12171d;
+    color: white;
+    border: 1px solid #555;
+    border-radius: 4px;
+}
+
+button {
+    margin-top: 16px;
+    border: 0;
+    border-radius: 4px;
+    background: #e78300;
+    color: white;
+    cursor: pointer;
+    font-weight: bold;
+}
+
+button:hover {
+    background: #f39200;
+}
+
+#map {
+    width: 100%;
+    height: 100%;
+}
+
+.info {
+    margin-top: 20px;
+    padding: 12px;
+    background: #151a20;
+    border-radius: 6px;
+    line-height: 1.6;
+}
+
+.value {
+    float: right;
+    font-weight: bold;
+}
+
+#etat {
+    margin-top: 16px;
+    font-size: 13px;
+    color: #f0a542;
+}
+
+.legend {
+    margin-top: 20px;
+    font-size: 12px;
+    color: #aaa;
+}
+
+@media(max-width: 800px) {
+    #app {
+        grid-template-columns: 1fr;
+        grid-template-rows: 380px 1fr;
+    }
+
+    #panel {
+        border-right: none;
+        border-bottom: 1px solid #444;
+    }
+}
+</style>
+</head>
+
+<body>
+
+<div id="app">
+
+<div id="panel">
+
+<h1>Générer une zone 3D</h1>
+
+<p>
+Importe un polygone GeoJSON. La zone sera automatiquement
+découpée en scènes 3D.
+</p>
+
+<label for="nomZone">Nom de la zone</label>
+
+<input
+    id="nomZone"
+    type="text"
+    placeholder="Ex. Marmande centre"
+/>
+
+<label for="geojson">Fichier GeoJSON</label>
+
+<input
+    id="geojson"
+    type="file"
+    accept=".geojson,.json,application/geo+json,application/json"
+/>
+
+<label for="taille">Taille des tuiles</label>
+
+<select id="taille">
+    <option value="250">250 m</option>
+    <option value="300">300 m</option>
+    <option value="350" selected>350 m</option>
+    <option value="400">400 m</option>
+    <option value="500">500 m</option>
+</select>
+
+<button id="calculer">
+Calculer les tuiles
+</button>
+
+<div class="info">
+    Surface
+    <span class="value" id="surface">—</span>
+    <br>
+
+    Tuiles nécessaires
+    <span class="value" id="nbTuiles">—</span>
+    <br>
+
+    Taille
+    <span class="value" id="tailleAff">350 m</span>
+</div>
+
+<div id="etat">
+Charge un GeoJSON pour commencer.
+</div>
+
+<div class="legend">
+Polygone : zone demandée<br>
+Carrés : scènes qui seront générées
+</div>
+
+</div>
+
+<div id="map"></div>
+
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<script src="https://cdn.jsdelivr.net/npm/@turf/turf@7/turf.min.js"></script>
+
+<script>
+
+const map = L.map('map').setView(
+    [44.5, 0.16],
+    11
+);
+
+L.tileLayer(
+    'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap'
+    }
+).addTo(map);
+
+let geojson = null;
+let coucheZone = null;
+let coucheGrille = L.layerGroup().addTo(map);
+
+const fichier = document.getElementById('geojson');
+const taille = document.getElementById('taille');
+
+taille.addEventListener('change', () => {
+    document.getElementById('tailleAff').textContent =
+        taille.value + ' m';
+
+    if (geojson) calculerGrille();
+});
+
+fichier.addEventListener('change', async e => {
+
+    const f = e.target.files[0];
+
+    if (!f) return;
+
+    try {
+
+        const texte = await f.text();
+
+        const donnees = JSON.parse(texte);
+
+        geojson = normaliserGeoJSON(donnees);
+
+        if (!geojson) {
+            throw new Error(
+                'Aucun Polygon ou MultiPolygon trouvé.'
+            );
+        }
+
+        if (coucheZone) {
+            map.removeLayer(coucheZone);
+        }
+
+        coucheZone = L.geoJSON(
+            geojson,
+            {
+                style: {
+                    weight: 3,
+                    fillOpacity: 0.15
+                }
+            }
+        ).addTo(map);
+
+        map.fitBounds(
+            coucheZone.getBounds(),
+            {
+                padding: [30, 30]
+            }
+        );
+
+        const aire = turf.area(geojson);
+
+        document.getElementById('surface').textContent =
+            aire >= 1000000
+            ? (aire / 1000000).toFixed(2) + ' km²'
+            : Math.round(aire).toLocaleString('fr-FR') + ' m²';
+
+        document.getElementById('etat').textContent =
+            'GeoJSON chargé. Calcul de la grille…';
+
+        calculerGrille();
+
+    } catch (err) {
+
+        geojson = null;
+
+        document.getElementById('etat').textContent =
+            'Erreur : ' + err.message;
+    }
+});
+
+document
+.getElementById('calculer')
+.addEventListener(
+    'click',
+    calculerGrille
+);
+
+function normaliserGeoJSON(obj) {
+
+    if (!obj) return null;
+
+    if (
+        obj.type === 'Polygon' ||
+        obj.type === 'MultiPolygon'
+    ) {
+        return turf.feature(obj);
+    }
+
+    if (
+        obj.type === 'Feature' &&
+        obj.geometry &&
+        (
+            obj.geometry.type === 'Polygon' ||
+            obj.geometry.type === 'MultiPolygon'
+        )
+    ) {
+        return obj;
+    }
+
+    if (obj.type === 'FeatureCollection') {
+
+        const polys =
+            obj.features.filter(f =>
+                f.geometry &&
+                (
+                    f.geometry.type === 'Polygon' ||
+                    f.geometry.type === 'MultiPolygon'
+                )
+            );
+
+        if (!polys.length) return null;
+
+        if (polys.length === 1) {
+            return polys[0];
+        }
+
+        return turf.featureCollection(polys);
+    }
+
+    return null;
+}
+
+function calculerGrille() {
+
+    if (!geojson) {
+
+        document.getElementById('etat').textContent =
+            'Charge d’abord un GeoJSON.';
+
+        return;
+    }
+
+    coucheGrille.clearLayers();
+
+    const tailleM =
+        parseInt(taille.value, 10);
+
+    const bbox =
+        turf.bbox(geojson);
+
+    const [
+        ouest,
+        sud,
+        est,
+        nord
+    ] = bbox;
+
+    const pasLat =
+        tailleM / 111320;
+
+    const tuiles = [];
+
+    let lat =
+        sud + pasLat / 2;
+
+    while (
+        lat - pasLat / 2 <= nord
+    ) {
+
+        const cosLat =
+            Math.cos(
+                lat * Math.PI / 180
+            );
+
+        const pasLon =
+            tailleM /
+            (
+                111320 *
+                Math.max(cosLat, 0.1)
+            );
+
+        let lon =
+            ouest + pasLon / 2;
+
+        while (
+            lon - pasLon / 2 <= est
+        ) {
+
+            const carre =
+                turf.polygon([[
+                    [
+                        lon - pasLon / 2,
+                        lat - pasLat / 2
+                    ],
+                    [
+                        lon + pasLon / 2,
+                        lat - pasLat / 2
+                    ],
+                    [
+                        lon + pasLon / 2,
+                        lat + pasLat / 2
+                    ],
+                    [
+                        lon - pasLon / 2,
+                        lat + pasLat / 2
+                    ],
+                    [
+                        lon - pasLon / 2,
+                        lat - pasLat / 2
+                    ]
+                ]]);
+
+            let touche = false;
+
+            try {
+
+                if (
+                    geojson.type ===
+                    'FeatureCollection'
+                ) {
+
+                    touche =
+                        geojson.features.some(
+                            f =>
+                            turf.booleanIntersects(
+                                f,
+                                carre
+                            )
+                        );
+
+                } else {
+
+                    touche =
+                        turf.booleanIntersects(
+                            geojson,
+                            carre
+                        );
+                }
+
+            } catch (e) {
+
+                console.error(e);
+
+            }
+
+            if (touche) {
+
+                tuiles.push({
+                    lat,
+                    lon,
+                    taille: tailleM
+                });
+
+                L.rectangle(
+                    [
+                        [
+                            lat - pasLat / 2,
+                            lon - pasLon / 2
+                        ],
+                        [
+                            lat + pasLat / 2,
+                            lon + pasLon / 2
+                        ]
+                    ],
+                    {
+                        weight: 1,
+                        fillOpacity: 0.05
+                    }
+                )
+                .bindTooltip(
+                    lat.toFixed(5)
+                    + ', '
+                    + lon.toFixed(5)
+                )
+                .addTo(coucheGrille);
+            }
+
+            lon += pasLon;
+        }
+
+        lat += pasLat;
+    }
+
+    window.TUILES_3D =
+        tuiles;
+
+    document.getElementById(
+        'nbTuiles'
+    ).textContent =
+        tuiles.length;
+
+    document.getElementById(
+        'tailleAff'
+    ).textContent =
+        tailleM + ' m';
+
+    document.getElementById(
+        'etat'
+    ).textContent =
+        tuiles.length
+        + ' scène(s) seront générées.';
+}
+
+</script>
+
+</body>
+</html>
