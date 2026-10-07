@@ -23,12 +23,15 @@ trentaine de secondes, que la page annonce. Les suivantes la lisent sur disque.
 """
 
 import logging
+import base64
+import copy
 import math
 import gzip
 import os
 import json
 import re
 import requests
+import numpy as np
 
 from flask import Flask, jsonify, request, send_from_directory
 
@@ -38,6 +41,7 @@ from .ouvrages import fetch_ouvrages
 from .ortho import fetch_ortho_jpeg
 from .panneaux import REGISTRE_LICENCE
 from .panneaux import lecteur as lecteur_panneaux
+from .relief import fetch_relief_anneau
 from .scene import (NOM_MONUMENTS, NOM_NUAGE, NOM_ORTHO, NOM_OUVRAGES, NOM_PANNEAUX, NOM_SCENE,
                     Cache, HorsEmprise, MonumentsIndisponibles, NuageIndisponible,
                     OuvragesIndisponibles,
@@ -257,6 +261,811 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
         return chemin
 
                   
+
+    def _decoder_relief(relief):
+        if not relief or not relief.get("altitudes"):
+            return None
+
+        largeur = int(relief["width"])
+        hauteur = int(relief["height"])
+
+        q = np.frombuffer(
+            base64.b64decode(relief["altitudes"]),
+            dtype="<i2",
+        ).reshape(hauteur, largeur)
+
+        valeurs = (
+            float(relief["zero_m"])
+            + q.astype(np.float64) * float(relief["pas_m"])
+        )
+
+        valeurs[q == -32768] = np.nan
+        return valeurs
+
+
+    def _encoder_relief(valeurs, bbox, source="RGE ALTI (IGN)"):
+        if valeurs is None or not np.isfinite(valeurs).any():
+            return None
+
+        valeurs = np.asarray(valeurs, dtype=np.float64)
+        trous = ~np.isfinite(valeurs)
+
+        zero = float(np.floor(np.nanmin(valeurs)))
+        pas = 0.1
+
+        q = np.rint((valeurs - zero) / pas)
+        q = np.clip(q, -32767, 32767)
+        q[trous] = -32768
+
+        hauteur, largeur = valeurs.shape
+
+        return {
+            "width": int(largeur),
+            "height": int(hauteur),
+            "bbox": [float(v) for v in bbox],
+            "zero_m": round(zero, 1),
+            "pas_m": pas,
+            "source": source,
+            "precision": "1 m, modèle de terrain",
+            "altitudes": base64.b64encode(
+                q.astype("<i2").tobytes()
+            ).decode("ascii"),
+        }
+
+
+    def _fusionner_reliefs(scenes, bbox_union, max_pixels=1024):
+        reliefs = [
+            s.get("relief")
+            for s in scenes
+            if s.get("relief")
+            and s["relief"].get("altitudes")
+        ]
+
+        if not reliefs:
+            return None
+
+        pas_lon = []
+        pas_lat = []
+
+        for r in reliefs:
+            w, s, e, n = map(float, r["bbox"])
+
+            if int(r["width"]) > 1:
+                pas_lon.append(
+                    (e - w) / (int(r["width"]) - 1)
+                )
+
+            if int(r["height"]) > 1:
+                pas_lat.append(
+                    (n - s) / (int(r["height"]) - 1)
+                )
+
+        if not pas_lon or not pas_lat:
+            return reliefs[0]
+
+        west, south, east, north = map(float, bbox_union)
+
+        dx = min(pas_lon)
+        dy = min(pas_lat)
+
+        largeur = int(round((east - west) / dx)) + 1
+        hauteur = int(round((north - south) / dy)) + 1
+
+        facteur = max(
+            1.0,
+            largeur / max_pixels,
+            hauteur / max_pixels,
+        )
+
+        largeur = max(
+            2,
+            int(round((largeur - 1) / facteur)) + 1,
+        )
+
+        hauteur = max(
+            2,
+            int(round((hauteur - 1) / facteur)) + 1,
+        )
+
+        xs = np.linspace(west, east, largeur)
+        ys = np.linspace(north, south, hauteur)
+
+        somme = np.zeros(
+            (hauteur, largeur),
+            dtype=np.float64,
+        )
+
+        compte = np.zeros(
+            (hauteur, largeur),
+            dtype=np.uint16,
+        )
+
+        for r in reliefs:
+            arr = _decoder_relief(r)
+
+            if arr is None:
+                continue
+
+            rw, rs, re, rn = map(float, r["bbox"])
+            rh, rl = arr.shape
+
+            ix = np.where(
+                (xs >= rw - 1e-12)
+                & (xs <= re + 1e-12)
+            )[0]
+
+            iy = np.where(
+                (ys <= rn + 1e-12)
+                & (ys >= rs - 1e-12)
+            )[0]
+
+            if not len(ix) or not len(iy):
+                continue
+
+            xx = xs[ix][None, :]
+            yy = ys[iy][:, None]
+
+            fx = (
+                (xx - rw)
+                / (re - rw)
+                * (rl - 1)
+            )
+
+            fy = (
+                (rn - yy)
+                / (rn - rs)
+                * (rh - 1)
+            )
+
+            x0 = np.floor(fx).astype(int)
+            y0 = np.floor(fy).astype(int)
+
+            x1 = np.minimum(
+                x0 + 1,
+                rl - 1,
+            )
+
+            y1 = np.minimum(
+                y0 + 1,
+                rh - 1,
+            )
+
+            ax = fx - x0
+            ay = fy - y0
+
+            a = arr[y0, x0]
+            b = arr[y0, x1]
+            c = arr[y1, x0]
+            d = arr[y1, x1]
+
+            val = (
+                (a * (1 - ax) + b * ax) * (1 - ay)
+                + (c * (1 - ax) + d * ax) * ay
+            )
+
+            valide = np.isfinite(val)
+
+            sous_somme = somme[np.ix_(iy, ix)]
+            sous_compte = compte[np.ix_(iy, ix)]
+
+            sous_somme[valide] += val[valide]
+            sous_compte[valide] += 1
+
+            somme[np.ix_(iy, ix)] = sous_somme
+            compte[np.ix_(iy, ix)] = sous_compte
+
+        valeurs = np.full(
+            (hauteur, largeur),
+            np.nan,
+            dtype=np.float64,
+        )
+
+        masque = compte > 0
+        valeurs[masque] = somme[masque] / compte[masque]
+
+        return _encoder_relief(
+            valeurs,
+            bbox_union,
+        )
+
+
+    def _grille_toits_commune(scenes, bbox_union):
+        grilles = [
+            (s.get("toits") or {}).get("grille")
+            for s in scenes
+        ]
+
+        grilles = [
+            g for g in grilles
+            if g and g.get("bbox")
+            and g.get("width")
+            and g.get("height")
+        ]
+
+        if not grilles:
+            return None, []
+
+        dxs = []
+        dys = []
+
+        for g in grilles:
+            w, s, e, n = map(float, g["bbox"])
+
+            dxs.append(
+                (e - w) / int(g["width"])
+            )
+
+            dys.append(
+                (n - s) / int(g["height"])
+            )
+
+        dx = min(dxs)
+        dy = min(dys)
+
+        west = min(
+            float(g["bbox"][0])
+            for g in grilles
+        )
+
+        south = min(
+            float(g["bbox"][1])
+            for g in grilles
+        )
+
+        east = max(
+            float(g["bbox"][2])
+            for g in grilles
+        )
+
+        north = max(
+            float(g["bbox"][3])
+            for g in grilles
+        )
+
+        largeur = max(
+            1,
+            int(round((east - west) / dx)),
+        )
+
+        hauteur = max(
+            1,
+            int(round((north - south) / dy)),
+        )
+
+        offsets = []
+
+        for g in [
+            (s.get("toits") or {}).get("grille")
+            for s in scenes
+        ]:
+            if not g or not g.get("bbox"):
+                offsets.append((0, 0))
+                continue
+
+            gw, gs, ge, gn = map(float, g["bbox"])
+
+            oi = int(
+                round((gw - west) / dx)
+            )
+
+            oj = int(
+                round((north - gn) / dy)
+            )
+
+            offsets.append((oi, oj))
+
+        return {
+            "bbox": [west, south, east, north],
+            "width": largeur,
+            "height": hauteur,
+        }, offsets
+
+
+    def _decaler_profil_toit(
+        profil,
+        offset_i,
+        offset_j,
+        dx_m,
+        dy_m,
+    ):
+        p = copy.deepcopy(profil)
+
+        for cle in ("surface", "pans"):
+            bloc = p.get(cle)
+
+            if isinstance(bloc, dict):
+                if "i0" in bloc:
+                    bloc["i0"] = int(
+                        bloc["i0"] + offset_i
+                    )
+
+                if "j0" in bloc:
+                    bloc["j0"] = int(
+                        bloc["j0"] + offset_j
+                    )
+
+        for corps in p.get("corps", []) or []:
+            if "cx" in corps:
+                corps["cx"] = (
+                    float(corps["cx"]) + dx_m
+                )
+
+            if "cy" in corps:
+                corps["cy"] = (
+                    float(corps["cy"]) + dy_m
+                )
+
+        return p
+
+
+    def _concat_features(scenes, cle):
+        features = []
+
+        for s in scenes:
+            obj = s.get(cle)
+
+            if isinstance(obj, dict):
+                features.extend(
+                    copy.deepcopy(
+                        obj.get("features", [])
+                    )
+                )
+
+        return {
+            "type": "FeatureCollection",
+            "features": features,
+        }
+
+
+    def _fusionner_scenes(tuiles):
+        scenes = []
+        dossiers = []
+
+        for t in tuiles:
+            lat = float(t["lat"])
+            lon = float(t["lon"])
+            zone = zone_normalisee(
+                t.get("taille")
+            )
+
+            dossier = cache.obtenir(
+                lat,
+                lon,
+                construire=construire,
+                zone=zone,
+            )
+
+            chemin = os.path.join(
+                dossier,
+                NOM_SCENE,
+            )
+
+            with gzip.open(
+                chemin,
+                "rt",
+                encoding="utf-8",
+            ) as f:
+                scenes.append(json.load(f))
+
+            dossiers.append(dossier)
+
+        if not scenes:
+            raise RuntimeError(
+                "Aucune tuile à fusionner."
+            )
+
+        west = min(
+            float(s["bbox"][0])
+            for s in scenes
+        )
+
+        south = min(
+            float(s["bbox"][1])
+            for s in scenes
+        )
+
+        east = max(
+            float(s["bbox"][2])
+            for s in scenes
+        )
+
+        north = max(
+            float(s["bbox"][3])
+            for s in scenes
+        )
+
+        bbox = [west, south, east, north]
+
+        centre_lon = (west + east) / 2
+        centre_lat = (south + north) / 2
+
+        m_lon = (
+            111320
+            * math.cos(
+                math.radians(centre_lat)
+            )
+        )
+
+        grille_toits, offsets = (
+            _grille_toits_commune(
+                scenes,
+                bbox,
+            )
+        )
+
+        batiments = {
+            "type": "FeatureCollection",
+            "features": [],
+        }
+
+        profils = {}
+
+        source_toits = None
+        resolution_toits = None
+        ortho_toits = False
+
+        for idx, s in enumerate(scenes):
+            toits = s.get("toits") or {}
+
+            if source_toits is None:
+                source_toits = toits.get(
+                    "source"
+                )
+
+            if toits.get("resolution_m") is not None:
+                resolution_toits = (
+                    toits["resolution_m"]
+                    if resolution_toits is None
+                    else min(
+                        resolution_toits,
+                        toits["resolution_m"],
+                    )
+                )
+
+            ortho_toits = (
+                ortho_toits
+                or bool(toits.get("ortho"))
+            )
+
+            oi, oj = (
+                offsets[idx]
+                if idx < len(offsets)
+                else (0, 0)
+            )
+
+            sb = s["bbox"]
+            tile_lon = (
+                float(sb[0]) + float(sb[2])
+            ) / 2
+
+            tile_lat = (
+                float(sb[1]) + float(sb[3])
+            ) / 2
+
+            shift_x = (
+                tile_lon - centre_lon
+            ) * m_lon
+
+            shift_y = (
+                tile_lat - centre_lat
+            ) * 111320
+
+            source_profils = (
+                toits.get("toits") or {}
+            )
+
+            for j, f in enumerate(
+                (s.get("batiments") or {})
+                .get("features", [])
+            ):
+                nf = copy.deepcopy(f)
+                props = nf.setdefault(
+                    "properties",
+                    {},
+                )
+
+                ancienne = str(
+                    props.get("cleabs")
+                    or f"batiment-{j}"
+                )
+
+                nouvelle = (
+                    f"{ancienne}__tuile_{idx}"
+                )
+
+                props["cleabs_source"] = ancienne
+                props["cleabs"] = nouvelle
+
+                batiments["features"].append(nf)
+
+                profil = source_profils.get(
+                    ancienne
+                )
+
+                if profil is not None:
+                    profils[nouvelle] = (
+                        _decaler_profil_toit(
+                            profil,
+                            oi,
+                            oj,
+                            shift_x,
+                            shift_y,
+                        )
+                    )
+
+        relief = _fusionner_reliefs(
+            scenes,
+            bbox,
+        )
+
+        constructions = {
+            "reservoirs": [],
+            "ponctuelles": [],
+            "tours": [],
+        }
+
+        for s in scenes:
+            c = s.get("constructions") or {}
+
+            for cle in constructions:
+                constructions[cle].extend(
+                    copy.deepcopy(
+                        c.get(cle, []) or []
+                    )
+                )
+
+        eau = {
+            "surfaces": [],
+            "cours": [],
+        }
+
+        for s in scenes:
+            e = s.get("eau") or {}
+
+            eau["surfaces"].extend(
+                copy.deepcopy(
+                    e.get("surfaces", []) or []
+                )
+            )
+
+            eau["cours"].extend(
+                copy.deepcopy(
+                    e.get("cours", []) or []
+                )
+            )
+
+        lignes = []
+
+        for s in scenes:
+            l = s.get("lignes")
+
+            if isinstance(l, list):
+                lignes.extend(
+                    copy.deepcopy(l)
+                )
+
+        houppiers = []
+        masses = []
+
+        for s in scenes:
+            houppiers.extend(
+                copy.deepcopy(
+                    s.get("houppiers", []) or []
+                )
+            )
+
+            masses.extend(
+                copy.deepcopy(
+                    s.get("masses", []) or []
+                )
+            )
+
+        vegetation_sources = [
+            s.get("vegetation") or {}
+            for s in scenes
+        ]
+
+        hauteur_max = [
+            v.get("hauteur_max")
+            for v in vegetation_sources
+            if isinstance(
+                v.get("hauteur_max"),
+                (int, float),
+            )
+        ]
+
+        vegetation = {
+            "source": next(
+                (
+                    v.get("source")
+                    for v in vegetation_sources
+                    if v.get("source")
+                ),
+                None,
+            ),
+            "couvert": any(
+                bool(v.get("couvert"))
+                for v in vegetation_sources
+            ),
+            "resolution_m": next(
+                (
+                    v.get("resolution_m")
+                    for v in vegetation_sources
+                    if v.get("resolution_m")
+                    is not None
+                ),
+                None,
+            ),
+            "seuil_m": next(
+                (
+                    v.get("seuil_m")
+                    for v in vegetation_sources
+                    if v.get("seuil_m")
+                    is not None
+                ),
+                None,
+            ),
+            "ortho": any(
+                bool(v.get("ortho"))
+                for v in vegetation_sources
+            ),
+            "veg_disponible": any(
+                bool(v.get("veg_disponible"))
+                for v in vegetation_sources
+            ),
+            "foret_disponible": any(
+                bool(v.get("foret_disponible"))
+                for v in vegetation_sources
+            ),
+            "hauteur_max": (
+                max(hauteur_max)
+                if hauteur_max
+                else None
+            ),
+            "nb_ortho": sum(
+                int(v.get("nb_ortho") or 0)
+                for v in vegetation_sources
+            ),
+        }
+
+        scene = {
+            "version": max(
+                int(s.get("version") or 0)
+                for s in scenes
+            ),
+            "bbox": bbox,
+            "batiments": batiments,
+            "toits": {
+                "source": source_toits,
+                "resolution_m": resolution_toits,
+                "toits": profils,
+                "ortho": ortho_toits,
+                "grille": grille_toits,
+            },
+            "routes": _concat_features(
+                scenes,
+                "routes",
+            ),
+            "constructions": constructions,
+            "houppiers": houppiers,
+            "masses": masses,
+            "vegetation": vegetation,
+            "relief": relief,
+            "anneau": None,
+            "eau": eau,
+            "lignes": lignes,
+        }
+
+        largeur_m = (
+            (east - west)
+            * 111320
+            * math.cos(
+                math.radians(centre_lat)
+            )
+        )
+
+        hauteur_m = (
+            (north - south)
+            * 111320
+        )
+
+        marge_m = 1000.0
+
+        demi_lat_m = (
+            hauteur_m / 2
+            + marge_m
+        )
+
+        demi_lon_m = (
+            largeur_m / 2
+            + marge_m
+        )
+
+        dlat = demi_lat_m / 111320
+
+        dlon = (
+            demi_lon_m
+            / (
+                111320
+                * math.cos(
+                    math.radians(
+                        centre_lat
+                    )
+                )
+            )
+        )
+
+        anneau_bbox = [
+            centre_lon - dlon,
+            centre_lat - dlat,
+            centre_lon + dlon,
+            centre_lat + dlat,
+        ]
+
+        try:
+            scene["anneau"] = (
+                fetch_relief_anneau(
+                    *anneau_bbox
+                )
+            )
+        except Exception as exc:
+            app.logger.warning(
+                "Relief de zone périphérique indisponible : %s",
+                exc,
+            )
+
+        def ortho_zone(emprise):
+            try:
+                return fetch_ortho_jpeg(
+                    *emprise,
+                    max_pixels=4096,
+                )[0]
+            except Exception as exc:
+                app.logger.warning(
+                    "Orthophoto 4096 px refusée, repli 2048 px : %s",
+                    exc,
+                )
+
+                return fetch_ortho_jpeg(
+                    *emprise,
+                    max_pixels=2048,
+                )[0]
+
+        ortho = ortho_zone(bbox)
+        ortho_anneau = ortho_zone(
+            anneau_bbox
+        )
+
+        octets_scene = gzip.compress(
+            json.dumps(
+                scene,
+                separators=(",", ":"),
+            ).encode("utf-8"),
+            6,
+        )
+
+        return {
+            "scene": octets_scene,
+            "ortho": ortho,
+            "ortho_anneau": ortho_anneau,
+            "centre_lat": centre_lat,
+            "centre_lon": centre_lon,
+            "largeur_m": largeur_m,
+            "hauteur_m": hauteur_m,
+            "taille_vue_m": int(
+                math.ceil(
+                    max(
+                        largeur_m,
+                        hauteur_m,
+                    )
+                    / 50
+                )
+                * 50
+            ),
+            "bbox": bbox,
+            "anneau_bbox": anneau_bbox,
+        }
+
 
     def dossier_scene(couche=None, prelire=False, detecteur=None):
         p = point()
@@ -606,6 +1415,24 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
         ).encode("utf-8")
 
         try:
+            fusion = _fusionner_scenes(tuiles)
+
+            manifest["fusion"] = {
+                "actif": True,
+                "centre_lat": fusion["centre_lat"],
+                "centre_lon": fusion["centre_lon"],
+                "largeur_m": round(fusion["largeur_m"], 1),
+                "hauteur_m": round(fusion["hauteur_m"], 1),
+                "taille_vue_m": fusion["taille_vue_m"],
+                "bbox": fusion["bbox"],
+            }
+
+            manifest_bytes = json.dumps(
+                manifest,
+                ensure_ascii=False,
+                indent=2,
+            ).encode("utf-8")
+
             envoyer_octets(
                 slug,
                 "zone",
@@ -621,6 +1448,30 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
                 manifest_bytes,
                 type_mime="application/json",
             )
+
+            envoyer_octets(
+                slug,
+                "zone",
+                "zone_scene.json.gz",
+                fusion["scene"],
+                type_mime="application/gzip",
+            )
+
+            envoyer_octets(
+                slug,
+                "zone",
+                "zone_ortho.jpg",
+                fusion["ortho"],
+                type_mime="image/jpeg",
+            )
+
+            envoyer_octets(
+                slug,
+                "zone",
+                "zone_ortho_anneau.jpg",
+                fusion["ortho_anneau"],
+                type_mime="image/jpeg",
+            )
         except Exception as exc:
             app.logger.exception(
                 "Erreur finalisation de la zone %s",
@@ -635,6 +1486,8 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
             "ok": True,
             "zone": slug,
             "nombre_tuiles": len(tuiles),
+            "fusion": True,
+            "taille_vue_m": manifest["fusion"]["taille_vue_m"],
         })
 
         
