@@ -23,6 +23,7 @@ trentaine de secondes, que la page annonce. Les suivantes la lisent sur disque.
 """
 
 import logging
+import math
 import gzip
 import os
 import json
@@ -108,59 +109,95 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
 
     def envoyer_octets(zone, scope, nom, contenu, tile=None,
                        type_mime="application/octet-stream"):
-        """Envoie un fichier vers save_scene.php sur Geovalys."""
+        """Envoie un fichier vers Geovalys, en morceaux au-delà de 900 Ko."""
         url = os.environ.get("VUE3D_STORAGE_URL")
         token = os.environ.get("VUE3D_STORAGE_TOKEN")
 
         if not url or not token:
             raise RuntimeError("Stockage Geovalys non configuré.")
 
-        donnees = {
+        donnees_base = {
             "token": token,
             "zone": zone,
             "scope": scope,
         }
 
         if tile:
-            donnees["tile"] = tile
+            donnees_base["tile"] = tile
 
-        fichiers = {
-            "file": (
-                nom,
-                contenu,
-                type_mime,
+        if isinstance(contenu, (bytes, bytearray)):
+            brut = bytes(contenu)
+        else:
+            position = contenu.tell()
+            contenu.seek(0)
+            brut = contenu.read()
+            contenu.seek(position)
+
+        taille_morceau = 900 * 1024
+
+        def verifier(r):
+            if not r.ok:
+                raise RuntimeError(
+                    f"Geovalys HTTP {r.status_code}: {r.text[:500]}"
+                )
+
+            try:
+                retour = r.json()
+            except ValueError as exc:
+                corps = (r.text or "").strip().replace("\n", " ")
+                corps = re.sub(r"\\s+", " ", corps)[:500]
+                raise RuntimeError(
+                    "Geovalys a renvoyé une réponse non JSON : "
+                    + (corps or "réponse vide")
+                ) from exc
+
+            if not retour.get("ok"):
+                raise RuntimeError(
+                    retour.get("error", "Erreur de stockage Geovalys")
+                )
+
+            return retour
+
+        if len(brut) <= taille_morceau:
+            r = requests.post(
+                url,
+                data=donnees_base,
+                files={"file": (nom, brut, type_mime)},
+                timeout=120,
             )
-        }
+            return verifier(r)
 
-        r = requests.post(
-            url,
-            data=donnees,
-            files=fichiers,
-            timeout=120,
-        )
+        total = math.ceil(len(brut) / taille_morceau)
+        retour = None
 
-        if not r.ok:
-            raise RuntimeError(
-                f"Geovalys HTTP {r.status_code}: {r.text[:300]}"
+        for index in range(total):
+            debut = index * taille_morceau
+            fin = min(len(brut), debut + taille_morceau)
+
+            donnees = {
+                **donnees_base,
+                "filename": nom,
+                "chunk_index": str(index),
+                "chunk_total": str(total),
+            }
+
+            r = requests.post(
+                url,
+                data=donnees,
+                files={
+                    "file": (
+                        f"{nom}.part{index:04d}",
+                        brut[debut:fin],
+                        type_mime,
+                    )
+                },
+                timeout=120,
             )
 
-        try:
-            retour = r.json()
-        except ValueError as exc:
-            corps = (r.text or "").strip().replace("\\n", " ")
-            corps = re.sub(r"\\s+", " ", corps)[:500]
-            type_reponse = r.headers.get("Content-Type", "inconnu")
-            raise RuntimeError(
-                "Geovalys a renvoyé une réponse non JSON "
-                f"(HTTP {r.status_code}, {type_reponse}) : {corps or 'réponse vide'}"
-            ) from exc
-
-        if not retour.get("ok"):
-            raise RuntimeError(
-                retour.get("error", "Erreur de stockage Geovalys")
-            )
+            retour = verifier(r)
 
         return retour
+
 
     def assurer_ortho_anneau(dossier):
         """Crée l'orthophoto de l'anneau si elle n'est pas encore dans le cache.
