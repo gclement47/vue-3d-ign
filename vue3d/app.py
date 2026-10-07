@@ -139,7 +139,16 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
                 f"Geovalys HTTP {r.status_code}: {r.text[:300]}"
             )
 
-        retour = r.json()
+        try:
+            retour = r.json()
+        except ValueError as exc:
+            corps = (r.text or "").strip().replace("\\n", " ")
+            corps = re.sub(r"\\s+", " ", corps)[:500]
+            type_reponse = r.headers.get("Content-Type", "inconnu")
+            raise RuntimeError(
+                "Geovalys a renvoyé une réponse non JSON "
+                f"(HTTP {r.status_code}, {type_reponse}) : {corps or 'réponse vide'}"
+            ) from exc
 
         if not retour.get("ok"):
             raise RuntimeError(
@@ -374,72 +383,83 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
             )
             return erreur(500, str(exc))
 
-        latn, lonn = point_normalise(lat, lon)
+        try:
+            latn, lonn = point_normalise(lat, lon)
 
-        tile_id = (
-            f"{latn:.4f}_{lonn:.4f}"
-            f"_z{zone or 'default'}"
-        )
-
-        envoyes = []
-
-        # Les deux fichiers indispensables à une scène.
-        for nom_fichier, mime in (
-            (NOM_SCENE, "application/gzip"),
-            (NOM_ORTHO, "image/jpeg"),
-        ):
-            chemin = os.path.join(
-                dossier,
-                nom_fichier,
+            tile_id = (
+                f"{latn:.4f}_{lonn:.4f}"
+                f"_z{zone or 'default'}"
             )
 
-            if not os.path.isfile(chemin):
-                continue
+            envoyes = []
 
-            with open(chemin, "rb") as f:
-                envoyer_octets(
-                    slug,
-                    "tile",
+            # Les deux fichiers indispensables à une scène.
+            for nom_fichier, mime in (
+                (NOM_SCENE, "application/gzip"),
+                (NOM_ORTHO, "image/jpeg"),
+            ):
+                chemin = os.path.join(
+                    dossier,
                     nom_fichier,
-                    f,
-                    tile=tile_id,
-                    type_mime=mime,
                 )
 
-            envoyes.append(nom_fichier)
+                if not os.path.isfile(chemin):
+                    continue
 
-        # Ajoute aussi toutes les couches déjà calculées.
-        for nom_fichier in sorted(os.listdir(dossier)):
-            if nom_fichier in envoyes:
-                continue
+                with open(chemin, "rb") as f:
+                    envoyer_octets(
+                        slug,
+                        "tile",
+                        nom_fichier,
+                        f,
+                        tile=tile_id,
+                        type_mime=mime,
+                    )
 
-            chemin = os.path.join(
-                dossier,
-                nom_fichier,
+                envoyes.append(nom_fichier)
+
+            # Ajoute aussi toutes les couches déjà calculées.
+            for nom_fichier in sorted(os.listdir(dossier)):
+                if nom_fichier in envoyes:
+                    continue
+
+                chemin = os.path.join(
+                    dossier,
+                    nom_fichier,
+                )
+
+                if not os.path.isfile(chemin):
+                    continue
+
+                with open(chemin, "rb") as f:
+                    envoyer_octets(
+                        slug,
+                        "tile",
+                        nom_fichier,
+                        f,
+                        tile=tile_id,
+                    )
+
+                envoyes.append(nom_fichier)
+
+            return jsonify({
+                "ok": True,
+                "tile": tile_id,
+                "lat": latn,
+                "lon": lonn,
+                "taille": zone,
+                "fichiers": envoyes,
+            })         
+        except Exception as exc:
+            app.logger.exception(
+                "Erreur sauvegarde Geovalys pour la tuile %.6f %.6f",
+                lat,
+                lon,
             )
-
-            if not os.path.isfile(chemin):
-                continue
-
-            with open(chemin, "rb") as f:
-                envoyer_octets(
-                    slug,
-                    "tile",
-                    nom_fichier,
-                    f,
-                    tile=tile_id,
-                )
-
-            envoyes.append(nom_fichier)
-
-        return jsonify({
-            "ok": True,
-            "tile": tile_id,
-            "lat": latn,
-            "lon": lonn,
-            "taille": zone,
-            "fichiers": envoyes,
-        })         
+            return erreur(
+                502,
+                f"Sauvegarde Geovalys impossible : {exc}"
+            )
 
     @app.post("/api/zone/finaliser")
     def finaliser_zone():
@@ -482,21 +502,31 @@ def creer_app(dossier_cache=None, construire=construire_scene, lire_monuments=fe
             indent=2,
         ).encode("utf-8")
 
-        envoyer_octets(
-            slug,
-            "zone",
-            "zone.geojson",
-            zone_bytes,
-            type_mime="application/geo+json",
-        )
+        try:
+            envoyer_octets(
+                slug,
+                "zone",
+                "zone.geojson",
+                zone_bytes,
+                type_mime="application/geo+json",
+            )
 
-        envoyer_octets(
-            slug,
-            "zone",
-            "manifest.json",
-            manifest_bytes,
-            type_mime="application/json",
-        )
+            envoyer_octets(
+                slug,
+                "zone",
+                "manifest.json",
+                manifest_bytes,
+                type_mime="application/json",
+            )
+        except Exception as exc:
+            app.logger.exception(
+                "Erreur finalisation de la zone %s",
+                slug,
+            )
+            return erreur(
+                502,
+                f"Finalisation Geovalys impossible : {exc}"
+            )
 
         return jsonify({
             "ok": True,
